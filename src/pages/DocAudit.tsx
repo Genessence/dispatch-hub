@@ -55,25 +55,25 @@ const DocAudit = () => {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
+        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2 sm:gap-4">
               <Link to="/dashboard">
-                <Button variant="ghost" size="icon">
-                  <ArrowLeft className="h-5 w-5" />
+                <Button variant="ghost" size="icon" className="h-8 w-8 sm:h-10 sm:w-10">
+                  <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
                 </Button>
               </Link>
               <div>
-                <h1 className="text-2xl font-bold text-foreground">Document Audit</h1>
-                <p className="text-sm text-muted-foreground">Scan and validate BIN labels</p>
+                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Document Audit</h1>
+                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Scan and validate BIN labels</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <Badge variant={scannerConnected ? "default" : "destructive"}>
-                <Radio className={`h-3 w-3 mr-2 ${scannerConnected ? 'animate-pulse' : ''}`} />
+            <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+              <Badge variant={scannerConnected ? "default" : "destructive"} className="text-xs">
+                <Radio className={`h-3 w-3 mr-1 sm:mr-2 ${scannerConnected ? 'animate-pulse' : ''}`} />
                 Scanner {scannerConnected ? 'Connected' : 'Disconnected'}
               </Badge>
-              <div className="text-right">
+              <div className="text-right hidden md:block">
                 <p className="text-sm font-medium">John Operator</p>
                 <p className="text-xs text-muted-foreground">Operator</p>
               </div>
@@ -82,7 +82,7 @@ const DocAudit = () => {
         </div>
       </header>
 
-      <main className="container mx-auto px-6 py-8">
+      <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8">
         {/* Invoice Selection */}
         <Card className="mb-6">
           <CardHeader>
@@ -139,7 +139,23 @@ const DocAudit = () => {
 
         {/* Scanning Interface */}
         {selectedInvoice && (
-          <div className="grid md:grid-cols-2 gap-6 mb-6">
+          <>
+            {/* Back Button */}
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setSelectedInvoice("");
+                setCustomerScan("");
+                setAutolivScan("");
+              }}
+              className="flex items-center gap-2 mb-4 text-sm sm:text-base"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span className="hidden sm:inline">Change Invoice</span>
+              <span className="sm:hidden">Back</span>
+            </Button>
+            
+            <div className="grid md:grid-cols-2 gap-6 mb-6">
             {/* Customer Label Scan */}
             <Card>
               <CardHeader className="pb-4">
@@ -230,10 +246,8 @@ const DocAudit = () => {
               </CardContent>
             </Card>
           </div>
-        )}
 
-        {/* Scanned BINs Table */}
-        {selectedInvoice && (
+          {/* Scanned BINs Table */}
           <Card>
             <CardHeader>
               <CardTitle>Scanned BINs</CardTitle>
@@ -277,6 +291,7 @@ const DocAudit = () => {
               </div>
             </CardContent>
           </Card>
+          </>
         )}
       </main>
     </div>

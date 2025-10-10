@@ -27,7 +27,8 @@ import {
   QrCode,
   Printer,
   Download,
-  Users
+  Users,
+  ArrowLeft
 } from "lucide-react";
 import { BarcodeScanButton } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
@@ -599,27 +600,27 @@ const Dashboard = () => {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-primary rounded-lg">
-                <Package className="h-6 w-6 text-primary-foreground" />
+        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="p-1.5 sm:p-2 bg-primary rounded-lg">
+                <Package className="h-5 w-5 sm:h-6 sm:w-6 text-primary-foreground" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-foreground">Manufacturing Dispatch</h1>
-                <p className="text-sm text-muted-foreground">Factory Operations Management</p>
+                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Manufacturing Dispatch</h1>
+                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Factory Operations Management</p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <Badge variant="outline" className="text-sm px-3 py-1">
-                <div className="h-2 w-2 bg-success rounded-full mr-2 animate-pulse" />
-                System Online
+            <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
+              <Badge variant="outline" className="text-xs sm:text-sm px-2 sm:px-3 py-1">
+                <div className="h-2 w-2 bg-success rounded-full mr-1 sm:mr-2 animate-pulse" />
+                <span className="hidden sm:inline">System </span>Online
               </Badge>
-              <Badge className="text-sm px-3 py-1 bg-primary">
+              <Badge className="text-xs sm:text-sm px-2 sm:px-3 py-1 bg-primary">
                 <Users className="h-3 w-3 mr-1" />
                 {currentUser}
               </Badge>
-              <div className="text-right">
+              <div className="text-right hidden md:block">
                 <p className="text-sm font-medium">{currentUser}</p>
                 <p className="text-xs text-muted-foreground">Multi-Session Mode</p>
               </div>
@@ -629,46 +630,50 @@ const Dashboard = () => {
       </header>
 
       {/* Navigation Buttons */}
-      <div className="bg-background border-b border-border">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex gap-3">
+      <div className="bg-background border-b border-border overflow-x-auto">
+        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
+          <div className="flex gap-2 sm:gap-3 min-w-max sm:min-w-0">
             <Button
               variant={activeView === 'dashboard' ? 'default' : 'outline'}
               onClick={() => setActiveView('dashboard')}
-              className="flex items-center gap-2"
+              className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4"
             >
-              <Home className="h-4 w-4" />
-              Dashboard
+              <Home className="h-3 w-3 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">Dashboard</span>
+              <span className="sm:hidden">Home</span>
             </Button>
             <Button
               variant={activeView === 'upload' ? 'default' : 'outline'}
               onClick={() => setActiveView('upload')}
-              className="flex items-center gap-2"
+              className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4"
             >
-              <Upload className="h-4 w-4" />
-              Upload Sales Data
+              <Upload className="h-3 w-3 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">Upload Sales Data</span>
+              <span className="sm:hidden">Upload</span>
             </Button>
             <Button
               variant={activeView === 'doc-audit' ? 'default' : 'outline'}
               onClick={() => setActiveView('doc-audit')}
-              className="flex items-center gap-2"
+              className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4"
             >
-              <ScanBarcode className="h-4 w-4" />
-              Doc Audit
+              <ScanBarcode className="h-3 w-3 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">Doc Audit</span>
+              <span className="sm:hidden">Audit</span>
             </Button>
             <Button
               variant={activeView === 'dispatch' ? 'default' : 'outline'}
               onClick={() => setActiveView('dispatch')}
-              className="flex items-center gap-2"
+              className="flex items-center gap-1 sm:gap-2 text-xs sm:text-sm px-2 sm:px-4"
             >
-              <Truck className="h-4 w-4" />
-              Loading & Dispatch
+              <Truck className="h-3 w-3 sm:h-4 sm:w-4" />
+              <span className="hidden sm:inline">Loading & Dispatch</span>
+              <span className="sm:hidden">Dispatch</span>
             </Button>
           </div>
         </div>
       </div>
 
-      <main className="container mx-auto px-6 py-8">
+      <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8">
         {/* Dashboard View */}
         {activeView === 'dashboard' && (
           <>
@@ -732,15 +737,25 @@ const Dashboard = () => {
         {/* Upload Sales Data View */}
         {activeView === 'upload' && (
           <div className="max-w-5xl mx-auto">
-            {/* Logs Button */}
-            <div className="flex justify-end mb-4">
+            {/* Header with Back Button and Logs */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-0 mb-4">
+              <Button
+                variant="outline"
+                onClick={() => setActiveView('dashboard')}
+                className="flex items-center gap-2 justify-center sm:justify-start"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">Back to Dashboard</span>
+                <span className="sm:hidden">Back</span>
+              </Button>
               <Button
                 variant="outline"
                 onClick={() => setShowUploadLogs(true)}
-                className="flex items-center gap-2"
+                className="flex items-center gap-2 justify-center"
               >
                 <FileSpreadsheet className="h-4 w-4" />
-                Upload Logs
+                <span className="hidden sm:inline">Upload Logs</span>
+                <span className="sm:hidden">Logs</span>
                 {getUploadLogs().length > 0 && (
                   <Badge variant="secondary" className="ml-1">
                     {getUploadLogs().length}
@@ -845,6 +860,22 @@ const Dashboard = () => {
             {/* Validate Stage */}
             {uploadStage === 'validate' && (
               <div className="space-y-6">
+                {/* Back Button for Validate Stage */}
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setUploadStage('upload');
+                    setFile(null);
+                    setUploadedData([]);
+                    setProcessedInvoices([]);
+                  }}
+                  className="flex items-center gap-2 text-sm sm:text-base"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">Back to Upload</span>
+                  <span className="sm:hidden">Back</span>
+                </Button>
+                
                 <Card>
                   <CardHeader>
                     <div className="flex items-center gap-3">
@@ -878,8 +909,8 @@ const Dashboard = () => {
                       </div>
 
                       {/* Actual Data Table */}
-                      <div className="border rounded-lg overflow-hidden max-h-96 overflow-y-auto">
-                        <table className="w-full text-sm">
+                      <div className="border rounded-lg overflow-hidden max-h-96 overflow-x-auto overflow-y-auto">
+                        <table className="w-full text-xs sm:text-sm min-w-[600px]">
                           <thead className="bg-muted sticky top-0">
                             <tr>
                               <th className="text-left p-3 font-semibold">Invoice No</th>
@@ -957,8 +988,20 @@ const Dashboard = () => {
 
             {/* Complete Stage */}
             {uploadStage === 'complete' && (
-              <Card>
-                <CardContent className="pt-12 pb-12 text-center">
+              <>
+                {/* Back Button for Complete Stage */}
+                <Button
+                  variant="ghost"
+                  onClick={() => setActiveView('dashboard')}
+                  className="flex items-center gap-2 mb-4 text-sm sm:text-base"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">Back to Dashboard</span>
+                  <span className="sm:hidden">Back</span>
+                </Button>
+                
+                <Card>
+                  <CardContent className="pt-12 pb-12 text-center">
                   <div className="flex flex-col items-center gap-4">
                     <div className="p-4 bg-success/10 rounded-full">
                       <CheckCircle2 className="h-16 w-16 text-success" />
@@ -986,6 +1029,7 @@ const Dashboard = () => {
                   </div>
                 </CardContent>
               </Card>
+              </>
             )}
           </div>
         )}
@@ -993,15 +1037,31 @@ const Dashboard = () => {
         {/* Doc Audit View */}
         {activeView === 'doc-audit' && (
           <>
-            {/* Logs Button */}
-            <div className="flex justify-end mb-4">
+            {/* Header with Back Button and Logs */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-0 mb-4">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setActiveView('dashboard');
+                  setSelectedInvoice("");
+                  setCustomerScan("");
+                  setAutolivScan("");
+                  setValidatedBins([]);
+                }}
+                className="flex items-center gap-2 justify-center sm:justify-start"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">Back to Dashboard</span>
+                <span className="sm:hidden">Back</span>
+              </Button>
               <Button
                 variant="outline"
                 onClick={() => setShowAuditLogs(true)}
-                className="flex items-center gap-2"
+                className="flex items-center gap-2 justify-center"
               >
                 <ScanBarcode className="h-4 w-4" />
-                Audit Logs
+                <span className="hidden sm:inline">Audit Logs</span>
+                <span className="sm:hidden">Logs</span>
                 {getAuditLogs().length > 0 && (
                   <Badge variant="secondary" className="ml-1">
                     {getAuditLogs().length}
@@ -1090,9 +1150,25 @@ const Dashboard = () => {
 
             {/* Scanning Interface */}
             {selectedInvoice && (
-              <Card className="mb-6">
-                <CardHeader className="pb-4">
-                  <div className="flex items-center gap-3">
+              <>
+                {/* Back to Invoice Selection */}
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setSelectedInvoice("");
+                    setCustomerScan("");
+                    setAutolivScan("");
+                  }}
+                  className="flex items-center gap-2 mb-4 text-sm sm:text-base"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">Change Invoice</span>
+                  <span className="sm:hidden">Back</span>
+                </Button>
+                
+                <Card className="mb-6">
+                  <CardHeader className="pb-4">
+                    <div className="flex items-center gap-3">
                     <div className="p-2 bg-primary/10 rounded-lg">
                       <ScanBarcode className="h-6 w-6 text-primary" />
                     </div>
@@ -1196,10 +1272,8 @@ const Dashboard = () => {
                   </div>
                 </CardContent>
               </Card>
-            )}
 
-            {/* Scanned BINs Table */}
-            {selectedInvoice && (
+              {/* Scanned BINs Table */}
               <Card>
                 <CardHeader>
                   <CardTitle>Scanned BINs ({validatedBins.length})</CardTitle>
@@ -1207,8 +1281,8 @@ const Dashboard = () => {
                 </CardHeader>
                 <CardContent>
                   {validatedBins.length > 0 ? (
-                    <div className="border rounded-lg overflow-hidden">
-                      <table className="w-full text-sm">
+                    <div className="border rounded-lg overflow-hidden overflow-x-auto">
+                      <table className="w-full text-xs sm:text-sm min-w-[500px]">
                         <thead className="bg-muted">
                           <tr>
                             <th className="text-left p-3 font-semibold">BIN No</th>
@@ -1249,6 +1323,7 @@ const Dashboard = () => {
                   )}
                 </CardContent>
               </Card>
+              </>
             )}
           </>
         )}
@@ -1256,15 +1331,33 @@ const Dashboard = () => {
         {/* Loading & Dispatch View */}
         {activeView === 'dispatch' && (
           <div className="max-w-5xl mx-auto">
-            {/* Logs Button */}
-            <div className="flex justify-end mb-4">
+            {/* Header with Back Button and Logs */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-0 mb-4">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setActiveView('dashboard');
+                  setVehicleNumber("");
+                  setSelectedInvoices([]);
+                  setDispatchCustomerScan("");
+                  setDispatchAutolivScan("");
+                  setLoadedBarcodes([]);
+                  setGatepassGenerated(false);
+                }}
+                className="flex items-center gap-2 justify-center sm:justify-start"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">Back to Dashboard</span>
+                <span className="sm:hidden">Back</span>
+              </Button>
               <Button
                 variant="outline"
                 onClick={() => setShowDispatchLogs(true)}
-                className="flex items-center gap-2"
+                className="flex items-center gap-2 justify-center"
               >
                 <Truck className="h-4 w-4" />
-                Dispatch Logs
+                <span className="hidden sm:inline">Dispatch Logs</span>
+                <span className="sm:hidden">Logs</span>
                 {getDispatchLogs().length > 0 && (
                   <Badge variant="secondary" className="ml-1">
                     {getDispatchLogs().length}
@@ -1574,8 +1667,8 @@ const Dashboard = () => {
 
                         {/* Loaded Items List */}
                         {loadedBarcodes.length > 0 && (
-                          <div className="border rounded-lg p-4 max-h-96 overflow-y-auto">
-                            <p className="text-sm font-medium mb-3">Loaded Items:</p>
+                          <div className="border rounded-lg p-3 sm:p-4 max-h-96 overflow-y-auto">
+                            <p className="text-xs sm:text-sm font-medium mb-3">Loaded Items:</p>
                             <div className="space-y-3">
                               {loadedBarcodes.map((barcodePair, index) => (
                                 <div key={index} className="border rounded-lg p-3 bg-muted">
@@ -1653,8 +1746,20 @@ const Dashboard = () => {
               </div>
             ) : (
               /* Gatepass Preview */
-              <Card>
-                <CardHeader className="text-center pb-4">
+              <>
+                {/* Back Button for Gatepass */}
+                <Button
+                  variant="ghost"
+                  onClick={() => setGatepassGenerated(false)}
+                  className="flex items-center gap-2 mb-4 text-sm sm:text-base"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">Back to Loading</span>
+                  <span className="sm:hidden">Back</span>
+                </Button>
+                
+                <Card>
+                  <CardHeader className="text-center pb-4">
                   <div className="flex justify-center mb-3">
                     <div className="p-3 bg-success/10 rounded-full">
                       <QrCode className="h-10 w-10 text-success" />
@@ -1746,6 +1851,7 @@ const Dashboard = () => {
                   </div>
                 </CardContent>
               </Card>
+              </>
             )}
           </div>
         )}

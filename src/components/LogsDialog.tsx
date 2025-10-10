@@ -45,18 +45,18 @@ export const LogsDialog = ({ isOpen, onClose, logs, title, type }: LogsDialogPro
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[80vh]">
+      <DialogContent className="max-w-3xl max-h-[80vh] w-[95vw] sm:w-full">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
             {getIcon()}
-            {title}
+            <span className="truncate">{title}</span>
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-xs sm:text-sm">
             View all {type} activities across all user sessions
           </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="h-[500px] pr-4">
+        <ScrollArea className="h-[400px] sm:h-[500px] pr-2 sm:pr-4">
           {logs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
               {getIcon()}
@@ -64,29 +64,29 @@ export const LogsDialog = ({ isOpen, onClose, logs, title, type }: LogsDialogPro
               <p className="text-xs mt-1">Activities will appear here once users perform actions</p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2 sm:space-y-3">
               {logs.map((log, index) => (
                 <div
                   key={log.id}
-                  className="border border-border rounded-lg p-4 hover:bg-muted/50 transition-colors"
+                  className="border border-border rounded-lg p-3 sm:p-4 hover:bg-muted/50 transition-colors"
                 >
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <div className={`w-2 h-2 rounded-full ${getColor()}`} />
                       <Badge variant="outline" className="text-xs font-medium">
                         {log.user}
                       </Badge>
                       <span className="text-xs text-muted-foreground">#{logs.length - index}</span>
                     </div>
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
-                      {log.timestamp.toLocaleString()}
+                      <span className="truncate">{log.timestamp.toLocaleString()}</span>
                     </div>
                   </div>
                   
                   <div className="space-y-1">
-                    <p className="text-sm font-medium">{log.action}</p>
-                    <p className="text-xs text-muted-foreground">{log.details}</p>
+                    <p className="text-xs sm:text-sm font-medium break-words">{log.action}</p>
+                    <p className="text-[10px] sm:text-xs text-muted-foreground break-words">{log.details}</p>
                   </div>
                 </div>
               ))}
@@ -95,8 +95,8 @@ export const LogsDialog = ({ isOpen, onClose, logs, title, type }: LogsDialogPro
         </ScrollArea>
 
         {logs.length > 0 && (
-          <div className="pt-4 border-t border-border">
-            <p className="text-xs text-muted-foreground">
+          <div className="pt-3 sm:pt-4 border-t border-border">
+            <p className="text-[10px] sm:text-xs text-muted-foreground">
               Total {type} activities: <strong>{logs.length}</strong>
             </p>
           </div>
