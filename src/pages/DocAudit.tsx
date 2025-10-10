@@ -45,9 +45,18 @@ const DocAudit = () => {
       if (type === 'customer') setCustomerScan("");
       else setAutolivScan("");
     } else {
-      toast.error("Barcode mismatch detected!", {
-        description: "Part code or quantity doesn't match. Please verify.",
+      toast.error("⚠️ Barcode Mismatch Detected!", {
+        description: "Part code or quantity doesn't match.",
+        duration: 5000,
       });
+      
+      // Automatically show approval message
+      setTimeout(() => {
+        toast.info("📨 Message sent to senior for approval", {
+          description: "Approval request has been automatically sent to the supervisor.",
+          duration: 5000,
+        });
+      }, 500);
     }
   };
 

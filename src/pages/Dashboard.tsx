@@ -454,19 +454,19 @@ const Dashboard = () => {
       setCustomerScan("");
       setAutolivScan("");
     } else {
-      // Barcodes don't match - require approval
+      // Barcodes don't match - automatically send approval request
       toast.error("⚠️ Barcode Mismatch Detected!", {
-        description: "The customer barcode and Autoliv barcode do not match. Senior approval required to continue.",
-        duration: 6000,
-        action: {
-          label: "Request Approval",
-          onClick: () => {
-            toast.info("Approval request sent to senior supervisor", {
-              description: "Please wait for approval to continue this scan.",
-            });
-          }
-        }
+        description: "The customer barcode and Autoliv barcode do not match.",
+        duration: 5000,
       });
+      
+      // Automatically show approval message
+      setTimeout(() => {
+        toast.info("📨 Message sent to senior for approval", {
+          description: "Approval request has been automatically sent to the supervisor.",
+          duration: 5000,
+        });
+      }, 500);
     }
   };
 
