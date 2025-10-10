@@ -165,31 +165,31 @@ const Dashboard = () => {
   const kpis = [
     {
       title: "Total Invoices",
-      value: "248",
-      subtitle: "This month",
+      value: sharedInvoices.length.toString(),
+      subtitle: "In system",
       icon: Package,
-      trend: "+12%"
+      trend: sharedInvoices.length > 0 ? "Active" : "Empty"
     },
     {
-      title: "Pending Doc Audits",
-      value: "15",
+      title: "Pending Audits",
+      value: sharedInvoices.filter(inv => !inv.auditComplete && !inv.dispatchedBy).length.toString(),
       subtitle: "Awaiting scan",
       icon: Clock,
-      trend: "-5%"
+      trend: sharedInvoices.filter(inv => !inv.auditComplete).length > 0 ? "Pending" : "Clear"
     },
     {
       title: "Completed Dispatches",
-      value: "182",
-      subtitle: "This week",
+      value: sharedInvoices.filter(inv => inv.dispatchedBy).length.toString(),
+      subtitle: "Dispatched",
       icon: CheckCircle2,
-      trend: "+8%"
+      trend: sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 ? "Active" : "None"
     },
     {
-      title: "Exception Alerts",
-      value: "3",
-      subtitle: "Needs attention",
-      icon: AlertTriangle,
-      trend: "Critical"
+      title: "Ready to Dispatch",
+      value: sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length.toString(),
+      subtitle: "Audited & Ready",
+      icon: Truck,
+      trend: sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 ? "Available" : "None"
     }
   ];
 
@@ -384,9 +384,9 @@ const Dashboard = () => {
   };
 
   // Doc Audit data and handlers
-  // Use shared invoices from session - show all uploaded invoices from any user
+  // Use shared invoices from session - show only non-dispatched invoices
   const invoices = sharedInvoices.length > 0 
-    ? sharedInvoices 
+    ? sharedInvoices.filter(inv => !inv.dispatchedBy) // Hide dispatched invoices
     : [
         { id: "No Data", customer: "Please upload sales data first", totalQty: 0, expectedBins: 0, scannedBins: 0, binsLoaded: 0, auditComplete: false, invoiceDate: new Date(), items: [] }
       ];
@@ -400,6 +400,34 @@ const Dashboard = () => {
     setCustomerScan("");
     setAutolivScan("");
   }, [selectedInvoice]);
+
+  // Clear selected invoice in Doc Audit if it gets dispatched
+  useEffect(() => {
+    if (selectedInvoice) {
+      const invoice = sharedInvoices.find(inv => inv.id === selectedInvoice);
+      if (invoice?.dispatchedBy) {
+        setSelectedInvoice("");
+        toast.info("This invoice has been dispatched and removed from the workflow");
+      }
+    }
+  }, [sharedInvoices, selectedInvoice]);
+
+  // Clear selected invoices in Dispatch if they've been dispatched
+  useEffect(() => {
+    if (selectedInvoices.length > 0) {
+      const stillAvailable = selectedInvoices.filter(id => {
+        const invoice = sharedInvoices.find(inv => inv.id === id);
+        return invoice && !invoice.dispatchedBy;
+      });
+      
+      if (stillAvailable.length !== selectedInvoices.length) {
+        setSelectedInvoices(stillAvailable);
+        if (stillAvailable.length === 0) {
+          toast.info("Selected invoices have been dispatched and removed from the list");
+        }
+      }
+    }
+  }, [sharedInvoices, selectedInvoices]);
 
   const handleValidateBarcodes = () => {
     if (!customerScan || !autolivScan) {
@@ -552,13 +580,15 @@ const Dashboard = () => {
     }
 
     // Mark invoices as dispatched by current user
+    const dispatchedInvoicesList = selectedInvoices.join(', ');
     selectedInvoices.forEach(invoiceId => {
       updateInvoiceDispatch(invoiceId, currentUser);
     });
 
     setGatepassGenerated(true);
-    toast.success(`Gatepass generated successfully by ${currentUser}!`, {
-      description: `Vehicle ${vehicleNumber} dispatched with ${selectedInvoices.length} invoice(s)`
+    toast.success(`✅ Gatepass generated successfully by ${currentUser}!`, {
+      description: `Vehicle ${vehicleNumber} dispatched with ${selectedInvoices.length} invoice(s). Invoices removed from workflow.`,
+      duration: 6000
     });
   };
 
@@ -694,13 +724,17 @@ const Dashboard = () => {
                     </div>
                     <div className="mt-3 pt-3 border-t border-border">
                       <span className={`text-xs font-semibold ${
+                        kpi.trend === 'Active' || kpi.trend === 'Available' || kpi.trend === 'Pending' ? 'text-primary' : 
+                        kpi.trend === 'Clear' || kpi.trend === 'None' || kpi.trend === 'Empty' ? 'text-muted-foreground' : 
                         kpi.trend.includes('+') ? 'text-success' : 
                         kpi.trend.includes('-') ? 'text-muted-foreground' : 
                         'text-destructive'
                       }`}>
                         {kpi.trend}
                       </span>
-                      <span className="text-xs text-muted-foreground ml-1">vs last period</span>
+                      <span className="text-xs text-muted-foreground ml-1">
+                        {kpi.trend === 'Active' || kpi.trend === 'Available' || kpi.trend === 'Pending' || kpi.trend === 'Clear' || kpi.trend === 'None' || kpi.trend === 'Empty' ? 'status' : 'vs last period'}
+                      </span>
                     </div>
                   </CardContent>
                 </Card>
@@ -1084,9 +1118,12 @@ const Dashboard = () => {
                   📊 Multi-Session Management Active
                 </p>
                 <div className="text-xs text-muted-foreground space-y-1">
-                  <p>• Showing all invoices uploaded by any user</p>
+                  <p>• Showing available invoices (dispatched invoices auto-removed)</p>
                   <p>• Any user can audit any uploaded invoice</p>
                   <p>• Current user: <strong>{currentUser}</strong></p>
+                  {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 && (
+                    <p>• ✅ <strong>{sharedInvoices.filter(inv => inv.dispatchedBy).length}</strong> invoice(s) already dispatched</p>
+                  )}
                 </div>
               </div>
             )}
@@ -1374,24 +1411,27 @@ const Dashboard = () => {
               </div>
             )}
             
-            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete).length === 0 && (
+            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length === 0 && (
               <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <p className="text-sm font-medium mb-2">
-                  📋 No audited invoices yet. Please complete document audit before dispatch.
+                  📋 No audited invoices available for dispatch.
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Current user: <strong>{currentUser}</strong> - Any user can dispatch audited invoices
+                  {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 
+                    ? `✅ All invoices have been dispatched. Upload new data or complete pending audits.`
+                    : `Please complete document audit before dispatch.`
+                  }
                 </p>
               </div>
             )}
             
-            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete).length > 0 && (
+            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 && (
               <div className="mb-4 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
                 <p className="text-sm font-medium mb-2">
                   ✅ Multi-Session Dispatch Available
                 </p>
                 <div className="text-xs text-muted-foreground space-y-1">
-                  <p>• Showing audited invoices from all users</p>
+                  <p>• Showing audited invoices from all users (excluding dispatched)</p>
                   <p>• Any user can dispatch any audited invoice</p>
                   <p>• Current user: <strong>{currentUser}</strong></p>
                 </div>
@@ -1445,8 +1485,8 @@ const Dashboard = () => {
                       </div>
                     )}
                     <div className="space-y-3">
-                      {sharedInvoices.filter(inv => inv.auditComplete).length > 0 ? (
-                        sharedInvoices.filter(inv => inv.auditComplete).map(invoice => {
+                      {sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 ? (
+                        sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).map(invoice => {
                           const selectedCustomer = selectedInvoices.length > 0 
                             ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
                             : null;
@@ -1833,7 +1873,16 @@ const Dashboard = () => {
                   <div className="flex gap-3">
                     <Button 
                       className="flex-1 h-12"
-                      onClick={() => setActiveView('dashboard')}
+                      onClick={() => {
+                        setActiveView('dashboard');
+                        // Reset dispatch state
+                        setGatepassGenerated(false);
+                        setVehicleNumber("");
+                        setSelectedInvoices([]);
+                        setLoadedBarcodes([]);
+                        setDispatchCustomerScan("");
+                        setDispatchAutolivScan("");
+                      }}
                     >
                       Return to Dashboard
                     </Button>
@@ -1844,6 +1893,9 @@ const Dashboard = () => {
                         setGatepassGenerated(false);
                         setVehicleNumber("");
                         setSelectedInvoices([]);
+                        setLoadedBarcodes([]);
+                        setDispatchCustomerScan("");
+                        setDispatchAutolivScan("");
                       }}
                     >
                       New Dispatch
