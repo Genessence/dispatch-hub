@@ -26,9 +26,13 @@ import {
   Radio,
   QrCode,
   Printer,
-  Download
+  Download,
+  Users
 } from "lucide-react";
 import { BarcodeScanButton } from "@/components/BarcodeScanner";
+import { useSession } from "@/contexts/SessionContext";
+import { LogsDialog } from "@/components/LogsDialog";
+import type { LogEntry } from "@/contexts/SessionContext";
 
 type ViewType = 'dashboard' | 'upload' | 'doc-audit' | 'dispatch';
 
@@ -61,7 +65,13 @@ interface InvoiceData {
 }
 
 const Dashboard = () => {
+  const { currentUser, sharedInvoices, addInvoices, updateInvoiceAudit, updateInvoiceDispatch, getAuditedInvoices, getDispatchableInvoices, getUploadLogs, getAuditLogs, getDispatchLogs } = useSession();
   const [activeView, setActiveView] = useState<ViewType>('dashboard');
+  
+  // Logs states
+  const [showUploadLogs, setShowUploadLogs] = useState(false);
+  const [showAuditLogs, setShowAuditLogs] = useState(false);
+  const [showDispatchLogs, setShowDispatchLogs] = useState(false);
   
   // Upload Data states
   const [file, setFile] = useState<File | null>(null);
@@ -356,8 +366,12 @@ const Dashboard = () => {
   };
 
   const handleImport = () => {
+    // Add invoices to shared session
+    addInvoices(processedInvoices, currentUser);
     setUploadStage('complete');
-    toast.success("Data imported successfully!");
+    toast.success(`Data imported successfully by ${currentUser}!`, {
+      description: "Invoices are now available for all users to audit"
+    });
   };
 
   // Calculate validation results from actual uploaded data
@@ -369,24 +383,12 @@ const Dashboard = () => {
   };
 
   // Doc Audit data and handlers
-  // Filter invoices to show only today's scheduled invoices
-  const today = new Date();
-  today.setHours(0, 0, 0, 0); // Reset time to start of day
-  
-  const todaysInvoices = processedInvoices.filter(invoice => {
-    const invoiceDate = new Date(invoice.invoiceDate);
-    invoiceDate.setHours(0, 0, 0, 0); // Reset time to start of day
-    return invoiceDate.getTime() === today.getTime();
-  });
-  
-  // Use today's invoices if available, otherwise show all uploaded invoices, or fallback to sample data
-  const invoices = todaysInvoices.length > 0 
-    ? todaysInvoices 
-    : processedInvoices.length > 0 
-      ? processedInvoices 
-      : [
-          { id: "No Data", customer: "Please upload sales data first", totalQty: 0, expectedBins: 0, scannedBins: 0, binsLoaded: 0, auditComplete: false, invoiceDate: new Date(), items: [] }
-        ];
+  // Use shared invoices from session - show all uploaded invoices from any user
+  const invoices = sharedInvoices.length > 0 
+    ? sharedInvoices 
+    : [
+        { id: "No Data", customer: "Please upload sales data first", totalQty: 0, expectedBins: 0, scannedBins: 0, binsLoaded: 0, auditComplete: false, invoiceDate: new Date(), items: [] }
+      ];
 
   const currentInvoice = invoices.find(inv => inv.id === selectedInvoice);
   const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
@@ -423,30 +425,24 @@ const Dashboard = () => {
       // Add to validated bins list
       setValidatedBins(prev => [...prev, newBin]);
       
-      // Update the current invoice's scanned bins count
+      // Update the current invoice's scanned bins count in shared session
       if (currentInvoice) {
         const newScannedCount = currentInvoice.scannedBins + 1;
         const isComplete = newScannedCount >= currentInvoice.expectedBins;
         
-        const updatedInvoices = processedInvoices.map(inv => 
-          inv.id === currentInvoice.id 
-            ? { 
-                ...inv, 
-                scannedBins: newScannedCount,
-                auditComplete: isComplete,
-                auditDate: isComplete ? new Date() : inv.auditDate,
-                validatedBarcodes: [
-                  ...(inv.validatedBarcodes || []), 
-                  { customerBarcode: customerScan.trim(), autolivBarcode: autolivScan.trim() }
-                ]
-              }
-            : inv
-        );
-        setProcessedInvoices(updatedInvoices);
+        updateInvoiceAudit(currentInvoice.id, {
+          scannedBins: newScannedCount,
+          auditComplete: isComplete,
+          auditDate: isComplete ? new Date() : currentInvoice.auditDate,
+          validatedBarcodes: [
+            ...(currentInvoice.validatedBarcodes || []), 
+            { customerBarcode: customerScan.trim(), autolivBarcode: autolivScan.trim() }
+          ]
+        }, currentUser);
         
         if (isComplete) {
-          toast.success("🎉 Invoice audit completed!", {
-            description: `All ${currentInvoice.expectedBins} items have been scanned and validated.`
+          toast.success(`🎉 Invoice audit completed by ${currentUser}!`, {
+            description: `All ${currentInvoice.expectedBins} items have been scanned and validated. Available for dispatch.`
           });
         }
       }
@@ -475,7 +471,7 @@ const Dashboard = () => {
 
   // Dispatch handlers
   const getExpectedBarcodes = () => {
-    const selectedInvoiceData = processedInvoices.filter(inv => 
+    const selectedInvoiceData = sharedInvoices.filter(inv => 
       selectedInvoices.includes(inv.id) && inv.auditComplete
     );
     return selectedInvoiceData.flatMap(inv => inv.validatedBarcodes || []);
@@ -554,12 +550,19 @@ const Dashboard = () => {
       return;
     }
 
+    // Mark invoices as dispatched by current user
+    selectedInvoices.forEach(invoiceId => {
+      updateInvoiceDispatch(invoiceId, currentUser);
+    });
+
     setGatepassGenerated(true);
-    toast.success("Gatepass generated successfully!");
+    toast.success(`Gatepass generated successfully by ${currentUser}!`, {
+      description: `Vehicle ${vehicleNumber} dispatched with ${selectedInvoices.length} invoice(s)`
+    });
   };
 
   const toggleInvoice = (invoiceId: string) => {
-    const invoice = processedInvoices.find(inv => inv.id === invoiceId);
+    const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
     if (!invoice) return;
 
     // If deselecting, just remove it
@@ -574,7 +577,7 @@ const Dashboard = () => {
 
     // If selecting, check if it's the same customer
     if (selectedInvoices.length > 0) {
-      const firstSelectedInvoice = processedInvoices.find(inv => inv.id === selectedInvoices[0]);
+      const firstSelectedInvoice = sharedInvoices.find(inv => inv.id === selectedInvoices[0]);
       if (firstSelectedInvoice && firstSelectedInvoice.customer !== invoice.customer) {
         toast.error("❌ Different Customer Not Allowed!", {
           description: `Cannot load ${invoice.customer} with ${firstSelectedInvoice.customer}. Only same customer invoices can be loaded on one vehicle.`,
@@ -612,9 +615,13 @@ const Dashboard = () => {
                 <div className="h-2 w-2 bg-success rounded-full mr-2 animate-pulse" />
                 System Online
               </Badge>
+              <Badge className="text-sm px-3 py-1 bg-primary">
+                <Users className="h-3 w-3 mr-1" />
+                {currentUser}
+              </Badge>
               <div className="text-right">
-                <p className="text-sm font-medium">John Operator</p>
-                <p className="text-xs text-muted-foreground">Shift: Morning</p>
+                <p className="text-sm font-medium">{currentUser}</p>
+                <p className="text-xs text-muted-foreground">Multi-Session Mode</p>
               </div>
             </div>
           </div>
@@ -725,6 +732,23 @@ const Dashboard = () => {
         {/* Upload Sales Data View */}
         {activeView === 'upload' && (
           <div className="max-w-5xl mx-auto">
+            {/* Logs Button */}
+            <div className="flex justify-end mb-4">
+              <Button
+                variant="outline"
+                onClick={() => setShowUploadLogs(true)}
+                className="flex items-center gap-2"
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                Upload Logs
+                {getUploadLogs().length > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {getUploadLogs().length}
+                  </Badge>
+                )}
+              </Button>
+            </div>
+            
             {/* Progress Steps */}
             <div className="flex items-center justify-center mb-8">
               <div className="flex items-center gap-4">
@@ -969,7 +993,24 @@ const Dashboard = () => {
         {/* Doc Audit View */}
         {activeView === 'doc-audit' && (
           <>
-            {processedInvoices.length === 0 && (
+            {/* Logs Button */}
+            <div className="flex justify-end mb-4">
+              <Button
+                variant="outline"
+                onClick={() => setShowAuditLogs(true)}
+                className="flex items-center gap-2"
+              >
+                <ScanBarcode className="h-4 w-4" />
+                Audit Logs
+                {getAuditLogs().length > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {getAuditLogs().length}
+                  </Badge>
+                )}
+              </Button>
+            </div>
+            
+            {sharedInvoices.length === 0 && (
               <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
                 <p className="text-sm font-medium">
                   ⚠️ No data uploaded yet. Please go to <strong>Upload Sales Data</strong> to import invoice data first.
@@ -977,14 +1018,16 @@ const Dashboard = () => {
               </div>
             )}
             
-            {processedInvoices.length > 0 && (
+            {sharedInvoices.length > 0 && (
               <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <p className="text-sm font-medium">
-                  {todaysInvoices.length > 0 
-                    ? `✅ Showing ${todaysInvoices.length} invoice(s) scheduled for today (${today.toLocaleDateString()})`
-                    : `📋 No invoices scheduled for today. Showing all ${processedInvoices.length} uploaded invoice(s).`
-                  }
+                <p className="text-sm font-medium mb-2">
+                  📊 Multi-Session Management Active
                 </p>
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <p>• Showing all invoices uploaded by any user</p>
+                  <p>• Any user can audit any uploaded invoice</p>
+                  <p>• Current user: <strong>{currentUser}</strong></p>
+                </div>
               </div>
             )}
             
@@ -1003,6 +1046,8 @@ const Dashboard = () => {
                     {invoices.map(invoice => (
                       <SelectItem key={invoice.id} value={invoice.id}>
                         {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
+                        {invoice.uploadedBy && ` [Uploaded by: ${invoice.uploadedBy}]`}
+                        {invoice.auditedBy && ` [Audited by: ${invoice.auditedBy}]`}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1010,7 +1055,7 @@ const Dashboard = () => {
 
                 {currentInvoice && (
                   <div className="mt-6 p-4 bg-muted rounded-lg">
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-3">
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Invoice No</p>
                         <p className="font-semibold">{currentInvoice.id}</p>
@@ -1023,6 +1068,20 @@ const Dashboard = () => {
                         <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
                         <p className="font-semibold">{currentInvoice.totalQty}</p>
                       </div>
+                    </div>
+                    <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
+                      {currentInvoice.uploadedBy && (
+                        <Badge variant="outline" className="text-xs">
+                          <Upload className="h-3 w-3 mr-1" />
+                          Uploaded by: {currentInvoice.uploadedBy}
+                        </Badge>
+                      )}
+                      {currentInvoice.auditedBy && (
+                        <Badge variant="default" className="text-xs">
+                          <CheckCircle2 className="h-3 w-3 mr-1" />
+                          Audited by: {currentInvoice.auditedBy}
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1197,7 +1256,24 @@ const Dashboard = () => {
         {/* Loading & Dispatch View */}
         {activeView === 'dispatch' && (
           <div className="max-w-5xl mx-auto">
-            {processedInvoices.length === 0 && (
+            {/* Logs Button */}
+            <div className="flex justify-end mb-4">
+              <Button
+                variant="outline"
+                onClick={() => setShowDispatchLogs(true)}
+                className="flex items-center gap-2"
+              >
+                <Truck className="h-4 w-4" />
+                Dispatch Logs
+                {getDispatchLogs().length > 0 && (
+                  <Badge variant="secondary" className="ml-1">
+                    {getDispatchLogs().length}
+                  </Badge>
+                )}
+              </Button>
+            </div>
+            
+            {sharedInvoices.length === 0 && (
               <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
                 <p className="text-sm font-medium">
                   ⚠️ No data uploaded yet. Please go to <strong>Upload Sales Data</strong> to import invoice data first.
@@ -1205,11 +1281,27 @@ const Dashboard = () => {
               </div>
             )}
             
-            {processedInvoices.length > 0 && processedInvoices.filter(inv => inv.auditComplete).length === 0 && (
+            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete).length === 0 && (
               <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <p className="text-sm font-medium">
+                <p className="text-sm font-medium mb-2">
                   📋 No audited invoices yet. Please complete document audit before dispatch.
                 </p>
+                <p className="text-xs text-muted-foreground">
+                  Current user: <strong>{currentUser}</strong> - Any user can dispatch audited invoices
+                </p>
+              </div>
+            )}
+            
+            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete).length > 0 && (
+              <div className="mb-4 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                <p className="text-sm font-medium mb-2">
+                  ✅ Multi-Session Dispatch Available
+                </p>
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <p>• Showing audited invoices from all users</p>
+                  <p>• Any user can dispatch any audited invoice</p>
+                  <p>• Current user: <strong>{currentUser}</strong></p>
+                </div>
               </div>
             )}
             
@@ -1252,7 +1344,7 @@ const Dashboard = () => {
                     {selectedInvoices.length > 0 && (
                       <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                         <p className="text-sm font-medium">
-                          📦 Loading for: <strong>{processedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer}</strong>
+                          📦 Loading for: <strong>{sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer}</strong>
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">
                           Only invoices from this customer can be loaded on this vehicle
@@ -1260,10 +1352,10 @@ const Dashboard = () => {
                       </div>
                     )}
                     <div className="space-y-3">
-                      {processedInvoices.filter(inv => inv.auditComplete).length > 0 ? (
-                        processedInvoices.filter(inv => inv.auditComplete).map(invoice => {
+                      {sharedInvoices.filter(inv => inv.auditComplete).length > 0 ? (
+                        sharedInvoices.filter(inv => inv.auditComplete).map(invoice => {
                           const selectedCustomer = selectedInvoices.length > 0 
-                            ? processedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
+                            ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
                             : null;
                           const isDifferentCustomer = selectedCustomer && selectedCustomer !== invoice.customer;
                           const isDisabled = isDifferentCustomer;
@@ -1303,7 +1395,7 @@ const Dashboard = () => {
                                     </p>
                                   </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div className="grid grid-cols-2 gap-4 text-sm mb-2">
                                   <div>
                                     <p className="text-muted-foreground">Items Scanned</p>
                                     <p className="font-medium">{invoice.scannedBins}/{invoice.expectedBins}</p>
@@ -1312,6 +1404,20 @@ const Dashboard = () => {
                                     <p className="text-muted-foreground">Total Qty</p>
                                     <p className="font-medium">{invoice.totalQty}</p>
                                   </div>
+                                </div>
+                                <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
+                                  {invoice.uploadedBy && (
+                                    <Badge variant="outline" className="text-xs">
+                                      <Upload className="h-3 w-3 mr-1" />
+                                      {invoice.uploadedBy}
+                                    </Badge>
+                                  )}
+                                  {invoice.auditedBy && (
+                                    <Badge variant="secondary" className="text-xs">
+                                      <ScanBarcode className="h-3 w-3 mr-1" />
+                                      {invoice.auditedBy}
+                                    </Badge>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -1519,7 +1625,7 @@ const Dashboard = () => {
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Items</span>
                           <span className="font-semibold">
-                            {processedInvoices
+                            {sharedInvoices
                               .filter(inv => selectedInvoices.includes(inv.id))
                               .reduce((sum, inv) => sum + inv.scannedBins, 0)}
                           </span>
@@ -1527,7 +1633,7 @@ const Dashboard = () => {
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Quantity</span>
                           <span className="font-semibold">
-                            {processedInvoices
+                            {sharedInvoices
                               .filter(inv => selectedInvoices.includes(inv.id))
                               .reduce((sum, inv) => sum + inv.totalQty, 0)}
                           </span>
@@ -1588,7 +1694,7 @@ const Dashboard = () => {
                       <p className="text-sm font-semibold mb-2">Invoices:</p>
                       <div className="space-y-1">
                         {selectedInvoices.map(id => {
-                          const invoice = processedInvoices.find(inv => inv.id === id);
+                          const invoice = sharedInvoices.find(inv => inv.id === id);
                           return (
                             <div key={id} className="flex justify-between text-sm">
                               <span>{invoice?.id}</span>
@@ -1644,6 +1750,31 @@ const Dashboard = () => {
           </div>
         )}
       </main>
+
+      {/* Logs Dialogs */}
+      <LogsDialog
+        isOpen={showUploadLogs}
+        onClose={() => setShowUploadLogs(false)}
+        logs={getUploadLogs()}
+        title="Upload Logs"
+        type="upload"
+      />
+      
+      <LogsDialog
+        isOpen={showAuditLogs}
+        onClose={() => setShowAuditLogs(false)}
+        logs={getAuditLogs()}
+        title="Audit Logs"
+        type="audit"
+      />
+      
+      <LogsDialog
+        isOpen={showDispatchLogs}
+        onClose={() => setShowDispatchLogs(false)}
+        logs={getDispatchLogs()}
+        title="Dispatch Logs"
+        type="dispatch"
+      />
     </div>
   );
 };
