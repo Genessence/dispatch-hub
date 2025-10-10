@@ -28,6 +28,7 @@ import {
   Printer,
   Download
 } from "lucide-react";
+import { BarcodeScanButton } from "@/components/BarcodeScanner";
 
 type ViewType = 'dashboard' | 'upload' | 'doc-audit' | 'dispatch';
 
@@ -478,6 +479,17 @@ const Dashboard = () => {
       selectedInvoices.includes(inv.id) && inv.auditComplete
     );
     return selectedInvoiceData.flatMap(inv => inv.validatedBarcodes || []);
+  };
+
+  // Get next unscanned barcode pair for dispatch
+  const getNextUnscannedBarcodePair = () => {
+    const expectedBarcodes = getExpectedBarcodes();
+    return expectedBarcodes.find(pair => 
+      !loadedBarcodes.find(loaded => 
+        loaded.customerBarcode === pair.customerBarcode && 
+        loaded.autolivBarcode === pair.autolivBarcode
+      )
+    );
   };
 
   const handleDispatchScan = () => {
@@ -1034,43 +1046,51 @@ const Dashboard = () => {
                 <CardContent>
                   <div className="space-y-6">
                     <div className="grid md:grid-cols-2 gap-6">
-                      {/* Customer Label Input */}
+                      {/* Customer Label Scan */}
                       <div className="space-y-2">
                         <Label htmlFor="customer-barcode" className="flex items-center gap-2">
                           <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold">1</span>
                           Customer Label
                         </Label>
-                        <Input
-                          id="customer-barcode"
-                          placeholder="Scan or enter customer barcode..."
-                          value={customerScan}
-                          onChange={(e) => setCustomerScan(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && customerScan && autolivScan) {
-                              handleValidateBarcodes();
-                            }
+                        {customerScan && (
+                          <div className="p-3 bg-muted rounded-lg">
+                            <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
+                            <p className="text-sm font-mono font-semibold break-all">{customerScan}</p>
+                          </div>
+                        )}
+                        <BarcodeScanButton
+                          onScan={(value) => {
+                            setCustomerScan(value);
+                            toast.success("Customer barcode scanned!");
                           }}
-                          className="h-14 text-lg font-mono"
+                          label={customerScan ? "Scan Again" : "Scan Customer Barcode"}
+                          variant="default"
+                          matchValue={autolivScan || undefined}
+                          shouldMismatch={!!autolivScan}
                         />
                       </div>
 
-                      {/* Autoliv Label Input */}
+                      {/* Autoliv Label Scan */}
                       <div className="space-y-2">
                         <Label htmlFor="autoliv-barcode" className="flex items-center gap-2">
                           <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent/10 text-accent text-xs font-bold">2</span>
                           Autoliv Label
                         </Label>
-                        <Input
-                          id="autoliv-barcode"
-                          placeholder="Scan or enter Autoliv barcode..."
-                          value={autolivScan}
-                          onChange={(e) => setAutolivScan(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && customerScan && autolivScan) {
-                              handleValidateBarcodes();
-                            }
+                        {autolivScan && (
+                          <div className="p-3 bg-muted rounded-lg">
+                            <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
+                            <p className="text-sm font-mono font-semibold break-all">{autolivScan}</p>
+                          </div>
+                        )}
+                        <BarcodeScanButton
+                          onScan={(value) => {
+                            setAutolivScan(value);
+                            toast.success("Autoliv barcode scanned!");
                           }}
-                          className="h-14 text-lg font-mono"
+                          label={autolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
+                          variant="secondary"
+                          matchValue={customerScan || undefined}
+                          shouldMismatch={false}
                         />
                       </div>
                     </div>
@@ -1338,45 +1358,70 @@ const Dashboard = () => {
                           />
                         </div>
 
+                        {/* Helper Message */}
+                        {getNextUnscannedBarcodePair() && (
+                          <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                            <p className="text-sm font-medium mb-2">📦 Next Item to Scan:</p>
+                            <div className="grid grid-cols-2 gap-3 text-xs">
+                              <div>
+                                <p className="text-muted-foreground mb-1">Customer Barcode:</p>
+                                <p className="font-mono font-bold text-primary">{getNextUnscannedBarcodePair()?.customerBarcode}</p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground mb-1">Autoliv Barcode:</p>
+                                <p className="font-mono font-bold text-accent">{getNextUnscannedBarcodePair()?.autolivBarcode}</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {/* Scanning Inputs */}
                         <div className="grid md:grid-cols-2 gap-6">
-                          {/* Customer Label Input */}
+                          {/* Customer Label Scan */}
                           <div className="space-y-2">
                             <Label htmlFor="dispatch-customer-barcode" className="flex items-center gap-2">
                               <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold">1</span>
                               Customer Label
                             </Label>
-                            <Input
-                              id="dispatch-customer-barcode"
-                              placeholder="Scan or enter customer barcode..."
-                              value={dispatchCustomerScan}
-                              onChange={(e) => setDispatchCustomerScan(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && dispatchCustomerScan && dispatchAutolivScan) {
-                                  handleDispatchScan();
-                                }
+                            {dispatchCustomerScan && (
+                              <div className="p-3 bg-muted rounded-lg">
+                                <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
+                                <p className="text-sm font-mono font-semibold break-all">{dispatchCustomerScan}</p>
+                              </div>
+                            )}
+                            <BarcodeScanButton
+                              onScan={(value) => {
+                                setDispatchCustomerScan(value);
+                                toast.success("Customer barcode scanned!");
                               }}
-                              className="h-14 text-lg font-mono"
+                              label={dispatchCustomerScan ? "Scan Again" : "Scan Customer Barcode"}
+                              variant="default"
+                              matchValue={dispatchAutolivScan || getNextUnscannedBarcodePair()?.customerBarcode}
+                              shouldMismatch={!!dispatchAutolivScan}
                             />
                           </div>
 
-                          {/* Autoliv Label Input */}
+                          {/* Autoliv Label Scan */}
                           <div className="space-y-2">
                             <Label htmlFor="dispatch-autoliv-barcode" className="flex items-center gap-2">
                               <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent/10 text-accent text-xs font-bold">2</span>
                               Autoliv Label
                             </Label>
-                            <Input
-                              id="dispatch-autoliv-barcode"
-                              placeholder="Scan or enter Autoliv barcode..."
-                              value={dispatchAutolivScan}
-                              onChange={(e) => setDispatchAutolivScan(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && dispatchCustomerScan && dispatchAutolivScan) {
-                                  handleDispatchScan();
-                                }
+                            {dispatchAutolivScan && (
+                              <div className="p-3 bg-muted rounded-lg">
+                                <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
+                                <p className="text-sm font-mono font-semibold break-all">{dispatchAutolivScan}</p>
+                              </div>
+                            )}
+                            <BarcodeScanButton
+                              onScan={(value) => {
+                                setDispatchAutolivScan(value);
+                                toast.success("Autoliv barcode scanned!");
                               }}
-                              className="h-14 text-lg font-mono"
+                              label={dispatchAutolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
+                              variant="secondary"
+                              matchValue={dispatchCustomerScan || getNextUnscannedBarcodePair()?.autolivBarcode}
+                              shouldMismatch={false}
                             />
                           </div>
                         </div>

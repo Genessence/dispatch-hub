@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, ScanBarcode, CheckCircle2, XCircle, AlertTriangle, Radio } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
+import { BarcodeScanButton } from "@/components/BarcodeScanner";
 
 const DocAudit = () => {
   const [selectedInvoice, setSelectedInvoice] = useState("");
@@ -155,21 +155,32 @@ const DocAudit = () => {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Input
-                    placeholder="Scan or enter customer barcode..."
-                    value={customerScan}
-                    onChange={(e) => setCustomerScan(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleScan('customer');
+                  {customerScan && (
+                    <div className="p-3 bg-muted rounded-lg">
+                      <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
+                      <p className="text-sm font-mono font-semibold break-all">{customerScan}</p>
+                    </div>
+                  )}
+                  <BarcodeScanButton
+                    onScan={(value) => {
+                      setCustomerScan(value);
+                      toast.success("Customer barcode scanned!");
                     }}
-                    className="h-14 text-lg font-mono"
+                    label={customerScan ? "Scan Again" : "Scan Customer Barcode"}
+                    variant="default"
+                    matchValue={autolivScan || undefined}
+                    shouldMismatch={!!autolivScan}
                   />
-                  <Button 
-                    onClick={() => handleScan('customer')} 
-                    className="w-full h-12"
-                  >
-                    Validate Customer Label
-                  </Button>
+                  {customerScan && (
+                    <Button 
+                      onClick={() => handleScan('customer')} 
+                      className="w-full h-12"
+                      variant="secondary"
+                    >
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                      Validate Customer Label
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -189,22 +200,32 @@ const DocAudit = () => {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Input
-                    placeholder="Scan or enter Autoliv barcode..."
-                    value={autolivScan}
-                    onChange={(e) => setAutolivScan(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleScan('autoliv');
+                  {autolivScan && (
+                    <div className="p-3 bg-muted rounded-lg">
+                      <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
+                      <p className="text-sm font-mono font-semibold break-all">{autolivScan}</p>
+                    </div>
+                  )}
+                  <BarcodeScanButton
+                    onScan={(value) => {
+                      setAutolivScan(value);
+                      toast.success("Autoliv barcode scanned!");
                     }}
-                    className="h-14 text-lg font-mono"
-                  />
-                  <Button 
-                    onClick={() => handleScan('autoliv')} 
-                    className="w-full h-12"
+                    label={autolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
                     variant="secondary"
-                  >
-                    Validate Autoliv Label
-                  </Button>
+                    matchValue={customerScan || undefined}
+                    shouldMismatch={false}
+                  />
+                  {autolivScan && (
+                    <Button 
+                      onClick={() => handleScan('autoliv')} 
+                      className="w-full h-12"
+                      variant="secondary"
+                    >
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                      Validate Autoliv Label
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
