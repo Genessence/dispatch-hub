@@ -263,8 +263,8 @@ const DocAudit = () => {
               <CardDescription>Real-time list of scanned and validated BINs</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="border rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
+              <div className="border rounded-lg overflow-hidden overflow-x-auto">
+                <table className="w-full text-xs sm:text-sm min-w-[600px]">
                   <thead className="bg-muted">
                     <tr>
                       <th className="text-left p-3 font-semibold">BIN No</th>
@@ -298,6 +298,36 @@ const DocAudit = () => {
                   </tbody>
                 </table>
               </div>
+              
+              {/* New Audit Button - appears after scanning */}
+              {currentInvoice && scannedBins.length >= 3 && (
+                <div className="mt-6 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-green-700 dark:text-green-300 mb-1">
+                        ✅ Audit Progress: {currentInvoice.scannedBins}/{currentInvoice.expectedBins} BINs
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {currentInvoice.scannedBins >= currentInvoice.expectedBins 
+                          ? "All items scanned! Ready for dispatch."
+                          : "Continue scanning or start a new audit."}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={() => {
+                        setSelectedInvoice("");
+                        setCustomerScan("");
+                        setAutolivScan("");
+                      }}
+                      className="flex items-center gap-2 h-10 w-full sm:w-auto"
+                      variant="default"
+                    >
+                      <ScanBarcode className="h-4 w-4" />
+                      New Audit
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
           </>

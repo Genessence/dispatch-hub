@@ -1318,39 +1318,70 @@ const Dashboard = () => {
                 </CardHeader>
                 <CardContent>
                   {validatedBins.length > 0 ? (
-                    <div className="border rounded-lg overflow-hidden overflow-x-auto">
-                      <table className="w-full text-xs sm:text-sm min-w-[500px]">
-                        <thead className="bg-muted">
-                          <tr>
-                            <th className="text-left p-3 font-semibold">BIN No</th>
-                            <th className="text-left p-3 font-semibold">Barcode</th>
-                            <th className="text-left p-3 font-semibold">Status</th>
-                            <th className="text-left p-3 font-semibold">Scanned By</th>
-                            <th className="text-left p-3 font-semibold">Time</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {validatedBins.map((bin, i) => (
-                            <tr key={i} className="border-t hover:bg-muted/50">
-                              <td className="p-3 font-mono">{bin.binNo}</td>
-                              <td className="p-3 font-mono">{bin.partCode}</td>
-                              <td className="p-3">
-                                <Badge variant={bin.status === 'matched' ? 'default' : 'destructive'}>
-                                  {bin.status === 'matched' ? (
-                                    <CheckCircle2 className="h-3 w-3 mr-1" />
-                                  ) : (
-                                    <XCircle className="h-3 w-3 mr-1" />
-                                  )}
-                                  {bin.status}
-                                </Badge>
-                              </td>
-                              <td className="p-3">{bin.scannedBy}</td>
-                              <td className="p-3 text-muted-foreground">{bin.time}</td>
+                    <>
+                      <div className="border rounded-lg overflow-hidden overflow-x-auto">
+                        <table className="w-full text-xs sm:text-sm min-w-[500px]">
+                          <thead className="bg-muted">
+                            <tr>
+                              <th className="text-left p-3 font-semibold">BIN No</th>
+                              <th className="text-left p-3 font-semibold">Barcode</th>
+                              <th className="text-left p-3 font-semibold">Status</th>
+                              <th className="text-left p-3 font-semibold">Scanned By</th>
+                              <th className="text-left p-3 font-semibold">Time</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </thead>
+                          <tbody>
+                            {validatedBins.map((bin, i) => (
+                              <tr key={i} className="border-t hover:bg-muted/50">
+                                <td className="p-3 font-mono">{bin.binNo}</td>
+                                <td className="p-3 font-mono">{bin.partCode}</td>
+                                <td className="p-3">
+                                  <Badge variant={bin.status === 'matched' ? 'default' : 'destructive'}>
+                                    {bin.status === 'matched' ? (
+                                      <CheckCircle2 className="h-3 w-3 mr-1" />
+                                    ) : (
+                                      <XCircle className="h-3 w-3 mr-1" />
+                                    )}
+                                    {bin.status}
+                                  </Badge>
+                                </td>
+                                <td className="p-3">{bin.scannedBy}</td>
+                                <td className="p-3 text-muted-foreground">{bin.time}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      
+                      {/* New Audit Button - appears after items are scanned */}
+                      {currentInvoice?.auditComplete && (
+                        <div className="mt-6 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-green-700 dark:text-green-300 mb-1">
+                                ✅ Audit Complete for {currentInvoice.id}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                All items scanned and validated. Ready for dispatch.
+                              </p>
+                            </div>
+                            <Button
+                              onClick={() => {
+                                setSelectedInvoice("");
+                                setCustomerScan("");
+                                setAutolivScan("");
+                                setValidatedBins([]);
+                              }}
+                              className="flex items-center gap-2 h-10"
+                              variant="default"
+                            >
+                              <ScanBarcode className="h-4 w-4" />
+                              New Audit
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <div className="text-center py-12 text-muted-foreground">
                       <ScanBarcode className="h-12 w-12 mx-auto mb-4 opacity-50" />
