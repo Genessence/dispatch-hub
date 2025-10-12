@@ -7,6 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Calendar } from "@/components/ui/calendar";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import * as XLSX from 'xlsx';
@@ -28,7 +30,8 @@ import {
   Printer,
   Download,
   Users,
-  ArrowLeft
+  ArrowLeft,
+  Calendar as CalendarIcon
 } from "lucide-react";
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
@@ -56,6 +59,7 @@ interface InvoiceData {
   customer: string;
   invoiceDate: Date;
   totalQty: number;
+  binCapacity: number; // Maximum quantity per bin
   expectedBins: number;
   scannedBins: number;
   binsLoaded: number;
@@ -86,6 +90,10 @@ const Dashboard = () => {
   const [customerScan, setCustomerScan] = useState<BarcodeData | null>(null);
   const [autolivScan, setAutolivScan] = useState<BarcodeData | null>(null);
   const [scannerConnected, setScannerConnected] = useState(true);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
+  
+  
   const [validatedBins, setValidatedBins] = useState<Array<{
     binNo: string;
     partCode: string;
@@ -170,7 +178,7 @@ const Dashboard = () => {
   
   // Show initial demo numbers if no real data exists
   const hasRealData = sharedInvoices.length > 0;
-  
+
   const kpis = [
     {
       title: "Total Invoices",
@@ -295,11 +303,15 @@ const Dashboard = () => {
             }
             
             if (!invoiceMap.has(invoiceNum.toString())) {
+              // Randomly assign bin capacity: 50 or 80
+              const binCapacity = Math.random() < 0.5 ? 50 : 80;
+              
               invoiceMap.set(invoiceNum.toString(), {
                 id: invoiceNum.toString(),
                 customer: customer.toString(),
                 invoiceDate: invoiceDate,
                 totalQty: 0,
+                binCapacity: binCapacity,
                 expectedBins: 0,
                 scannedBins: 0,
                 binsLoaded: 0,
@@ -311,7 +323,12 @@ const Dashboard = () => {
             const invoice = invoiceMap.get(invoiceNum.toString())!;
             invoice.totalQty += Math.abs(qty);
             invoice.items.push(parsedData[index]);
-            invoice.expectedBins = invoice.items.length; // Each item is a BIN
+          });
+          
+          // Calculate expected bins based on total quantity and bin capacity
+          invoiceMap.forEach((invoice) => {
+            // Calculate minimum bins needed to hold total quantity given bin capacity
+            invoice.expectedBins = Math.ceil(invoice.totalQty / invoice.binCapacity);
           });
           
           const invoices = Array.from(invoiceMap.values());
@@ -393,12 +410,23 @@ const Dashboard = () => {
   };
 
   // Doc Audit data and handlers
-  // Use shared invoices from session - show only non-dispatched invoices
+  // Helper function to check if a date is today
+  const isToday = (date: Date): boolean => {
+  const today = new Date();
+    return date.getDate() === today.getDate() &&
+           date.getMonth() === today.getMonth() &&
+           date.getFullYear() === today.getFullYear();
+  };
+
+  // Use shared invoices from session - show only today's non-dispatched invoices
   const invoices = sharedInvoices.length > 0 
-    ? sharedInvoices.filter(inv => !inv.dispatchedBy) // Hide dispatched invoices
-    : [
-        { id: "No Data", customer: "Please upload sales data first", totalQty: 0, expectedBins: 0, scannedBins: 0, binsLoaded: 0, auditComplete: false, invoiceDate: new Date(), items: [] }
-      ];
+    ? sharedInvoices.filter(inv => 
+        !inv.dispatchedBy && // Hide dispatched invoices
+        isToday(inv.invoiceDate) // Only show invoices scheduled for today
+      )
+      : [
+          { id: "No Data", customer: "Please upload sales data first", totalQty: 0, binCapacity: 0, expectedBins: 0, scannedBins: 0, binsLoaded: 0, auditComplete: false, invoiceDate: new Date(), items: [] }
+        ];
 
   const currentInvoice = invoices.find(inv => inv.id === selectedInvoice);
   const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
@@ -469,8 +497,8 @@ const Dashboard = () => {
         const isComplete = newScannedCount >= currentInvoice.expectedBins;
         
         updateInvoiceAudit(currentInvoice.id, {
-          scannedBins: newScannedCount,
-          auditComplete: isComplete,
+                scannedBins: newScannedCount,
+                auditComplete: isComplete,
                 auditDate: isComplete ? new Date() : currentInvoice.auditDate,
                 validatedBarcodes: [
                   ...(currentInvoice.validatedBarcodes || []), 
@@ -558,16 +586,13 @@ const Dashboard = () => {
       return;
     }
 
-    const expectedBarcodes = getExpectedBarcodes();
-    const trimmedCustomer = dispatchCustomerScan.rawValue.trim();
-    const trimmedAutoliv = dispatchAutolivScan.rawValue.trim();
+    // Check if customer and autoliv scans match each other (same data)
+    const customerAutolivMatch = 
+      dispatchCustomerScan.partCode === dispatchAutolivScan.partCode &&
+      dispatchCustomerScan.quantity === dispatchAutolivScan.quantity &&
+      dispatchCustomerScan.binNumber === dispatchAutolivScan.binNumber;
 
-    // Check if this exact pair exists in the audited items
-    const matchedPair = expectedBarcodes.find(pair => 
-      pair.customerBarcode === trimmedCustomer && pair.autolivBarcode === trimmedAutoliv
-    );
-
-    if (!matchedPair) {
+    if (!customerAutolivMatch) {
       // Record the mismatch in the system for Loading & Dispatch
       const currentInvoice = sharedInvoices.find(inv => 
         selectedInvoices.includes(inv.id) && inv.auditComplete
@@ -609,10 +634,10 @@ const Dashboard = () => {
       return;
     }
 
-    // Check if already loaded
+    // Check if already loaded (based on barcode data)
     const alreadyLoaded = loadedBarcodes.find(pair => 
-      pair.customerBarcode === matchedPair.customerBarcode && 
-      pair.autolivBarcode === matchedPair.autolivBarcode
+      pair.customerBarcode === dispatchCustomerScan.rawValue && 
+      pair.autolivBarcode === dispatchAutolivScan.rawValue
     );
 
     if (alreadyLoaded) {
@@ -622,8 +647,22 @@ const Dashboard = () => {
       return;
     }
 
-    // Add to loaded list
-    setLoadedBarcodes(prev => [...prev, matchedPair]);
+    // Add to loaded list with the scanned barcode rawValues
+    const newPair: ValidatedBarcodePair = {
+      customerBarcode: dispatchCustomerScan.rawValue,
+      autolivBarcode: dispatchAutolivScan.rawValue
+    };
+    
+    setLoadedBarcodes(prev => [...prev, newPair]);
+    
+    // Update the invoice's binsLoaded count
+    selectedInvoices.forEach(invoiceId => {
+      const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+      if (invoice) {
+        invoice.binsLoaded = (invoice.binsLoaded || 0) + 1;
+      }
+    });
+    
     toast.success("✅ Item loaded successfully!", {
       description: `${dispatchCustomerScan.partCode} - Qty: ${dispatchCustomerScan.quantity} - ${dispatchCustomerScan.binNumber}`
     });
@@ -826,28 +865,28 @@ const Dashboard = () => {
                   <div key={index}>
                     {hasPermission ? (
                       <Link to={module.link}>
-                        <Card className="hover:shadow-lg transition-all hover:scale-[1.02] cursor-pointer h-full">
-                          <CardHeader>
+                  <Card className="hover:shadow-lg transition-all hover:scale-[1.02] cursor-pointer h-full">
+                    <CardHeader>
                             <div className="flex items-start justify-between mb-3">
                               <div className={`p-4 ${module.bgColor} rounded-lg w-fit`}>
-                                <module.icon className={`h-8 w-8 ${module.color}`} />
+                        <module.icon className={`h-8 w-8 ${module.color}`} />
                               </div>
                               {module.title === "Exception Alerts" && getPendingMismatches().length > 0 && (
                                 <Badge variant="destructive" className="text-sm">
                                   {getPendingMismatches().length} Pending
                                 </Badge>
                               )}
-                            </div>
-                            <CardTitle className="text-xl">{module.title}</CardTitle>
-                            <CardDescription className="text-base">{module.description}</CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            <Button variant="outline" className="w-full">
-                              Open Module
-                            </Button>
-                          </CardContent>
-                        </Card>
-                      </Link>
+                      </div>
+                      <CardTitle className="text-xl">{module.title}</CardTitle>
+                      <CardDescription className="text-base">{module.description}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Button variant="outline" className="w-full">
+                        Open Module
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </Link>
                     ) : (
                       <Card className="opacity-60 cursor-not-allowed h-full">
                         <CardHeader>
@@ -1151,8 +1190,8 @@ const Dashboard = () => {
                   <span className="sm:hidden">Back</span>
                 </Button>
                 
-                <Card>
-                  <CardContent className="pt-12 pb-12 text-center">
+              <Card>
+                <CardContent className="pt-12 pb-12 text-center">
                   <div className="flex flex-col items-center gap-4">
                     <div className="p-4 bg-success/10 rounded-full">
                       <CheckCircle2 className="h-16 w-16 text-success" />
@@ -1249,9 +1288,29 @@ const Dashboard = () => {
             <Card className="mb-6">
               <CardHeader>
                 <CardTitle>Select Invoice</CardTitle>
-                <CardDescription>Choose an invoice to begin document audit</CardDescription>
+                <CardDescription>Choose an invoice to begin document audit (Showing today's invoices only)</CardDescription>
               </CardHeader>
               <CardContent>
+                {invoices.length === 1 && invoices[0].id === "No Data" ? (
+                  <div className="p-4 bg-muted rounded-lg text-center">
+                    <p className="text-sm text-muted-foreground">No invoices scheduled for today</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg flex items-center justify-between gap-2">
+                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                        📅 Showing {invoices.filter(inv => inv.id !== "No Data").length} invoice(s) scheduled for {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowCalendar(true)}
+                        className="h-7 px-2 text-xs flex items-center gap-1 bg-white dark:bg-gray-800"
+                      >
+                        <CalendarIcon className="h-3 w-3" />
+                        View Schedule
+                      </Button>
+                    </div>
                 <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
                   <SelectTrigger className="h-12 text-base">
                     <SelectValue placeholder="Select an invoice" />
@@ -1260,16 +1319,18 @@ const Dashboard = () => {
                     {invoices.map(invoice => (
                       <SelectItem key={invoice.id} value={invoice.id}>
                         {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
-                        {invoice.uploadedBy && ` [Uploaded by: ${invoice.uploadedBy}]`}
-                        {invoice.auditedBy && ` [Audited by: ${invoice.auditedBy}]`}
+                            {invoice.uploadedBy && ` [Uploaded by: ${invoice.uploadedBy}]`}
+                            {invoice.auditedBy && ` [Audited by: ${invoice.auditedBy}]`}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                  </>
+                )}
 
                 {currentInvoice && (
                   <div className="mt-6 p-4 bg-muted rounded-lg">
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-3">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-3">
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Invoice No</p>
                         <p className="font-semibold">{currentInvoice.id}</p>
@@ -1281,6 +1342,14 @@ const Dashboard = () => {
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
                         <p className="font-semibold">{currentInvoice.totalQty}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Bin Capacity</p>
+                        <p className="font-semibold">{currentInvoice.binCapacity}</p>
+                    </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Bin Quantity</p>
+                        <p className="font-semibold">{currentInvoice.scannedBins}/{currentInvoice.expectedBins} BINs</p>
                       </div>
                     </div>
                     <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
@@ -1320,9 +1389,9 @@ const Dashboard = () => {
                   <span className="sm:hidden">Back</span>
                 </Button>
                 
-                <Card className="mb-6">
-                  <CardHeader className="pb-4">
-                    <div className="flex items-center gap-3">
+              <Card className="mb-6">
+                <CardHeader className="pb-4">
+                  <div className="flex items-center gap-3">
                     <div className="p-2 bg-primary/10 rounded-lg">
                       <ScanBarcode className="h-6 w-6 text-primary" />
                     </div>
@@ -1370,6 +1439,10 @@ const Dashboard = () => {
                           matchValue={autolivScan?.rawValue || undefined}
                           shouldMismatch={!!autolivScan}
                           matchData={autolivScan || undefined}
+                          totalQuantity={currentInvoice?.totalQty}
+                          binCapacity={currentInvoice?.binCapacity}
+                          expectedBins={currentInvoice?.expectedBins}
+                          currentBinIndex={currentInvoice?.scannedBins}
                         />
                       </div>
 
@@ -1408,6 +1481,10 @@ const Dashboard = () => {
                           matchValue={customerScan?.rawValue || undefined}
                           shouldMismatch={false}
                           matchData={customerScan || undefined}
+                          totalQuantity={currentInvoice?.totalQty}
+                          binCapacity={currentInvoice?.binCapacity}
+                          expectedBins={currentInvoice?.expectedBins}
+                          currentBinIndex={currentInvoice?.scannedBins}
                         />
                       </div>
                     </div>
@@ -1455,7 +1532,7 @@ const Dashboard = () => {
                 </CardContent>
               </Card>
 
-              {/* Scanned BINs Table */}
+            {/* Scanned BINs Table */}
               <Card>
                 <CardHeader>
                   <CardTitle>Scanned BINs ({validatedBins.length})</CardTitle>
@@ -1465,37 +1542,47 @@ const Dashboard = () => {
                   {validatedBins.length > 0 ? (
                     <>
                       <div className="border rounded-lg overflow-hidden overflow-x-auto">
-                        <table className="w-full text-xs sm:text-sm min-w-[500px]">
-                          <thead className="bg-muted">
-                            <tr>
-                              <th className="text-left p-3 font-semibold">BIN No</th>
-                              <th className="text-left p-3 font-semibold">Barcode</th>
-                              <th className="text-left p-3 font-semibold">Status</th>
-                              <th className="text-left p-3 font-semibold">Scanned By</th>
-                              <th className="text-left p-3 font-semibold">Time</th>
+                        <table className="w-full text-xs sm:text-sm min-w-[600px]">
+                        <thead className="bg-muted">
+                          <tr>
+                            <th className="text-left p-3 font-semibold">BIN No</th>
+                            <th className="text-left p-3 font-semibold">Barcode</th>
+                              <th className="text-left p-3 font-semibold">Quantity</th>
+                            <th className="text-left p-3 font-semibold">Status</th>
+                            <th className="text-left p-3 font-semibold">Scanned By</th>
+                            <th className="text-left p-3 font-semibold">Time</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {validatedBins.map((bin, i) => (
+                            <tr key={i} className="border-t hover:bg-muted/50">
+                              <td className="p-3 font-mono">{bin.binNo}</td>
+                              <td className="p-3 font-mono">{bin.partCode}</td>
+                                <td className="p-3 font-semibold">{bin.qty}</td>
+                              <td className="p-3">
+                                <Badge variant={bin.status === 'matched' ? 'default' : 'destructive'}>
+                                  {bin.status === 'matched' ? (
+                                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                                  ) : (
+                                    <XCircle className="h-3 w-3 mr-1" />
+                                  )}
+                                  {bin.status}
+                                </Badge>
+                              </td>
+                              <td className="p-3">{bin.scannedBy}</td>
+                              <td className="p-3 text-muted-foreground">{bin.time}</td>
                             </tr>
-                          </thead>
-                          <tbody>
-                            {validatedBins.map((bin, i) => (
-                              <tr key={i} className="border-t hover:bg-muted/50">
-                                <td className="p-3 font-mono">{bin.binNo}</td>
-                                <td className="p-3 font-mono">{bin.partCode}</td>
-                                <td className="p-3">
-                                  <Badge variant={bin.status === 'matched' ? 'default' : 'destructive'}>
-                                    {bin.status === 'matched' ? (
-                                      <CheckCircle2 className="h-3 w-3 mr-1" />
-                                    ) : (
-                                      <XCircle className="h-3 w-3 mr-1" />
-                                    )}
-                                    {bin.status}
-                                  </Badge>
-                                </td>
-                                <td className="p-3">{bin.scannedBy}</td>
-                                <td className="p-3 text-muted-foreground">{bin.time}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                      
+                      {/* Total Quantity Summary */}
+                      <div className="mt-4 p-3 bg-primary/5 border border-primary/20 rounded-lg flex items-center justify-between">
+                        <span className="text-sm font-medium text-muted-foreground">Total Quantity (Sum of all scanned bins):</span>
+                        <span className="text-lg font-bold text-primary">
+                          {validatedBins.reduce((sum, bin) => sum + bin.qty, 0)}
+                        </span>
                       </div>
                       
                       {/* New Audit Button - appears after items are scanned */}
@@ -1538,6 +1625,155 @@ const Dashboard = () => {
               </Card>
               </>
             )}
+            
+            {/* Calendar Schedule Dialog */}
+            <Dialog open={showCalendar} onOpenChange={setShowCalendar}>
+              <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Monthly Invoice Schedule</DialogTitle>
+                  <DialogDescription>
+                    {sharedInvoices.length === 0 
+                      ? "Upload sales data first to view invoice schedules"
+                      : `View invoices scheduled for ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
+                    }
+                  </DialogDescription>
+                </DialogHeader>
+                
+                <div className="grid md:grid-cols-2 gap-6">
+                  {/* Calendar */}
+                  <div>
+                    {sharedInvoices.length === 0 ? (
+                      <div className="p-8 bg-muted rounded-lg text-center">
+                        <div className="w-16 h-16 mx-auto bg-gray-100 rounded-full flex items-center justify-center mb-3">
+                          <span className="text-2xl">📅</span>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          Calendar will show invoice schedules after data upload
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <Calendar
+                          mode="single"
+                          selected={selectedCalendarDate}
+                          onSelect={setSelectedCalendarDate}
+                          className="rounded-md border"
+                        />
+                        <div className="mt-3 p-3 bg-muted rounded-lg text-xs">
+                          <p className="font-semibold mb-1">Instructions:</p>
+                          <p className="text-muted-foreground">Click on any date to view scheduled invoices for that day</p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  
+                  {/* Invoice List for Selected Date */}
+                  <div>
+                    <h3 className="font-semibold mb-3">
+                      {selectedCalendarDate 
+                        ? `Invoices for ${selectedCalendarDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}`
+                        : 'Select a date to view invoices'
+                      }
+                    </h3>
+                    
+                    {sharedInvoices.length === 0 ? (
+                      <div className="p-8 bg-muted rounded-lg text-center">
+                        <div className="mb-4">
+                          <div className="w-16 h-16 mx-auto bg-blue-100 rounded-full flex items-center justify-center mb-3">
+                            <span className="text-2xl">📊</span>
+                          </div>
+                          <h3 className="font-semibold text-lg mb-2">No Data Uploaded</h3>
+                          <p className="text-sm text-muted-foreground mb-4">
+                            Upload sales data first to view invoice schedules in the calendar
+                          </p>
+                          <Button 
+                            onClick={() => {
+                              setShowCalendar(false);
+                              setActiveView('upload');
+                            }}
+                            className="w-full"
+                          >
+                            Go to Upload Data
+                          </Button>
+                        </div>
+                      </div>
+                    ) : selectedCalendarDate ? (
+                      <div className="space-y-2">
+                        {sharedInvoices.filter(inv => {
+                          const invDate = new Date(inv.invoiceDate);
+                          return selectedCalendarDate &&
+                                 invDate.getDate() === selectedCalendarDate.getDate() &&
+                                 invDate.getMonth() === selectedCalendarDate.getMonth() &&
+                                 invDate.getFullYear() === selectedCalendarDate.getFullYear();
+                        }).length > 0 ? (
+                          sharedInvoices.filter(inv => {
+                            const invDate = new Date(inv.invoiceDate);
+                            return selectedCalendarDate &&
+                                   invDate.getDate() === selectedCalendarDate.getDate() &&
+                                   invDate.getMonth() === selectedCalendarDate.getMonth() &&
+                                   invDate.getFullYear() === selectedCalendarDate.getFullYear();
+                          }).map((invoice, idx) => (
+                            <Card key={idx} className="border-2">
+                              <CardContent className="p-4">
+                                <div className="flex items-start justify-between mb-2">
+                                  <div>
+                                    <p className="font-semibold text-lg">{invoice.customer}</p>
+                                    <p className="text-sm text-muted-foreground">{invoice.id}</p>
+                                  </div>
+                                  <Badge variant={invoice.dispatchedBy ? "default" : invoice.auditComplete ? "secondary" : "outline"}>
+                                    {invoice.dispatchedBy ? "Dispatched" : invoice.auditComplete ? "Audited" : "Pending"}
+                                  </Badge>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                  <div>
+                                    <p className="text-muted-foreground">Total Qty</p>
+                                    <p className="font-semibold">{invoice.totalQty}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-muted-foreground">Bins</p>
+                                    <p className="font-semibold">{invoice.scannedBins}/{invoice.expectedBins}</p>
+                                  </div>
+                                </div>
+                                {invoice.uploadedBy && (
+                                  <p className="text-xs text-muted-foreground mt-2">
+                                    Uploaded by: {invoice.uploadedBy}
+                                  </p>
+                                )}
+                              </CardContent>
+                            </Card>
+                          ))
+                        ) : (
+                          <div className="p-4 bg-muted rounded-lg text-center text-sm text-muted-foreground">
+                            No invoices scheduled for this date
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-8 bg-muted rounded-lg text-center text-sm text-muted-foreground">
+                        Click on a date in the calendar to view scheduled invoices
+                      </div>
+                    )}
+                    
+                    {/* Monthly Summary - Only show when data exists */}
+                    {sharedInvoices.length > 0 && (
+                      <div className="mt-4 p-3 bg-primary/5 border border-primary/20 rounded-lg">
+                        <p className="text-sm font-semibold mb-2">This Month Summary:</p>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <p className="text-muted-foreground">Total Invoices</p>
+                            <p className="font-bold text-lg">{sharedInvoices.length}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Dispatched</p>
+                            <p className="font-bold text-lg">{sharedInvoices.filter(inv => inv.dispatchedBy).length}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
           </>
         )}
 
@@ -1810,6 +2046,10 @@ const Dashboard = () => {
                               matchValue={dispatchAutolivScan?.rawValue || getNextUnscannedBarcodePair()?.customerBarcode}
                               shouldMismatch={!!dispatchAutolivScan}
                               matchData={dispatchAutolivScan || undefined}
+                              totalQuantity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.totalQty : undefined}
+                              binCapacity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.binCapacity : undefined}
+                              expectedBins={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.expectedBins : undefined}
+                              currentBinIndex={loadedBarcodes.length}
                             />
                           </div>
 
@@ -1848,6 +2088,10 @@ const Dashboard = () => {
                               matchValue={dispatchCustomerScan?.rawValue || getNextUnscannedBarcodePair()?.autolivBarcode}
                               shouldMismatch={false}
                               matchData={dispatchCustomerScan || undefined}
+                              totalQuantity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.totalQty : undefined}
+                              binCapacity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.binCapacity : undefined}
+                              expectedBins={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.expectedBins : undefined}
+                              currentBinIndex={loadedBarcodes.length}
                             />
                           </div>
                         </div>
@@ -1985,8 +2229,8 @@ const Dashboard = () => {
                   <span className="sm:hidden">Back</span>
                 </Button>
                 
-                <Card>
-                  <CardHeader className="text-center pb-4">
+              <Card>
+                <CardHeader className="text-center pb-4">
                   <div className="flex justify-center mb-3">
                     <div className="p-3 bg-success/10 rounded-full">
                       <QrCode className="h-10 w-10 text-success" />

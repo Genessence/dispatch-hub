@@ -21,6 +21,10 @@ interface BarcodeScannerProps {
   matchValue?: string; // If provided, use this value to match
   shouldMismatch?: boolean; // If true, generate different value
   matchData?: BarcodeData; // The full barcode data to match (for keeping same values)
+  totalQuantity?: number; // Total quantity to be distributed across bins
+  binCapacity?: number; // Maximum capacity per bin
+  expectedBins?: number; // Number of bins to divide quantity into
+  currentBinIndex?: number; // Current bin being scanned (0-indexed)
 }
 
 export const BarcodeScanner = ({ 
@@ -31,7 +35,11 @@ export const BarcodeScanner = ({
   onClose,
   matchValue,
   shouldMismatch = false,
-  matchData
+  matchData,
+  totalQuantity,
+  binCapacity,
+  expectedBins,
+  currentBinIndex
 }: BarcodeScannerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
@@ -244,6 +252,38 @@ export const BarcodeScanner = ({
     onClose();
   };
 
+  // Calculate quantity for this bin based on total quantity, bin capacity, and current bin index
+  const calculateBinQuantity = (): string => {
+    if (totalQuantity && binCapacity && expectedBins && currentBinIndex !== undefined) {
+      // First bin: Fill to bin capacity (or totalQty if less than capacity)
+      if (currentBinIndex === 0) {
+        return Math.min(totalQuantity, binCapacity).toString();
+      }
+      
+      // Calculate remaining quantity after previous bins
+      const quantityAlreadyAllocated = Math.min(totalQuantity, binCapacity) + 
+        (currentBinIndex - 1) * Math.min(binCapacity, Math.floor((totalQuantity - Math.min(totalQuantity, binCapacity)) / (expectedBins - 1)));
+      
+      const remainingQuantity = totalQuantity - quantityAlreadyAllocated;
+      
+      // Last bin: All remaining quantity (up to bin capacity)
+      if (currentBinIndex === expectedBins - 1) {
+        return Math.min(remainingQuantity, binCapacity).toString();
+      }
+      
+      // Middle bins: Distribute remaining evenly, respecting bin capacity
+      const remainingBins = expectedBins - currentBinIndex;
+      const quantityForThisBin = Math.min(
+        Math.ceil(remainingQuantity / remainingBins),
+        binCapacity
+      );
+      
+      return quantityForThisBin.toString();
+    }
+    // Fallback to random quantity if no distribution data provided
+    return (Math.floor(Math.random() * 9) + 1).toString();
+  };
+
   // Parse barcode data to extract Part Code, Quantity, and Bin Number
   const parseBarcodeData = (rawValue: string): BarcodeData => {
     console.log("Parsing barcode:", rawValue);
@@ -279,8 +319,8 @@ export const BarcodeScanner = ({
       const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
       partCode = `202391938${randomPart}`;
       
-      // Quantity: 1-9 (single digit)
-      quantity = (Math.floor(Math.random() * 9) + 1).toString();
+      // Quantity: Use calculated bin quantity
+      quantity = calculateBinQuantity();
       
       // Bin Number: 11 characters (e.g., 76480M66T00)
       const randomBin = Math.floor(Math.random() * 100).toString().padStart(2, '0');
@@ -290,7 +330,7 @@ export const BarcodeScanner = ({
     return {
       rawValue,
       partCode: partCode || `202391938${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
-      quantity: quantity || (Math.floor(Math.random() * 9) + 1).toString(),
+      quantity: quantity || calculateBinQuantity(),
       binNumber: binNumber || `76480M66T${Math.floor(Math.random() * 100).toString().padStart(2, '0')}`
     };
   };
@@ -510,6 +550,10 @@ interface BarcodeScanButtonProps {
   matchValue?: string; // Pass to scanner for matching logic
   shouldMismatch?: boolean; // Pass to scanner for mismatch logic
   matchData?: BarcodeData; // Pass the full barcode data to match
+  totalQuantity?: number; // Total quantity to distribute
+  binCapacity?: number; // Maximum capacity per bin
+  expectedBins?: number; // Number of bins
+  currentBinIndex?: number; // Current bin being scanned
 }
 
 export const BarcodeScanButton = ({ 
@@ -520,7 +564,11 @@ export const BarcodeScanButton = ({
   disabled = false,
   matchValue,
   shouldMismatch = false,
-  matchData
+  matchData,
+  totalQuantity,
+  binCapacity,
+  expectedBins,
+  currentBinIndex
 }: BarcodeScanButtonProps) => {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -551,6 +599,10 @@ export const BarcodeScanButton = ({
         matchValue={matchValue}
         shouldMismatch={shouldMismatch}
         matchData={matchData}
+        totalQuantity={totalQuantity}
+        binCapacity={binCapacity}
+        expectedBins={expectedBins}
+        currentBinIndex={currentBinIndex}
       />
     </>
   );
