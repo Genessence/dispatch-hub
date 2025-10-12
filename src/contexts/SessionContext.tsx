@@ -5,6 +5,7 @@ export interface InvoiceData {
   customer: string;
   invoiceDate: Date;
   totalQty: number;
+  binCapacity: number;
   expectedBins: number;
   scannedBins: number;
   binsLoaded: number;
@@ -80,8 +81,265 @@ const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
 export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [currentUser, setCurrentUser] = useState("User 1");
-  const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([]);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  
+  // Initialize with default invoices (16 invoices scheduled for today)
+  const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([
+    // First batch - 6 invoices
+    {
+      id: 'INV-2024-101',
+      customer: 'Acme Corporation',
+      invoiceDate: new Date(),
+      totalQty: 240,
+      binCapacity: 80,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000) // 30 minutes ago
+    },
+    {
+      id: 'INV-2024-102',
+      customer: 'Tech Solutions Inc',
+      invoiceDate: new Date(),
+      totalQty: 150,
+      binCapacity: 50,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-103',
+      customer: 'Global Industries',
+      invoiceDate: new Date(),
+      totalQty: 160,
+      binCapacity: 80,
+      expectedBins: 2,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-104',
+      customer: 'Manufacturing Co',
+      invoiceDate: new Date(),
+      totalQty: 100,
+      binCapacity: 50,
+      expectedBins: 2,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-105',
+      customer: 'Auto Parts Ltd',
+      invoiceDate: new Date(),
+      totalQty: 240,
+      binCapacity: 80,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-106',
+      customer: 'Precision Engineering',
+      invoiceDate: new Date(),
+      totalQty: 80,
+      binCapacity: 80,
+      expectedBins: 1,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    // Second batch - 5 invoices
+    {
+      id: 'INV-2024-107',
+      customer: 'Delta Automotive',
+      invoiceDate: new Date(),
+      totalQty: 200,
+      binCapacity: 50,
+      expectedBins: 4,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-108',
+      customer: 'Omega Components',
+      invoiceDate: new Date(),
+      totalQty: 160,
+      binCapacity: 80,
+      expectedBins: 2,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-109',
+      customer: 'Sigma Systems',
+      invoiceDate: new Date(),
+      totalQty: 150,
+      binCapacity: 50,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-110',
+      customer: 'Alpha Manufacturing',
+      invoiceDate: new Date(),
+      totalQty: 240,
+      binCapacity: 80,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-111',
+      customer: 'Beta Industries',
+      invoiceDate: new Date(),
+      totalQty: 100,
+      binCapacity: 50,
+      expectedBins: 2,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    // Third batch - 5 invoices
+    {
+      id: 'INV-2024-112',
+      customer: 'Gamma Technologies',
+      invoiceDate: new Date(),
+      totalQty: 160,
+      binCapacity: 80,
+      expectedBins: 2,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-113',
+      customer: 'Theta Solutions',
+      invoiceDate: new Date(),
+      totalQty: 200,
+      binCapacity: 50,
+      expectedBins: 4,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-114',
+      customer: 'Epsilon Engineering',
+      invoiceDate: new Date(),
+      totalQty: 80,
+      binCapacity: 80,
+      expectedBins: 1,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-115',
+      customer: 'Zeta Automotive',
+      invoiceDate: new Date(),
+      totalQty: 150,
+      binCapacity: 50,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: 'INV-2024-116',
+      customer: 'Kappa Components',
+      invoiceDate: new Date(),
+      totalQty: 240,
+      binCapacity: 80,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    }
+  ]);
+  
+  // Initialize with upload logs
+  const [logs, setLogs] = useState<LogEntry[]>([
+    {
+      id: 'log-1',
+      user: 'Admin',
+      action: 'Uploaded 6 invoice(s)',
+      details: 'Invoices: INV-2024-101, INV-2024-102, INV-2024-103, INV-2024-104, INV-2024-105, INV-2024-106',
+      timestamp: new Date(Date.now() - 1800000), // 30 minutes ago
+      type: 'upload'
+    },
+    {
+      id: 'log-2',
+      user: 'Admin',
+      action: 'Uploaded 5 invoice(s)',
+      details: 'Invoices: INV-2024-107, INV-2024-108, INV-2024-109, INV-2024-110, INV-2024-111',
+      timestamp: new Date(Date.now() - 1800000),
+      type: 'upload'
+    },
+    {
+      id: 'log-3',
+      user: 'Admin',
+      action: 'Uploaded 5 invoice(s)',
+      details: 'Invoices: INV-2024-112, INV-2024-113, INV-2024-114, INV-2024-115, INV-2024-116',
+      timestamp: new Date(Date.now() - 1800000),
+      type: 'upload'
+    }
+  ]);
   const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([
     // Pre-populate with 2-3 sample mismatches from different steps
     {
