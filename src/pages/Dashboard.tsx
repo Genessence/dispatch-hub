@@ -241,9 +241,9 @@ const Dashboard = () => {
         return;
       }
       
-      // Check file type for mobile compatibility
-      if (isMobile && !file.name.match(/\.(xlsx|xls|csv)$/i)) {
-        reject(new Error('Mobile browsers support .xlsx, .xls, and .csv files only. Please convert your file to one of these formats.'));
+      // Check file type compatibility
+      if (!file.name.match(/\.(xlsx|xls)$/i)) {
+        reject(new Error('Please upload a valid Excel file (.xlsx or .xls format).'));
         return;
       }
       
@@ -268,11 +268,12 @@ const Dashboard = () => {
             hasTouch: 'ontouchstart' in window
           });
           
-          // Use different parsing strategy for mobile vs desktop
+          // Use most compatible parsing strategy for all devices
           let workbook;
-          if (isMobile) {
-            // Mobile: Use basic parsing with minimal options
-            console.log('Using mobile parsing strategy');
+          console.log('Using universal parsing strategy for maximum compatibility');
+          
+          try {
+            // Try the most basic parsing first (works on all browsers)
             workbook = XLSX.read(data, { 
               type: 'array',
               cellDates: false,
@@ -284,24 +285,21 @@ const Dashboard = () => {
               bookSheets: false,
               bookProps: false,
               bookFiles: false,
-              WTF: false // Disable warning messages
+              WTF: false,
+              codepage: false, // Disable codepage detection
+              dense: false // Use sparse mode for better compatibility
             });
-          } else {
-            // Desktop: Use standard parsing
-            console.log('Using desktop parsing strategy');
+            console.log('Universal parsing successful');
+          } catch (parseError) {
+            console.error('Universal parsing failed:', parseError);
+            // Fallback to even more basic parsing
             workbook = XLSX.read(data, { 
               type: 'array',
               cellDates: false,
-              cellNF: false,
-              cellText: false,
               raw: false,
-              dateNF: 'yyyy-mm-dd',
-              sheetStubs: false,
-              bookVBA: false,
-              bookSheets: false,
-              bookProps: false,
-              bookFiles: false
+              WTF: false
             });
+            console.log('Fallback parsing successful');
           }
           
           if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
@@ -320,35 +318,39 @@ const Dashboard = () => {
           let headers: string[] = [];
           let dataRows: string[][] = [];
           
+          // Use universal parsing approach that works on all devices
           try {
-            if (isMobile) {
-              // Mobile: Try object format first (more reliable on mobile)
-              console.log('Mobile: Trying object format first');
-              jsonData = XLSX.utils.sheet_to_json(firstSheet, {
-                defval: '',
-                raw: false,
-                range: 1000 // Limit to 1000 rows on mobile
-              });
-              
-              if (!jsonData || jsonData.length === 0) {
-                throw new Error('No data with object format');
-              }
-              
-              // Convert object format to headers and data rows
-              if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
-                headers = Object.keys(jsonData[0]);
-                dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
-                console.log('Mobile: Object format successful');
-              } else {
-                throw new Error('Invalid object format');
-              }
+            console.log('Trying universal data extraction');
+            
+            // Try object format first (most compatible across all browsers)
+            jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+              defval: '',
+              raw: false,
+              range: isMobile ? 1000 : undefined // Limit rows on mobile
+            });
+            
+            if (!jsonData || jsonData.length === 0) {
+              throw new Error('No data with object format');
+            }
+            
+            // Convert object format to headers and data rows
+            if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
+              headers = Object.keys(jsonData[0]);
+              dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
+              console.log('Universal object format successful');
             } else {
-              // Desktop: Try array format first
-              console.log('Desktop: Trying array format first');
+              throw new Error('Invalid object format');
+            }
+          } catch (objectError) {
+            console.log('Object format failed, trying array format:', objectError);
+            
+            try {
+              // Fallback to array format
               jsonData = XLSX.utils.sheet_to_json(firstSheet, {
                 header: 1,
                 defval: '',
-                raw: false
+                raw: false,
+                range: isMobile ? 1000 : undefined
               });
               
               if (!jsonData || jsonData.length === 0) {
@@ -359,59 +361,13 @@ const Dashboard = () => {
               if (Array.isArray(jsonData[0])) {
                 headers = jsonData[0] as string[];
                 dataRows = jsonData.slice(1) as string[][];
-                console.log('Desktop: Array format successful');
+                console.log('Universal array format successful');
               } else {
-                throw new Error('Unexpected array format');
+                throw new Error('Invalid array format');
               }
-            }
-          } catch (firstError) {
-            console.log('First format failed, trying fallback:', firstError);
-            
-            try {
-              if (isMobile) {
-                // Mobile fallback: Try array format
-                console.log('Mobile: Fallback to array format');
-                jsonData = XLSX.utils.sheet_to_json(firstSheet, {
-                  header: 1,
-                  defval: '',
-                  raw: false,
-                  range: 1000
-                });
-                
-                if (!jsonData || jsonData.length === 0) {
-                  throw new Error('No data with array fallback');
-                }
-                
-                if (Array.isArray(jsonData[0])) {
-                  headers = jsonData[0] as string[];
-                  dataRows = jsonData.slice(1) as string[][];
-                  console.log('Mobile: Array fallback successful');
-                } else {
-                  throw new Error('Invalid array fallback format');
-                }
-              } else {
-                // Desktop fallback: Try object format
-                console.log('Desktop: Fallback to object format');
-                jsonData = XLSX.utils.sheet_to_json(firstSheet, {
-                  defval: '',
-                  raw: false
-                });
-                
-                if (!jsonData || jsonData.length === 0) {
-                  throw new Error('No data with object fallback');
-                }
-                
-                if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
-                  headers = Object.keys(jsonData[0]);
-                  dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
-                  console.log('Desktop: Object fallback successful');
-                } else {
-                  throw new Error('Invalid object fallback format');
-                }
-              }
-            } catch (fallbackError) {
-              console.error('Both parsing methods failed:', fallbackError);
-              reject(new Error('Unable to parse file format on this device. Please try a different file or device.'));
+            } catch (arrayError) {
+              console.error('Both parsing methods failed:', arrayError);
+              reject(new Error('File parsing failed. Please ensure your file is a valid Excel file (.xlsx or .xls) and try again.'));
               return;
             }
           }
@@ -427,18 +383,23 @@ const Dashboard = () => {
             return;
           }
           
-          console.log('Headers found:', headers);
-          console.log('Data rows count:', dataRows.length);
-          console.log('Is mobile device:', isMobile);
-          
-          // Debug: Log first few rows for mobile debugging
-          if (isMobile && dataRows.length > 0) {
-            console.log('First data row:', dataRows[0]);
-            console.log('Sample row object:', headers.reduce((obj, header, index) => {
-              obj[header] = dataRows[0][index] || '';
-              return obj;
-            }, {} as any));
-          }
+            console.log('Headers found:', headers);
+            console.log('Data rows count:', dataRows.length);
+            console.log('Is mobile device:', isMobile);
+            console.log('Browser info:', {
+              userAgent: navigator.userAgent,
+              platform: navigator.platform,
+              cookieEnabled: navigator.cookieEnabled
+            });
+            
+            // Debug: Log first few rows for troubleshooting
+            if (dataRows.length > 0) {
+              console.log('First data row:', dataRows[0]);
+              console.log('Sample row object:', headers.reduce((obj, header, index) => {
+                obj[header] = dataRows[0][index] || '';
+                return obj;
+              }, {} as any));
+            }
           
           // Parse and validate the data
           const parsedData: UploadedRow[] = dataRows.map((row: string[], index: number) => {
@@ -560,14 +521,21 @@ const Dashboard = () => {
         }
       };
       
-      reader.onerror = (error) => {
-        console.error('FileReader error:', error);
-        reject(new Error('Failed to read file. Please try again.'));
-      };
-      
-      reader.onabort = () => {
-        reject(new Error('File reading was aborted'));
-      };
+        reader.onerror = (error) => {
+          console.error('FileReader error:', error);
+          console.error('File details:', {
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            lastModified: file.lastModified
+          });
+          reject(new Error('Failed to read file. Please ensure the file is not corrupted and try again.'));
+        };
+        
+        reader.onabort = () => {
+          console.log('File reading was aborted by user or browser');
+          reject(new Error('File reading was cancelled. Please try again.'));
+        };
       
       reader.readAsArrayBuffer(file);
     });
@@ -637,8 +605,8 @@ const Dashboard = () => {
             errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
           } else if (error.message.includes('No headers found')) {
             errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
-          } else if (error.message.includes('Unable to parse file format on this device')) {
-            errorMessage = "Mobile browser compatibility issue. Please try using Chrome or Safari on mobile, or upload from a desktop computer.";
+          } else if (error.message.includes('File parsing failed')) {
+            errorMessage = "Unable to read the Excel file. Please ensure it's a valid .xlsx or .xls file and try again.";
           } else {
             errorMessage = error.message;
           }
@@ -714,8 +682,8 @@ const Dashboard = () => {
             errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
           } else if (error.message.includes('No headers found')) {
             errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
-          } else if (error.message.includes('Unable to parse file format on this device')) {
-            errorMessage = "Mobile browser compatibility issue. Please try using Chrome or Safari on mobile, or upload from a desktop computer.";
+          } else if (error.message.includes('File parsing failed')) {
+            errorMessage = "Unable to read the Excel file. Please ensure it's a valid .xlsx or .xls file and try again.";
           } else {
             errorMessage = error.message;
           }
