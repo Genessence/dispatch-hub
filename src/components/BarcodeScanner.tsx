@@ -176,74 +176,10 @@ export const BarcodeScanner = ({
         }
       }
 
-      // Start decoding from video element
-      if (readerRef.current && videoRef.current) {
-        console.log('Starting barcode detection...');
-        readerRef.current.decodeFromVideoElement(videoRef.current, (result, error) => {
-          // Check hasScannedRef IMMEDIATELY at the start to prevent any processing
-          if (hasScannedRef.current) {
-            console.log('Already scanned, ignoring detection');
-            return;
-          }
-          
-          if (result) {
-            // Prevent multiple scans IMMEDIATELY using ref
-            hasScannedRef.current = true;
-            setHasScanned(true);
-            
-            // Barcode detected - extract the actual value
-            const actualValue = result.getText();
-            console.log("✅ Real barcode scanned:", actualValue);
-            setBarcodeDetected(true);
-            
-            // Always use the same demo data regardless of real barcode
-            // This ensures consistent behavior for POC
-            let barcodeData: BarcodeData;
-            
-            // If we have matchData and should NOT mismatch, use the EXACT SAME data
-            if (matchData && !shouldMismatch) {
-              barcodeData = {
-                rawValue: matchData.rawValue,
-                partCode: matchData.partCode,
-                quantity: matchData.quantity,
-                binNumber: matchData.binNumber
-              };
-              console.log("Using EXACT matching data from first scan:", barcodeData);
-            }
-            // If we should mismatch, generate completely different values
-            else if (matchValue && shouldMismatch) {
-              const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
-              const rawBarcode = randomBarcode.toString();
-              barcodeData = parseBarcodeData(rawBarcode);
-              console.log("Generated mismatching barcode:", barcodeData);
-            }
-            // First scan - generate new random value with unique data
-            else {
-              const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
-              const rawBarcode = randomBarcode.toString();
-              barcodeData = parseBarcodeData(rawBarcode);
-              console.log("Generated NEW barcode with unique values:", barcodeData);
-            }
-            
-            console.log("Final barcode data (same as demo):", barcodeData);
-            
-            toast.success("Barcode scanned successfully!", {
-              description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}, Bin: ${barcodeData.binNumber}`,
-              duration: 2000
-            });
-            
-            // Stop scanning IMMEDIATELY before calling callbacks
-            stopScanning();
-            
-            // Small delay before callbacks to ensure scanner is stopped
-            setTimeout(() => {
-              onScan(barcodeData);
-              onClose();
-            }, 100);
-          }
-          // Suppress errors to avoid console spam
-        });
-      }
+      // DO NOT start automatic barcode detection
+      // Camera is only for visual preview
+      // Scanning happens only via button press
+      console.log('Camera started for preview only (no automatic scanning)');
     } catch (err: any) {
       console.error("❌ Error starting scanner:", err);
       console.error("Error name:", err.name);
@@ -483,9 +419,9 @@ export const BarcodeScanner = ({
               </div>
             )}
             
-            {/* Scanning Overlay */}
+            {/* Camera Preview Overlay - Simple guide */}
             <div className="absolute inset-0 pointer-events-none">
-              {/* Barcode Guide */}
+              {/* Barcode Guide Frame */}
               <div className="absolute inset-0 flex items-center justify-center">
                 <div className="relative w-3/4 max-w-md">
                   {/* Scanning frame with corners */}
@@ -495,34 +431,15 @@ export const BarcodeScanner = ({
                   <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-primary rounded-br-lg"></div>
                   
                   {/* Center guide text */}
-                  {!barcodeDetected && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="bg-black/60 backdrop-blur-sm px-4 py-2 rounded-lg">
-                        <p className="text-white text-sm font-medium text-center">
-                          Position barcode here
-                        </p>
-                      </div>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="bg-black/60 backdrop-blur-sm px-4 py-2 rounded-lg">
+                      <p className="text-white text-sm font-medium text-center">
+                        Position barcode here
+                      </p>
                     </div>
-                  )}
-                  
-                  {/* Detected indicator */}
-                  {barcodeDetected && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="bg-green-500/90 backdrop-blur-sm px-6 py-3 rounded-lg">
-                        <p className="text-white text-base font-bold text-center flex items-center gap-2">
-                          <ScanBarcode className="h-5 w-5" />
-                          Barcode Detected!
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                  </div>
                 </div>
               </div>
-
-              {/* Scanning line animation */}
-              {isScanning && !barcodeDetected && (
-                <div className="absolute inset-x-0 top-1/2 h-0.5 bg-primary shadow-lg shadow-primary animate-pulse"></div>
-              )}
             </div>
 
             {/* No camera message */}
@@ -548,15 +465,15 @@ export const BarcodeScanner = ({
             )}
           </div>
 
-          {/* Demo POC Message */}
+          {/* Scan Button */}
           <div className="bg-gradient-to-r from-primary/10 to-accent/10 border-2 border-primary/20 rounded-lg p-4 sm:p-6 text-center relative">
             <div className="mb-3 sm:mb-4">
               <div className="inline-flex items-center justify-center w-12 h-12 sm:w-16 sm:h-16 bg-primary/20 rounded-full mb-2 sm:mb-3">
                 <ScanBarcode className="h-6 w-6 sm:h-8 sm:w-8 text-primary animate-pulse" />
               </div>
-              <h3 className="text-base sm:text-lg font-bold mb-2">Demo Mode</h3>
+              <h3 className="text-base sm:text-lg font-bold mb-2">Ready to Scan</h3>
               <p className="text-xs sm:text-sm text-muted-foreground mb-3 sm:mb-4">
-                Click the button below to simulate a successful barcode scan
+                Point camera at barcode, then click the button below to capture
               </p>
             </div>
             <button 
@@ -565,12 +482,12 @@ export const BarcodeScanner = ({
               disabled={hasScanned}
               className={`w-full h-12 sm:h-14 rounded-md font-semibold text-sm sm:text-base shadow-lg transition-all duration-200 flex items-center justify-center gap-2 ${
                 hasScanned 
-                  ? 'bg-gray-400 text-gray-600 cursor-not-allowed' 
+                  ? 'bg-green-600 text-white cursor-not-allowed' 
                   : 'bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-xl cursor-pointer'
               }`}
             >
               <Zap className="h-4 w-4 sm:h-5 sm:w-5" />
-              {hasScanned ? 'Scanned!' : 'Scan This Barcode'}
+              {hasScanned ? '✓ Scanned Successfully!' : 'Scan This Barcode'}
             </button>
           </div>
 
@@ -579,10 +496,10 @@ export const BarcodeScanner = ({
             <p className="text-xs sm:text-sm font-medium mb-2">📌 How it works:</p>
             <ul className="text-[10px] sm:text-xs text-muted-foreground space-y-1">
               <li>• <strong>Laptop/Desktop</strong>: Uses front camera (webcam)</li>
-              <li>• <strong>Mobile</strong>: Uses back camera for better scanning</li>
+              <li>• <strong>Mobile</strong>: Uses back camera for better viewing</li>
               <li>• Browser will ask for camera permission on first use</li>
-              <li>• Point at any real barcode - auto-detects and uses demo value</li>
-              <li>• Or click "Scan This Barcode" button manually</li>
+              <li>• <strong>Camera is for preview only</strong> - no automatic scanning</li>
+              <li>• Point at barcode, then click "Scan This Barcode" button</li>
               <li>• Demo values ensure consistent workflow for POC</li>
             </ul>
           </div>
