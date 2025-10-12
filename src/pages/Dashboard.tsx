@@ -231,9 +231,13 @@ const Dashboard = () => {
 
   const parseFile = async (file: File) => {
     return new Promise<{ rows: UploadedRow[], invoices: InvoiceData[] }>((resolve, reject) => {
-      // Check file size (limit to 10MB for mobile devices)
-      if (file.size > 10 * 1024 * 1024) {
-        reject(new Error('File too large. Please use files smaller than 10MB.'));
+      // Check file size (limit to 5MB for mobile devices)
+      const maxSize = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+        || (window.innerWidth < 768 && ('ontouchstart' in window)) 
+        ? 5 * 1024 * 1024 : 10 * 1024 * 1024; // 5MB for mobile, 10MB for desktop
+      
+      if (file.size > maxSize) {
+        reject(new Error(`File too large. Please use files smaller than ${Math.round(maxSize / (1024 * 1024))}MB.`));
         return;
       }
       
@@ -247,12 +251,22 @@ const Dashboard = () => {
             return;
           }
           
-          // Parse with better error handling for mobile
+          // Parse with mobile-optimized settings
+          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+            || (window.innerWidth < 768 && ('ontouchstart' in window));
+          
           const workbook = XLSX.read(data, { 
             type: 'array',
-            cellDates: true,
+            cellDates: false, // Disable for mobile to reduce processing
             cellNF: false,
-            cellText: false
+            cellText: false,
+            raw: false,
+            dateNF: 'yyyy-mm-dd', // Simple date format
+            sheetStubs: false, // Don't process empty cells
+            bookVBA: false, // Skip VBA processing
+            bookSheets: false, // Don't process all sheets at once
+            bookProps: false, // Skip metadata processing
+            bookFiles: false // Skip file references
           });
           
           if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
@@ -266,20 +280,47 @@ const Dashboard = () => {
             return;
           }
           
-          const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+          // Limit data processing for mobile devices
+          const jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+            header: 1, // Use array format for better performance
+            defval: '', // Default empty value
+            raw: false, // Convert to strings
+            range: isMobile ? 1000 : undefined // Limit to 1000 rows on mobile
+          });
           
           if (!jsonData || jsonData.length === 0) {
             reject(new Error('No data found in the file'));
             return;
           }
           
+          // Additional mobile checks
+          if (isMobile && jsonData.length > 500) {
+            reject(new Error('File has too many rows for mobile processing. Please use a file with fewer than 500 rows.'));
+            return;
+          }
+          
+          // Convert array format back to object format for easier processing
+          const headers = jsonData[0] as string[];
+          const dataRows = jsonData.slice(1) as string[][];
+          
+          if (!headers || headers.length === 0) {
+            reject(new Error('No headers found in the file'));
+            return;
+          }
+          
           // Parse and validate the data
-          const parsedData: UploadedRow[] = jsonData.map((row: any, index: number) => {
+          const parsedData: UploadedRow[] = dataRows.map((row: string[], index: number) => {
+            // Create row object from array
+            const rowObj: any = {};
+            headers.forEach((header, colIndex) => {
+              rowObj[header] = row[colIndex] || '';
+            });
+            
             // Try to find the columns (case-insensitive, flexible naming)
-            const invoice = row['Invoice Number'] || row['Invoice'] || row['invoice'] || row['Invoice No'] || row['InvoiceNo'] || `INV-${index + 1}`;
-            const customer = row['Cust Name'] || row['Customer'] || row['customer'] || row['Customer Name'] || row['CustomerName'] || 'Unknown Customer';
-            const part = row['Item Number'] || row['Part'] || row['part'] || row['Part Code'] || row['PartCode'] || row['Part Number'] || 'Unknown Part';
-            const qty = parseInt(row['Quantity Invoiced'] || row['Qty'] || row['qty'] || row['Quantity'] || row['quantity'] || '0');
+            const invoice = rowObj['Invoice Number'] || rowObj['Invoice'] || rowObj['invoice'] || rowObj['Invoice No'] || rowObj['InvoiceNo'] || `INV-${index + 1}`;
+            const customer = rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || rowObj['Customer Name'] || rowObj['CustomerName'] || 'Unknown Customer';
+            const part = rowObj['Item Number'] || rowObj['Part'] || rowObj['part'] || rowObj['Part Code'] || rowObj['PartCode'] || rowObj['Part Number'] || 'Unknown Part';
+            const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || rowObj['quantity'] || '0');
             
             // Validation logic
             let status: 'valid' | 'error' | 'warning' = 'valid';
@@ -321,11 +362,17 @@ const Dashboard = () => {
           // Group data by invoice and extract invoice date
           const invoiceMap = new Map<string, InvoiceData>();
           
-          jsonData.forEach((row: any, index: number) => {
-            const invoiceNum = row['Invoice Number'] || row['Invoice'] || row['invoice'] || `INV-${index + 1}`;
-            const customer = row['Cust Name'] || row['Customer'] || row['customer'] || 'Unknown Customer';
-            const invoiceDateSerial = row['Invoice Date'] || row['invoice date'] || row['Date'];
-            const qty = parseInt(row['Quantity Invoiced'] || row['Qty'] || row['qty'] || row['Quantity'] || '0');
+          dataRows.forEach((row: string[], index: number) => {
+            // Create row object from array
+            const rowObj: any = {};
+            headers.forEach((header, colIndex) => {
+              rowObj[header] = row[colIndex] || '';
+            });
+            
+            const invoiceNum = rowObj['Invoice Number'] || rowObj['Invoice'] || rowObj['invoice'] || `INV-${index + 1}`;
+            const customer = rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || 'Unknown Customer';
+            const invoiceDateSerial = rowObj['Invoice Date'] || rowObj['invoice date'] || rowObj['Date'];
+            const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || '0');
             
             // Convert Excel date to JS Date
             let invoiceDate = new Date();
@@ -399,10 +446,15 @@ const Dashboard = () => {
       });
       
       try {
-        // Add timeout for mobile devices (reduce to 15 seconds)
+        // Add timeout for mobile devices (reduce to 10 seconds for mobile)
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+          || (window.innerWidth < 768 && ('ontouchstart' in window));
+        
+        const timeoutDuration = isMobile ? 10000 : 15000; // 10s mobile, 15s desktop
+        
         const parsePromise = parseFile(droppedFile);
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), 15000)
+          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
         );
         
         const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
@@ -412,13 +464,20 @@ const Dashboard = () => {
           throw new Error('Invalid file format - no data found');
         }
         
+        // Show progress for large files on mobile
+        if (isMobile && rows.length > 100) {
+          toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
+        }
+        
         setUploadedData(rows);
         setProcessedInvoices(invoices);
         setUploadStage('validate');
         toast.dismiss(loadingToast);
+        toast.dismiss('processing');
         toast.success(`File uploaded successfully! Found ${rows.length} records from ${invoices.length} invoices.`);
       } catch (error) {
         toast.dismiss(loadingToast);
+        toast.dismiss('processing');
         console.error('File parsing error:', error);
         
         // More specific error messages for mobile
@@ -427,9 +486,16 @@ const Dashboard = () => {
           if (error.message.includes('timeout')) {
             errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
           } else if (error.message.includes('File too large')) {
-            errorMessage = "File is too large. Please use files smaller than 10MB.";
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+              || (window.innerWidth < 768 && ('ontouchstart' in window));
+            const maxSize = isMobile ? '5MB' : '10MB';
+            errorMessage = `File is too large. Please use files smaller than ${maxSize}.`;
           } else if (error.message.includes('No data found')) {
             errorMessage = "No data found in the file. Please check the file format.";
+          } else if (error.message.includes('too many rows')) {
+            errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
+          } else if (error.message.includes('No headers found')) {
+            errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
           } else {
             errorMessage = error.message;
           }
@@ -455,10 +521,15 @@ const Dashboard = () => {
       });
       
       try {
-        // Add timeout for mobile devices (reduce to 15 seconds)
+        // Add timeout for mobile devices (reduce to 10 seconds for mobile)
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+          || (window.innerWidth < 768 && ('ontouchstart' in window));
+        
+        const timeoutDuration = isMobile ? 10000 : 15000; // 10s mobile, 15s desktop
+        
         const parsePromise = parseFile(selectedFile);
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), 15000)
+          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
         );
         
         const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
@@ -468,13 +539,20 @@ const Dashboard = () => {
           throw new Error('Invalid file format - no data found');
         }
         
+        // Show progress for large files on mobile
+        if (isMobile && rows.length > 100) {
+          toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
+        }
+        
         setUploadedData(rows);
         setProcessedInvoices(invoices);
         setUploadStage('validate');
         toast.dismiss(loadingToast);
+        toast.dismiss('processing');
         toast.success(`File uploaded successfully! Found ${rows.length} records from ${invoices.length} invoices.`);
       } catch (error) {
         toast.dismiss(loadingToast);
+        toast.dismiss('processing');
         console.error('File parsing error:', error);
         
         // More specific error messages for mobile
@@ -483,9 +561,16 @@ const Dashboard = () => {
           if (error.message.includes('timeout')) {
             errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
           } else if (error.message.includes('File too large')) {
-            errorMessage = "File is too large. Please use files smaller than 10MB.";
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+              || (window.innerWidth < 768 && ('ontouchstart' in window));
+            const maxSize = isMobile ? '5MB' : '10MB';
+            errorMessage = `File is too large. Please use files smaller than ${maxSize}.`;
           } else if (error.message.includes('No data found')) {
             errorMessage = "No data found in the file. Please check the file format.";
+          } else if (error.message.includes('too many rows')) {
+            errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
+          } else if (error.message.includes('No headers found')) {
+            errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
           } else {
             errorMessage = error.message;
           }
