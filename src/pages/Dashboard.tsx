@@ -162,34 +162,43 @@ const Dashboard = () => {
     }
   ];
 
+  // Calculate status with initial demo values
+  const totalInvoices = sharedInvoices.length;
+  const pendingAudits = sharedInvoices.filter(inv => !inv.auditComplete && !inv.dispatchedBy).length;
+  const completedDispatches = sharedInvoices.filter(inv => inv.dispatchedBy).length;
+  const readyToDispatch = sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length;
+  
+  // Show initial demo numbers if no real data exists
+  const hasRealData = sharedInvoices.length > 0;
+  
   const kpis = [
     {
       title: "Total Invoices",
-      value: sharedInvoices.length.toString(),
+      value: hasRealData ? totalInvoices.toString() : "7",
       subtitle: "In system",
       icon: Package,
-      trend: sharedInvoices.length > 0 ? "Active" : "Empty"
+      trend: hasRealData ? (totalInvoices > 0 ? "Active" : "Empty") : "Active"
     },
     {
       title: "Pending Audits",
-      value: sharedInvoices.filter(inv => !inv.auditComplete && !inv.dispatchedBy).length.toString(),
+      value: hasRealData ? pendingAudits.toString() : "3",
       subtitle: "Awaiting scan",
       icon: Clock,
-      trend: sharedInvoices.filter(inv => !inv.auditComplete).length > 0 ? "Pending" : "Clear"
+      trend: hasRealData ? (pendingAudits > 0 ? "Pending" : "Clear") : "Pending"
     },
     {
       title: "Completed Dispatches",
-      value: sharedInvoices.filter(inv => inv.dispatchedBy).length.toString(),
+      value: hasRealData ? completedDispatches.toString() : "2",
       subtitle: "Dispatched",
       icon: CheckCircle2,
-      trend: sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 ? "Active" : "None"
+      trend: hasRealData ? (completedDispatches > 0 ? "Active" : "None") : "Active"
     },
     {
       title: "Ready to Dispatch",
-      value: sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length.toString(),
+      value: hasRealData ? readyToDispatch.toString() : "2",
       subtitle: "Audited & Ready",
       icon: Truck,
-      trend: sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 ? "Available" : "None"
+      trend: hasRealData ? (readyToDispatch > 0 ? "Available" : "None") : "Available"
     }
   ];
 
