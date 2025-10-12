@@ -169,9 +169,14 @@ export const BarcodeScanner = ({
             console.log("✅ Real barcode scanned:", actualValue);
             setBarcodeDetected(true);
             
-            // Parse and use the real barcode data
-            const barcodeData = parseBarcodeData(actualValue);
-            console.log("Parsed data from real barcode:", barcodeData);
+            // Use specific values when real barcode is detected
+            const barcodeData: BarcodeData = {
+              rawValue: actualValue,
+              partCode: "2023919386007",
+              quantity: "3",
+              binNumber: "76480M66T00"
+            };
+            console.log("Using specific values for real barcode:", barcodeData);
             
             toast.success("Barcode scanned successfully!", {
               description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}`
@@ -270,23 +275,26 @@ export const BarcodeScanner = ({
       quantity = rawValue.substring(8, 12).trim();
       binNumber = rawValue.substring(12).trim();
     }
-    // Strategy 3: Generate demo data if real barcode doesn't match expected format
+    // Strategy 3: Generate demo data in correct format if real barcode doesn't match expected format
     else {
-      // Generate demo values
-      const randomPart = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-      const randomQty = Math.floor(Math.random() * 100) + 1;
-      const randomBin = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+      // Generate demo values in correct format
+      // Part Code: 13 digits (e.g., 2023919386007)
+      const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+      partCode = `202391938${randomPart}`;
       
-      partCode = `PT-${randomPart}`;
-      quantity = randomQty.toString();
-      binNumber = `BIN-${randomBin}`;
+      // Quantity: 1-9 (single digit)
+      quantity = (Math.floor(Math.random() * 9) + 1).toString();
+      
+      // Bin Number: 11 characters (e.g., 76480M66T00)
+      const randomBin = Math.floor(Math.random() * 100).toString().padStart(2, '0');
+      binNumber = `76480M66T${randomBin}`;
     }
     
     return {
       rawValue,
-      partCode: partCode || `PT-${Math.floor(Math.random() * 10000)}`,
-      quantity: quantity || Math.floor(Math.random() * 100 + 1).toString(),
-      binNumber: binNumber || `BIN-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+      partCode: partCode || `202391938${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
+      quantity: quantity || (Math.floor(Math.random() * 9) + 1).toString(),
+      binNumber: binNumber || `76480M66T${Math.floor(Math.random() * 100).toString().padStart(2, '0')}`
     };
   };
 
@@ -294,11 +302,19 @@ export const BarcodeScanner = ({
     console.log("Scan button clicked!");
     
     let rawBarcode: string;
+    let barcodeData: BarcodeData;
     
-    // If we have a matchValue and should NOT mismatch, use the same value
+    // If we have a matchValue and should NOT mismatch, use specific matching values
     if (matchValue && !shouldMismatch) {
       rawBarcode = matchValue;
-      console.log("Using matching barcode:", rawBarcode);
+      // Use specific values for matching scenario
+      barcodeData = {
+        rawValue: rawBarcode,
+        partCode: "2023919386007",
+        quantity: "3",
+        binNumber: "76480M66T00"
+      };
+      console.log("Using matching barcode with specific values:", barcodeData);
     }
     // If we should mismatch, generate a different value
     else if (matchValue && shouldMismatch) {
@@ -310,17 +326,23 @@ export const BarcodeScanner = ({
         rawBarcode = newRandom.toString();
       }
       console.log("Generated mismatching barcode:", rawBarcode);
+      barcodeData = parseBarcodeData(rawBarcode);
     }
-    // First scan - generate new random value
+    // First scan - generate new random value and use specific values
     else {
       const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
       rawBarcode = randomBarcode.toString();
-      console.log("Generated new barcode:", rawBarcode);
+      // Use specific values for first scan too
+      barcodeData = {
+        rawValue: rawBarcode,
+        partCode: "2023919386007",
+        quantity: "3",
+        binNumber: "76480M66T00"
+      };
+      console.log("Generated new barcode with specific values:", barcodeData);
     }
     
-    // Parse the barcode to extract structured data
-    const barcodeData = parseBarcodeData(rawBarcode);
-    console.log("Parsed barcode data:", barcodeData);
+    console.log("Final barcode data:", barcodeData);
     
     // Show success message
     toast.success("Barcode scanned successfully!", {

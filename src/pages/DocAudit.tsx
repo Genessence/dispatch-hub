@@ -22,10 +22,10 @@ const DocAudit = () => {
   ];
 
   const scannedBins = [
-    { binNo: "BIN-001", partCode: "PT-12345", qty: 50, status: "matched", scannedBy: "John", time: "10:30 AM" },
-    { binNo: "BIN-002", partCode: "PT-12346", qty: 50, status: "matched", scannedBy: "John", time: "10:32 AM" },
-    { binNo: "BIN-003", partCode: "PT-12347", qty: 50, status: "mismatch", scannedBy: "John", time: "10:35 AM" },
-    { binNo: "BIN-004", partCode: "PT-12348", qty: 50, status: "matched", scannedBy: "John", time: "10:38 AM" },
+    { binNo: "76480M66T01", partCode: "2023919386001", qty: 5, status: "matched", scannedBy: "John", time: "10:30 AM" },
+    { binNo: "76480M66T02", partCode: "2023919386002", qty: 8, status: "matched", scannedBy: "John", time: "10:32 AM" },
+    { binNo: "76480M66T03", partCode: "2023919386003", qty: 3, status: "mismatch", scannedBy: "John", time: "10:35 AM" },
+    { binNo: "76480M66T04", partCode: "2023919386004", qty: 6, status: "matched", scannedBy: "John", time: "10:38 AM" },
   ];
 
   const currentInvoice = invoices.find(inv => inv.id === selectedInvoice);

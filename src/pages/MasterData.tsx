@@ -41,9 +41,32 @@ interface CustomerMaster {
 }
 
 const MasterData = () => {
+  const navigate = useNavigate();
   const { currentUser } = useSession();
   const [activeView, setActiveView] = useState<ViewType>('upload');
   const [selectedMasterType, setSelectedMasterType] = useState<EditMasterType>(null);
+
+  // Permission check
+  if (currentUser !== "Admin") {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="text-center max-w-md mx-auto">
+          <div className="mb-6">
+            <div className="w-24 h-24 mx-auto bg-red-100 rounded-full flex items-center justify-center mb-4">
+              <span className="text-4xl">🔒</span>
+            </div>
+            <h1 className="text-3xl font-bold text-red-600 mb-2">Permission Denied</h1>
+            <p className="text-muted-foreground mb-6">
+              Only Admin users can access the Master Data module.
+            </p>
+          </div>
+          <Button onClick={() => navigate("/dashboard")} className="w-full">
+            Return to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
   const [itemMasterFile, setItemMasterFile] = useState<File | null>(null);
   const [customerMasterFile, setCustomerMasterFile] = useState<File | null>(null);
   const [itemMasterUploaded, setItemMasterUploaded] = useState(false);
@@ -57,15 +80,15 @@ const MasterData = () => {
 
   // Sample data
   const [itemMasterData, setItemMasterData] = useState<ItemMaster[]>([
-    { id: '1', partCode: 'PT-1001', itemName: 'Connector Assembly', quantity: '50' },
-    { id: '2', partCode: 'PT-1002', itemName: 'Wire Harness', quantity: '75' },
-    { id: '3', partCode: 'PT-1003', itemName: 'Control Module', quantity: '100' },
+    { id: '1', partCode: '2023919386001', itemName: 'Connector Assembly', quantity: '5' },
+    { id: '2', partCode: '2023919386002', itemName: 'Wire Harness', quantity: '8' },
+    { id: '3', partCode: '2023919386003', itemName: 'Control Module', quantity: '12' },
   ]);
 
   const [customerMasterData, setCustomerMasterData] = useState<CustomerMaster[]>([
-    { id: '1', companyName: 'Acme Corporation', partCode: 'PT-2001', quantity: '25', binNumber: 'BIN-A01' },
-    { id: '2', companyName: 'Tech Solutions Inc', partCode: 'PT-2002', quantity: '40', binNumber: 'BIN-A02' },
-    { id: '3', companyName: 'Global Industries', partCode: 'PT-2003', quantity: '60', binNumber: 'BIN-A03' },
+    { id: '1', companyName: 'Acme Corporation', partCode: '2023919386004', quantity: '6', binNumber: '76480M66T01' },
+    { id: '2', companyName: 'Tech Solutions Inc', partCode: '2023919386005', quantity: '9', binNumber: '76480M66T02' },
+    { id: '3', companyName: 'Global Industries', partCode: '2023919386006', quantity: '4', binNumber: '76480M66T03' },
   ]);
 
   // Edit form states
@@ -787,7 +810,7 @@ const MasterData = () => {
                   <div>
                     <Label>Part Code</Label>
                     <Input
-                      placeholder="e.g., PT-1004"
+                      placeholder="e.g., 2023919386008"
                       value={editFormData.partCode || ''}
                       onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
                       className="mt-1"
@@ -806,7 +829,7 @@ const MasterData = () => {
                     <Label>Bin Quantity</Label>
                     <Input
                       type="number"
-                      placeholder="e.g., 50"
+                      placeholder="e.g., 5"
                       value={editFormData.quantity || ''}
                       onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
                       className="mt-1"
@@ -827,7 +850,7 @@ const MasterData = () => {
                   <div>
                     <Label>Part Code</Label>
                     <Input
-                      placeholder="e.g., PT-2004"
+                      placeholder="e.g., 2023919386009"
                       value={editFormData.partCode || ''}
                       onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
                       className="mt-1"
@@ -837,7 +860,7 @@ const MasterData = () => {
                     <Label>Quantity</Label>
                     <Input
                       type="number"
-                      placeholder="e.g., 30"
+                      placeholder="e.g., 7"
                       value={editFormData.quantity || ''}
                       onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
                       className="mt-1"
@@ -846,7 +869,7 @@ const MasterData = () => {
                   <div>
                     <Label>Bin Number</Label>
                     <Input
-                      placeholder="e.g., BIN-A04"
+                      placeholder="e.g., 76480M66T04"
                       value={editFormData.binNumber || ''}
                       onChange={(e) => setEditFormData({...editFormData, binNumber: e.target.value})}
                       className="mt-1"

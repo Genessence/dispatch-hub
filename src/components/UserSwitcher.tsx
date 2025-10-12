@@ -7,7 +7,7 @@ const UserSwitcher = () => {
   const { currentUser, setCurrentUser } = useSession();
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const users = ["User 1", "User 2", "User 3"];
+  const users = ["User 1", "User 2", "User 3", "Admin"];
 
   const handleUserSwitch = (user: string) => {
     setCurrentUser(user);
@@ -16,6 +16,8 @@ const UserSwitcher = () => {
       description: "You can now work with shared data across sessions"
     });
   };
+
+  const isAdmin = currentUser === "Admin";
 
   return (
     <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-50">
@@ -48,7 +50,9 @@ const UserSwitcher = () => {
       >
         <div className="flex items-center gap-1.5 sm:gap-2">
           <User className="h-3 w-3 sm:h-4 sm:w-4" />
-          <span className="text-xs sm:text-sm font-medium">{currentUser}</span>
+          <span className="text-xs sm:text-sm font-medium">
+            {currentUser}
+          </span>
         </div>
         {isExpanded ? (
           <ChevronDown className="h-3 w-3 sm:h-4 sm:w-4 transition-transform" />

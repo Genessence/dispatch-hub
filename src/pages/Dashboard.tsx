@@ -66,7 +66,7 @@ interface InvoiceData {
 }
 
 const Dashboard = () => {
-  const { currentUser, sharedInvoices, addInvoices, updateInvoiceAudit, updateInvoiceDispatch, getAuditedInvoices, getDispatchableInvoices, getUploadLogs, getAuditLogs, getDispatchLogs } = useSession();
+  const { currentUser, sharedInvoices, addInvoices, updateInvoiceAudit, updateInvoiceDispatch, getAuditedInvoices, getDispatchableInvoices, getUploadLogs, getAuditLogs, getDispatchLogs, addMismatchAlert, getPendingMismatches } = useSession();
   const [activeView, setActiveView] = useState<ViewType>('dashboard');
   
   // Logs states
@@ -484,7 +484,31 @@ const Dashboard = () => {
       setCustomerScan(null);
       setAutolivScan(null);
     } else {
-      // Barcodes don't match - automatically send approval request
+      // Barcodes don't match - automatically send approval request and record mismatch
+      const currentInvoice = sharedInvoices.find(inv => inv.id === selectedInvoice);
+      
+      // Record the mismatch in the system
+      if (currentInvoice) {
+        addMismatchAlert({
+          user: currentUser,
+          customer: currentInvoice.customer,
+          invoiceId: currentInvoice.id,
+          step: 'doc-audit',
+          customerScan: {
+            partCode: customerScan.partCode,
+            quantity: customerScan.quantity,
+            binNumber: customerScan.binNumber,
+            rawValue: customerScan.rawValue
+          },
+          autolivScan: {
+            partCode: autolivScan.partCode,
+            quantity: autolivScan.quantity,
+            binNumber: autolivScan.binNumber,
+            rawValue: autolivScan.rawValue
+          }
+        });
+      }
+      
       toast.error("⚠️ Barcode Mismatch Detected!", {
         description: "The customer barcode and Autoliv barcode do not match.",
         duration: 5000,
@@ -535,9 +559,44 @@ const Dashboard = () => {
     );
 
     if (!matchedPair) {
-      toast.error("⚠️ Barcode Pair Not Found!", {
-        description: "This barcode pair was not scanned during document audit or barcodes don't match.",
+      // Record the mismatch in the system for Loading & Dispatch
+      const currentInvoice = sharedInvoices.find(inv => 
+        selectedInvoices.includes(inv.id) && inv.auditComplete
+      );
+      
+      if (currentInvoice) {
+        addMismatchAlert({
+          user: currentUser,
+          customer: currentInvoice.customer,
+          invoiceId: currentInvoice.id,
+          step: 'loading-dispatch',
+          customerScan: {
+            partCode: dispatchCustomerScan.partCode,
+            quantity: dispatchCustomerScan.quantity,
+            binNumber: dispatchCustomerScan.binNumber,
+            rawValue: dispatchCustomerScan.rawValue
+          },
+          autolivScan: {
+            partCode: dispatchAutolivScan.partCode,
+            quantity: dispatchAutolivScan.quantity,
+            binNumber: dispatchAutolivScan.binNumber,
+            rawValue: dispatchAutolivScan.rawValue
+          }
+        });
+      }
+      
+      toast.error("⚠️ Barcode Mismatch Detected!", {
+        description: "The customer barcode and Autoliv barcode do not match.",
+        duration: 5000,
       });
+      
+      // Automatically show approval message
+      setTimeout(() => {
+        toast.info("📨 Message sent to senior for approval", {
+          description: "Approval request has been automatically sent to the supervisor.",
+          duration: 5000,
+        });
+      }, 500);
       return;
     }
 
@@ -750,24 +809,69 @@ const Dashboard = () => {
               <h2 className="text-xl font-semibold mb-4 text-foreground">Other System Modules</h2>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {otherModules.map((module, index) => (
-                <Link key={index} to={module.link}>
-                  <Card className="hover:shadow-lg transition-all hover:scale-[1.02] cursor-pointer h-full">
-                    <CardHeader>
-                      <div className={`p-4 ${module.bgColor} rounded-lg w-fit mb-3`}>
-                        <module.icon className={`h-8 w-8 ${module.color}`} />
-                      </div>
-                      <CardTitle className="text-xl">{module.title}</CardTitle>
-                      <CardDescription className="text-base">{module.description}</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <Button variant="outline" className="w-full">
-                        Open Module
-                      </Button>
-                    </CardContent>
-                  </Card>
-                </Link>
-              ))}
+              {otherModules.map((module, index) => {
+                const isAdminOnly = module.title === "Exception Alerts" || module.title === "Master Data";
+                const hasPermission = !isAdminOnly || currentUser === "Admin";
+                
+                return (
+                  <div key={index}>
+                    {hasPermission ? (
+                      <Link to={module.link}>
+                        <Card className="hover:shadow-lg transition-all hover:scale-[1.02] cursor-pointer h-full">
+                          <CardHeader>
+                            <div className="flex items-start justify-between mb-3">
+                              <div className={`p-4 ${module.bgColor} rounded-lg w-fit`}>
+                                <module.icon className={`h-8 w-8 ${module.color}`} />
+                              </div>
+                              {module.title === "Exception Alerts" && getPendingMismatches().length > 0 && (
+                                <Badge variant="destructive" className="text-sm">
+                                  {getPendingMismatches().length} Pending
+                                </Badge>
+                              )}
+                            </div>
+                            <CardTitle className="text-xl">{module.title}</CardTitle>
+                            <CardDescription className="text-base">{module.description}</CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <Button variant="outline" className="w-full">
+                              Open Module
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                    ) : (
+                      <Card className="opacity-60 cursor-not-allowed h-full">
+                        <CardHeader>
+                          <div className="flex items-start justify-between mb-3">
+                            <div className={`p-4 ${module.bgColor} rounded-lg w-fit`}>
+                              <module.icon className={`h-8 w-8 ${module.color}`} />
+                            </div>
+                            <Badge variant="secondary" className="text-xs">
+                              Admin Only
+                            </Badge>
+                          </div>
+                          <CardTitle className="text-xl">{module.title}</CardTitle>
+                          <CardDescription className="text-base">{module.description}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <Button 
+                            variant="outline" 
+                            className="w-full cursor-not-allowed" 
+                            onClick={() => {
+                              toast.error("Permission Denied", {
+                                description: "Only Admin users can access this module.",
+                                duration: 4000,
+                              });
+                            }}
+                          >
+                            🔒 Permission Denied
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </>
         )}
@@ -1657,23 +1761,6 @@ const Dashboard = () => {
                             className="h-2"
                           />
                         </div>
-
-                        {/* Helper Message */}
-                        {getNextUnscannedBarcodePair() && (
-                          <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                            <p className="text-sm font-medium mb-2">📦 Next Item to Scan:</p>
-                            <div className="grid grid-cols-2 gap-3 text-xs">
-                              <div>
-                                <p className="text-muted-foreground mb-1">Customer Barcode:</p>
-                                <p className="font-mono font-bold text-primary">{getNextUnscannedBarcodePair()?.customerBarcode}</p>
-                              </div>
-                              <div>
-                                <p className="text-muted-foreground mb-1">Autoliv Barcode:</p>
-                                <p className="font-mono font-bold text-accent">{getNextUnscannedBarcodePair()?.autolivBarcode}</p>
-                              </div>
-                            </div>
-                          </div>
-                        )}
 
                         {/* Scanning Inputs */}
                         <div className="grid md:grid-cols-2 gap-6">

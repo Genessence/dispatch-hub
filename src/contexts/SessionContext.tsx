@@ -32,6 +32,30 @@ export interface LogEntry {
   type: 'upload' | 'audit' | 'dispatch';
 }
 
+export interface MismatchAlert {
+  id: string;
+  user: string;
+  customer: string;
+  invoiceId: string;
+  step: 'doc-audit' | 'loading-dispatch';
+  customerScan: {
+    partCode: string;
+    quantity: string;
+    binNumber: string;
+    rawValue: string;
+  };
+  autolivScan: {
+    partCode: string;
+    quantity: string;
+    binNumber: string;
+    rawValue: string;
+  };
+  timestamp: Date;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewedBy?: string;
+  reviewedAt?: Date;
+}
+
 interface SessionContextType {
   currentUser: string;
   setCurrentUser: (user: string) => void;
@@ -46,6 +70,10 @@ interface SessionContextType {
   getUploadLogs: () => LogEntry[];
   getAuditLogs: () => LogEntry[];
   getDispatchLogs: () => LogEntry[];
+  mismatchAlerts: MismatchAlert[];
+  addMismatchAlert: (alert: Omit<MismatchAlert, 'id' | 'timestamp' | 'status'>) => void;
+  updateMismatchStatus: (alertId: string, status: 'approved' | 'rejected', reviewedBy: string) => void;
+  getPendingMismatches: () => MismatchAlert[];
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -54,6 +82,72 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [currentUser, setCurrentUser] = useState("User 1");
   const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([
+    // Pre-populate with 2-3 sample mismatches from different steps
+    {
+      id: 'mismatch-1',
+      user: 'User 1',
+      customer: 'Acme Corporation',
+      invoiceId: 'INV-2024-001',
+      step: 'doc-audit',
+      customerScan: {
+        partCode: '2023919386001',
+        quantity: '5',
+        binNumber: '76480M66T01',
+        rawValue: '123456789012'
+      },
+      autolivScan: {
+        partCode: '2023919386099',
+        quantity: '7',
+        binNumber: '76480M66T99',
+        rawValue: '999999999999'
+      },
+      timestamp: new Date(Date.now() - 3600000), // 1 hour ago
+      status: 'pending'
+    },
+    {
+      id: 'mismatch-2',
+      user: 'User 2',
+      customer: 'Tech Solutions Inc',
+      invoiceId: 'INV-2024-002',
+      step: 'loading-dispatch',
+      customerScan: {
+        partCode: '2023919386002',
+        quantity: '8',
+        binNumber: '76480M66T02',
+        rawValue: '234567890123'
+      },
+      autolivScan: {
+        partCode: '2023919386088',
+        quantity: '4',
+        binNumber: '76480M66T88',
+        rawValue: '888888888888'
+      },
+      timestamp: new Date(Date.now() - 7200000), // 2 hours ago
+      status: 'pending'
+    },
+    {
+      id: 'mismatch-3',
+      user: 'User 1',
+      customer: 'Global Industries',
+      invoiceId: 'INV-2024-003',
+      step: 'doc-audit',
+      customerScan: {
+        partCode: '2023919386003',
+        quantity: '3',
+        binNumber: '76480M66T03',
+        rawValue: '345678901234'
+      },
+      autolivScan: {
+        partCode: '2023919386077',
+        quantity: '9',
+        binNumber: '76480M66T77',
+        rawValue: '777777777777'
+      },
+      timestamp: new Date(Date.now() - 10800000), // 3 hours ago
+      status: 'pending'
+    }
+  ]);
 
   const addLog = (log: Omit<LogEntry, 'id' | 'timestamp'>) => {
     const newLog: LogEntry = {
@@ -154,6 +248,28 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     return logs.filter(log => log.type === 'dispatch');
   };
 
+  const addMismatchAlert = (alert: Omit<MismatchAlert, 'id' | 'timestamp' | 'status'>) => {
+    const newAlert: MismatchAlert = {
+      ...alert,
+      id: `mismatch-${Date.now()}-${Math.random()}`,
+      timestamp: new Date(),
+      status: 'pending'
+    };
+    setMismatchAlerts(prev => [...prev, newAlert]);
+  };
+
+  const updateMismatchStatus = (alertId: string, status: 'approved' | 'rejected', reviewedBy: string) => {
+    setMismatchAlerts(prev => prev.map(alert =>
+      alert.id === alertId
+        ? { ...alert, status, reviewedBy, reviewedAt: new Date() }
+        : alert
+    ));
+  };
+
+  const getPendingMismatches = () => {
+    return mismatchAlerts.filter(alert => alert.status === 'pending');
+  };
+
   return (
     <SessionContext.Provider
       value={{
@@ -169,7 +285,11 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         logs,
         getUploadLogs,
         getAuditLogs,
-        getDispatchLogs
+        getDispatchLogs,
+        mismatchAlerts,
+        addMismatchAlert,
+        updateMismatchStatus,
+        getPendingMismatches
       }}
     >
       {children}

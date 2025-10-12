@@ -202,10 +202,10 @@ const UploadData = () => {
                       </thead>
                       <tbody>
                         {[
-                          { invoice: 'INV-2024-001', customer: 'Acme Corp', part: 'PT-12345', qty: 100, status: 'valid' },
-                          { invoice: 'INV-2024-002', customer: 'Tech Solutions', part: 'PT-67890', qty: 50, status: 'valid' },
-                          { invoice: 'INV-2024-003', customer: 'Global Industries', part: 'PT-11111', qty: 75, status: 'error' },
-                          { invoice: 'INV-2024-004', customer: 'Manufacturing Co', part: 'PT-22222', qty: 120, status: 'warning' },
+                          { invoice: 'INV-2024-001', customer: 'Acme Corp', part: '2023919386001', qty: 5, status: 'valid' },
+                          { invoice: 'INV-2024-002', customer: 'Tech Solutions', part: '2023919386002', qty: 8, status: 'valid' },
+                          { invoice: 'INV-2024-003', customer: 'Global Industries', part: '2023919386003', qty: 4, status: 'error' },
+                          { invoice: 'INV-2024-004', customer: 'Manufacturing Co', part: '2023919386004', qty: 7, status: 'warning' },
                         ].map((row, i) => (
                           <tr key={i} className="border-t">
                             <td className="p-3">{row.invoice}</td>
