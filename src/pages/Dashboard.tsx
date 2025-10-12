@@ -251,7 +251,7 @@ const Dashboard = () => {
             return;
           }
           
-          // Parse with mobile-optimized settings
+          // Parse with simplified settings for better mobile compatibility
           const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
             || (window.innerWidth < 768 && ('ontouchstart' in window));
           
@@ -280,32 +280,78 @@ const Dashboard = () => {
             return;
           }
           
-          // Limit data processing for mobile devices
-          const jsonData = XLSX.utils.sheet_to_json(firstSheet, {
-            header: 1, // Use array format for better performance
-            defval: '', // Default empty value
-            raw: false, // Convert to strings
-            range: isMobile ? 1000 : undefined // Limit to 1000 rows on mobile
-          });
+          // Try array format first, fallback to object format for better compatibility
+          let jsonData: any[];
+          let headers: string[] = [];
+          let dataRows: string[][] = [];
           
-          if (!jsonData || jsonData.length === 0) {
-            reject(new Error('No data found in the file'));
-            return;
+          try {
+            // Try array format first
+            jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+              header: 1, // Use array format
+              defval: '', // Default empty value
+              raw: false, // Convert to strings
+              range: isMobile ? 1000 : undefined // Limit to 1000 rows on mobile
+            });
+            
+            if (!jsonData || jsonData.length === 0) {
+              throw new Error('No data with array format');
+            }
+            
+            // Convert array format to headers and data rows
+            if (Array.isArray(jsonData[0])) {
+              headers = jsonData[0] as string[];
+              dataRows = jsonData.slice(1) as string[][];
+            } else {
+              throw new Error('Unexpected array format');
+            }
+          } catch (arrayError) {
+            console.log('Array format failed, trying object format:', arrayError);
+            
+            // Fallback to object format
+            jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+              defval: '', // Default empty value
+              raw: false, // Convert to strings
+              range: isMobile ? 1000 : undefined // Limit to 1000 rows on mobile
+            });
+            
+            if (!jsonData || jsonData.length === 0) {
+              reject(new Error('No data found in the file'));
+              return;
+            }
+            
+            // Convert object format to headers and data rows
+            if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
+              headers = Object.keys(jsonData[0]);
+              dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
+            } else {
+              reject(new Error('Invalid data format in file'));
+              return;
+            }
           }
           
           // Additional mobile checks
-          if (isMobile && jsonData.length > 500) {
+          if (isMobile && dataRows.length > 500) {
             reject(new Error('File has too many rows for mobile processing. Please use a file with fewer than 500 rows.'));
             return;
           }
           
-          // Convert array format back to object format for easier processing
-          const headers = jsonData[0] as string[];
-          const dataRows = jsonData.slice(1) as string[][];
-          
           if (!headers || headers.length === 0) {
             reject(new Error('No headers found in the file'));
             return;
+          }
+          
+          console.log('Headers found:', headers);
+          console.log('Data rows count:', dataRows.length);
+          console.log('Is mobile device:', isMobile);
+          
+          // Debug: Log first few rows for mobile debugging
+          if (isMobile && dataRows.length > 0) {
+            console.log('First data row:', dataRows[0]);
+            console.log('Sample row object:', headers.reduce((obj, header, index) => {
+              obj[header] = dataRows[0][index] || '';
+              return obj;
+            }, {} as any));
           }
           
           // Parse and validate the data
@@ -374,13 +420,8 @@ const Dashboard = () => {
             const invoiceDateSerial = rowObj['Invoice Date'] || rowObj['invoice date'] || rowObj['Date'];
             const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || '0');
             
-            // Convert Excel date to JS Date
-            let invoiceDate = new Date();
-            if (typeof invoiceDateSerial === 'number') {
-              invoiceDate = excelDateToJSDate(invoiceDateSerial);
-            } else if (invoiceDateSerial) {
-              invoiceDate = new Date(invoiceDateSerial);
-            }
+            // Always use today's date for uploaded invoices so they show in Doc Audit
+            const invoiceDate = new Date();
             
             if (!invoiceMap.has(invoiceNum.toString())) {
               // Randomly assign bin capacity: 50 or 80
@@ -412,6 +453,20 @@ const Dashboard = () => {
           });
           
           const invoices = Array.from(invoiceMap.values());
+          
+          // Debug logging for invoice dates
+          console.log('Created invoices with dates:');
+          invoices.forEach(invoice => {
+            console.log(`Invoice ${invoice.id}: ${invoice.invoiceDate.toLocaleDateString()} (Customer: ${invoice.customer})`);
+          });
+          
+          const today = new Date();
+          const todayInvoices = invoices.filter(inv => 
+            inv.invoiceDate.getDate() === today.getDate() &&
+            inv.invoiceDate.getMonth() === today.getMonth() &&
+            inv.invoiceDate.getFullYear() === today.getFullYear()
+          );
+          console.log(`Invoices for today (${today.toLocaleDateString()}): ${todayInvoices.length}`);
           
           resolve({ rows: parsedData, invoices });
         } catch (error) {
