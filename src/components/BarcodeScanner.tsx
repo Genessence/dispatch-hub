@@ -47,13 +47,15 @@ export const BarcodeScanner = ({
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const [barcodeDetected, setBarcodeDetected] = useState(false);
   const [cameraType, setCameraType] = useState<'front' | 'back'>('front');
-  const [hasScanned, setHasScanned] = useState(false); // Prevent multiple scans
+  const hasScannedRef = useRef(false); // Use ref for immediate check
+  const [hasScanned, setHasScanned] = useState(false); // For UI updates
 
   useEffect(() => {
     if (isOpen) {
       console.log('Scanner dialog opened');
       
       // Reset scan state when dialog opens
+      hasScannedRef.current = false;
       setHasScanned(false);
       setBarcodeDetected(false);
       
@@ -178,8 +180,15 @@ export const BarcodeScanner = ({
       if (readerRef.current && videoRef.current) {
         console.log('Starting barcode detection...');
         readerRef.current.decodeFromVideoElement(videoRef.current, (result, error) => {
-          if (result && !hasScanned) {
-            // Prevent multiple scans
+          // Check hasScannedRef IMMEDIATELY at the start to prevent any processing
+          if (hasScannedRef.current) {
+            console.log('Already scanned, ignoring detection');
+            return;
+          }
+          
+          if (result) {
+            // Prevent multiple scans IMMEDIATELY using ref
+            hasScannedRef.current = true;
             setHasScanned(true);
             
             // Barcode detected - extract the actual value
@@ -219,13 +228,18 @@ export const BarcodeScanner = ({
             console.log("Final barcode data (same as demo):", barcodeData);
             
             toast.success("Barcode scanned successfully!", {
-              description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}, Bin: ${barcodeData.binNumber}`
+              description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}, Bin: ${barcodeData.binNumber}`,
+              duration: 2000
             });
             
-            // Stop scanning and send data
+            // Stop scanning IMMEDIATELY before calling callbacks
             stopScanning();
-            onScan(barcodeData);
-            onClose();
+            
+            // Small delay before callbacks to ensure scanner is stopped
+            setTimeout(() => {
+              onScan(barcodeData);
+              onClose();
+            }, 100);
           }
           // Suppress errors to avoid console spam
         });
@@ -279,6 +293,7 @@ export const BarcodeScanner = ({
     setIsScanning(false);
     setBarcodeDetected(false);
     setHasPermission(null);
+    hasScannedRef.current = false;
     setHasScanned(false);
     console.log('Scanner state reset');
   };
@@ -374,11 +389,12 @@ export const BarcodeScanner = ({
   const handleDemoScan = () => {
     console.log("Scan button clicked!");
     
-    // Prevent multiple scans
-    if (hasScanned) {
+    // Prevent multiple scans using ref
+    if (hasScannedRef.current) {
       console.log("Already scanned, ignoring duplicate scan");
       return;
     }
+    hasScannedRef.current = true;
     setHasScanned(true);
     
     let rawBarcode: string;
