@@ -10,6 +10,7 @@ import DocAudit from "./pages/DocAudit";
 import Dispatch from "./pages/Dispatch";
 import Analytics from "./pages/Analytics";
 import GatepassVerification from "./pages/GatepassVerification";
+import MasterData from "./pages/MasterData";
 import NotFound from "./pages/NotFound";
 import UserSwitcher from "./components/UserSwitcher";
 import { SessionProvider } from "./contexts/SessionContext";
@@ -31,7 +32,7 @@ const App = () => (
             <Route path="/dispatch" element={<Dispatch />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/verify" element={<GatepassVerification />} />
-            <Route path="/master-data" element={<Dashboard />} />
+            <Route path="/master-data" element={<MasterData />} />
             <Route path="/exceptions" element={<Dashboard />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

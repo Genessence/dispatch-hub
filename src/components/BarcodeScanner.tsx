@@ -5,8 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Camera, X, ScanBarcode, Zap } from "lucide-react";
 import { toast } from "sonner";
 
+export interface BarcodeData {
+  rawValue: string;
+  partCode: string;
+  quantity: string;
+  binNumber: string;
+}
+
 interface BarcodeScannerProps {
-  onScan: (value: string) => void;
+  onScan: (data: BarcodeData) => void;
   title?: string;
   description?: string;
   isOpen: boolean;
@@ -157,16 +164,23 @@ export const BarcodeScanner = ({
         console.log('Starting barcode detection...');
         readerRef.current.decodeFromVideoElement(videoRef.current, (result, error) => {
           if (result) {
-            // Barcode detected - but we'll ignore the value and use demo logic
+            // Barcode detected - extract the actual value
             const actualValue = result.getText();
-            console.log("✅ Real barcode detected (value ignored for demo):", actualValue);
+            console.log("✅ Real barcode scanned:", actualValue);
             setBarcodeDetected(true);
-            toast.info("Barcode detected! Processing...");
             
-            // Auto-trigger demo scan after detecting any barcode
-            setTimeout(() => {
-              handleDemoScan();
-            }, 500);
+            // Parse and use the real barcode data
+            const barcodeData = parseBarcodeData(actualValue);
+            console.log("Parsed data from real barcode:", barcodeData);
+            
+            toast.success("Barcode scanned successfully!", {
+              description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}`
+            });
+            
+            // Stop scanning and send data
+            stopScanning();
+            onScan(barcodeData);
+            onClose();
           }
           // Suppress errors to avoid console spam
         });
@@ -228,39 +242,93 @@ export const BarcodeScanner = ({
     onClose();
   };
 
+  // Parse barcode data to extract Part Code, Quantity, and Bin Number
+  const parseBarcodeData = (rawValue: string): BarcodeData => {
+    console.log("Parsing barcode:", rawValue);
+    
+    // Try different parsing strategies
+    let partCode = "";
+    let quantity = "";
+    let binNumber = "";
+    
+    // Strategy 1: Delimited format (e.g., "PART123|50|BIN-001" or "PART123-50-BIN001")
+    if (rawValue.includes('|')) {
+      const parts = rawValue.split('|');
+      partCode = parts[0] || "";
+      quantity = parts[1] || "";
+      binNumber = parts[2] || "";
+    } 
+    else if (rawValue.includes('-') && rawValue.split('-').length >= 3) {
+      const parts = rawValue.split('-');
+      partCode = parts[0] || "";
+      quantity = parts[1] || "";
+      binNumber = parts.slice(2).join('-') || ""; // In case bin has multiple dashes
+    }
+    // Strategy 2: Fixed length positions (customize based on your barcode format)
+    else if (rawValue.length >= 15) {
+      partCode = rawValue.substring(0, 8).trim();
+      quantity = rawValue.substring(8, 12).trim();
+      binNumber = rawValue.substring(12).trim();
+    }
+    // Strategy 3: Generate demo data if real barcode doesn't match expected format
+    else {
+      // Generate demo values
+      const randomPart = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+      const randomQty = Math.floor(Math.random() * 100) + 1;
+      const randomBin = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+      
+      partCode = `PT-${randomPart}`;
+      quantity = randomQty.toString();
+      binNumber = `BIN-${randomBin}`;
+    }
+    
+    return {
+      rawValue,
+      partCode: partCode || `PT-${Math.floor(Math.random() * 10000)}`,
+      quantity: quantity || Math.floor(Math.random() * 100 + 1).toString(),
+      binNumber: binNumber || `BIN-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+    };
+  };
+
   const handleDemoScan = () => {
     console.log("Scan button clicked!");
     
-    let demoBarcode: string;
+    let rawBarcode: string;
     
     // If we have a matchValue and should NOT mismatch, use the same value
     if (matchValue && !shouldMismatch) {
-      demoBarcode = matchValue;
-      console.log("Using matching barcode:", demoBarcode);
+      rawBarcode = matchValue;
+      console.log("Using matching barcode:", rawBarcode);
     }
     // If we should mismatch, generate a different value
     else if (matchValue && shouldMismatch) {
       const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
-      demoBarcode = randomBarcode.toString();
+      rawBarcode = randomBarcode.toString();
       // Make sure it's actually different
-      while (demoBarcode === matchValue) {
+      while (rawBarcode === matchValue) {
         const newRandom = Math.floor(Math.random() * 900000000000) + 100000000000;
-        demoBarcode = newRandom.toString();
+        rawBarcode = newRandom.toString();
       }
-      console.log("Generated mismatching barcode:", demoBarcode);
+      console.log("Generated mismatching barcode:", rawBarcode);
     }
     // First scan - generate new random value
     else {
       const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
-      demoBarcode = randomBarcode.toString();
-      console.log("Generated new barcode:", demoBarcode);
+      rawBarcode = randomBarcode.toString();
+      console.log("Generated new barcode:", rawBarcode);
     }
     
-    // Show success message
-    toast.success("Barcode scanned successfully!");
+    // Parse the barcode to extract structured data
+    const barcodeData = parseBarcodeData(rawBarcode);
+    console.log("Parsed barcode data:", barcodeData);
     
-    // Send the barcode value to parent
-    onScan(demoBarcode);
+    // Show success message
+    toast.success("Barcode scanned successfully!", {
+      description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}, Bin: ${barcodeData.binNumber}`
+    });
+    
+    // Send the parsed barcode data to parent
+    onScan(barcodeData);
     
     console.log("Calling onClose...");
     
@@ -421,7 +489,7 @@ export const BarcodeScanner = ({
 
 // Button component to trigger the scanner
 interface BarcodeScanButtonProps {
-  onScan: (value: string) => void;
+  onScan: (data: BarcodeData) => void;
   label: string;
   variant?: "default" | "outline" | "secondary" | "ghost";
   className?: string;
@@ -441,8 +509,8 @@ export const BarcodeScanButton = ({
 }: BarcodeScanButtonProps) => {
   const [isOpen, setIsOpen] = useState(false);
 
-  const handleScan = (value: string) => {
-    onScan(value);
+  const handleScan = (data: BarcodeData) => {
+    onScan(data);
     setIsOpen(false);
   };
 

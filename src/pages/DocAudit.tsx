@@ -7,12 +7,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ArrowLeft, ScanBarcode, CheckCircle2, XCircle, AlertTriangle, Radio } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { BarcodeScanButton } from "@/components/BarcodeScanner";
+import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 
 const DocAudit = () => {
   const [selectedInvoice, setSelectedInvoice] = useState("");
-  const [customerScan, setCustomerScan] = useState("");
-  const [autolivScan, setAutolivScan] = useState("");
+  const [customerScan, setCustomerScan] = useState<BarcodeData | null>(null);
+  const [autolivScan, setAutolivScan] = useState<BarcodeData | null>(null);
   const [scannerConnected, setScannerConnected] = useState(true);
 
   const invoices = [
@@ -154,8 +154,8 @@ const DocAudit = () => {
               variant="ghost"
               onClick={() => {
                 setSelectedInvoice("");
-                setCustomerScan("");
-                setAutolivScan("");
+                setCustomerScan(null);
+                setAutolivScan(null);
               }}
               className="flex items-center gap-2 mb-4 text-sm sm:text-base"
             >
@@ -182,18 +182,31 @@ const DocAudit = () => {
                 <div className="space-y-2">
                   {customerScan && (
                     <div className="p-3 bg-muted rounded-lg">
-                      <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
-                      <p className="text-sm font-mono font-semibold break-all">{customerScan}</p>
+                      <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Part Code</p>
+                          <p className="text-xs font-mono font-bold">{customerScan.partCode}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Quantity</p>
+                          <p className="text-xs font-mono font-bold">{customerScan.quantity}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Bin Number</p>
+                          <p className="text-xs font-mono font-bold">{customerScan.binNumber}</p>
+                        </div>
+                      </div>
                     </div>
                   )}
                   <BarcodeScanButton
-                    onScan={(value) => {
-                      setCustomerScan(value);
+                    onScan={(data) => {
+                      setCustomerScan(data);
                       toast.success("Customer barcode scanned!");
                     }}
                     label={customerScan ? "Scan Again" : "Scan Customer Barcode"}
                     variant="default"
-                    matchValue={autolivScan || undefined}
+                    matchValue={autolivScan?.rawValue || undefined}
                     shouldMismatch={!!autolivScan}
                   />
                   {customerScan && (
@@ -227,18 +240,31 @@ const DocAudit = () => {
                 <div className="space-y-2">
                   {autolivScan && (
                     <div className="p-3 bg-muted rounded-lg">
-                      <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
-                      <p className="text-sm font-mono font-semibold break-all">{autolivScan}</p>
+                      <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Part Code</p>
+                          <p className="text-xs font-mono font-bold">{autolivScan.partCode}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Quantity</p>
+                          <p className="text-xs font-mono font-bold">{autolivScan.quantity}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Bin Number</p>
+                          <p className="text-xs font-mono font-bold">{autolivScan.binNumber}</p>
+                        </div>
+                      </div>
                     </div>
                   )}
                   <BarcodeScanButton
-                    onScan={(value) => {
-                      setAutolivScan(value);
+                    onScan={(data) => {
+                      setAutolivScan(data);
                       toast.success("Autoliv barcode scanned!");
                     }}
                     label={autolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
                     variant="secondary"
-                    matchValue={customerScan || undefined}
+                    matchValue={customerScan?.rawValue || undefined}
                     shouldMismatch={false}
                   />
                   {autolivScan && (

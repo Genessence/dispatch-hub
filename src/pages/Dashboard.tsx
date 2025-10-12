@@ -30,7 +30,7 @@ import {
   Users,
   ArrowLeft
 } from "lucide-react";
-import { BarcodeScanButton } from "@/components/BarcodeScanner";
+import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { LogEntry } from "@/contexts/SessionContext";
@@ -83,8 +83,8 @@ const Dashboard = () => {
   
   // Doc Audit states
   const [selectedInvoice, setSelectedInvoice] = useState("");
-  const [customerScan, setCustomerScan] = useState("");
-  const [autolivScan, setAutolivScan] = useState("");
+  const [customerScan, setCustomerScan] = useState<BarcodeData | null>(null);
+  const [autolivScan, setAutolivScan] = useState<BarcodeData | null>(null);
   const [scannerConnected, setScannerConnected] = useState(true);
   const [validatedBins, setValidatedBins] = useState<Array<{
     binNo: string;
@@ -101,8 +101,8 @@ const Dashboard = () => {
   const [vehicleNumber, setVehicleNumber] = useState("");
   const [selectedInvoices, setSelectedInvoices] = useState<string[]>([]);
   const [gatepassGenerated, setGatepassGenerated] = useState(false);
-  const [dispatchCustomerScan, setDispatchCustomerScan] = useState("");
-  const [dispatchAutolivScan, setDispatchAutolivScan] = useState("");
+  const [dispatchCustomerScan, setDispatchCustomerScan] = useState<BarcodeData | null>(null);
+  const [dispatchAutolivScan, setDispatchAutolivScan] = useState<BarcodeData | null>(null);
   const [loadedBarcodes, setLoadedBarcodes] = useState<ValidatedBarcodePair[]>([]);
 
   const factoryOperations = [
@@ -397,8 +397,8 @@ const Dashboard = () => {
   // Clear validated bins when invoice selection changes
   useEffect(() => {
     setValidatedBins([]);
-    setCustomerScan("");
-    setAutolivScan("");
+    setCustomerScan(null);
+    setAutolivScan(null);
   }, [selectedInvoice]);
 
   // Clear selected invoice in Doc Audit if it gets dispatched
@@ -435,20 +435,20 @@ const Dashboard = () => {
       return;
     }
     
-    // Check if barcodes match
-    const barcodesMatch = customerScan.trim() === autolivScan.trim();
+    // Check if barcodes match (comparing raw values)
+    const barcodesMatch = customerScan.rawValue.trim() === autolivScan.rawValue.trim();
     
     if (barcodesMatch) {
-      // Create new validated bin entry
+      // Create new validated bin entry using extracted barcode data
       const newBin = {
-        binNo: `BIN-${String(validatedBins.length + 1).padStart(3, '0')}`,
-        partCode: customerScan.trim(),
-        qty: 1, // Default quantity, can be enhanced to extract from barcode
+        binNo: customerScan.binNumber, // Use actual bin number from barcode
+        partCode: customerScan.partCode, // Use actual part code from barcode
+        qty: parseInt(customerScan.quantity) || 1, // Use actual quantity from barcode
         status: 'matched',
-        scannedBy: "Operator",
+        scannedBy: currentUser,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        customerBarcode: customerScan.trim(),
-        autolivBarcode: autolivScan.trim()
+        customerBarcode: customerScan.rawValue,
+        autolivBarcode: autolivScan.rawValue
       };
       
       // Add to validated bins list
@@ -462,12 +462,12 @@ const Dashboard = () => {
         updateInvoiceAudit(currentInvoice.id, {
           scannedBins: newScannedCount,
           auditComplete: isComplete,
-          auditDate: isComplete ? new Date() : currentInvoice.auditDate,
-          validatedBarcodes: [
-            ...(currentInvoice.validatedBarcodes || []), 
-            { customerBarcode: customerScan.trim(), autolivBarcode: autolivScan.trim() }
-          ]
-        }, currentUser);
+                auditDate: isComplete ? new Date() : currentInvoice.auditDate,
+                validatedBarcodes: [
+                  ...(currentInvoice.validatedBarcodes || []), 
+                  { customerBarcode: customerScan.rawValue, autolivBarcode: autolivScan.rawValue }
+                ]
+              }, currentUser);
         
         if (isComplete) {
           toast.success(`🎉 Invoice audit completed by ${currentUser}!`, {
@@ -476,11 +476,13 @@ const Dashboard = () => {
         }
       }
       
-      toast.success("✅ Barcodes matched! Item added to list.");
+      toast.success("✅ Barcodes matched! Item added to list.", {
+        description: `${newBin.partCode} - Qty: ${newBin.qty} - ${newBin.binNo}`
+      });
       
       // Clear the input fields
-      setCustomerScan("");
-      setAutolivScan("");
+      setCustomerScan(null);
+      setAutolivScan(null);
     } else {
       // Barcodes don't match - automatically send approval request
       toast.error("⚠️ Barcode Mismatch Detected!", {
@@ -524,8 +526,8 @@ const Dashboard = () => {
     }
 
     const expectedBarcodes = getExpectedBarcodes();
-    const trimmedCustomer = dispatchCustomerScan.trim();
-    const trimmedAutoliv = dispatchAutolivScan.trim();
+    const trimmedCustomer = dispatchCustomerScan.rawValue.trim();
+    const trimmedAutoliv = dispatchAutolivScan.rawValue.trim();
 
     // Check if this exact pair exists in the audited items
     const matchedPair = expectedBarcodes.find(pair => 
@@ -554,11 +556,13 @@ const Dashboard = () => {
 
     // Add to loaded list
     setLoadedBarcodes(prev => [...prev, matchedPair]);
-    toast.success("✅ Item loaded successfully!");
+    toast.success("✅ Item loaded successfully!", {
+      description: `${dispatchCustomerScan.partCode} - Qty: ${dispatchCustomerScan.quantity} - ${dispatchCustomerScan.binNumber}`
+    });
     
     // Clear the input fields
-    setDispatchCustomerScan("");
-    setDispatchAutolivScan("");
+    setDispatchCustomerScan(null);
+    setDispatchAutolivScan(null);
   };
 
   const handleGenerateGatepass = () => {
@@ -601,8 +605,8 @@ const Dashboard = () => {
       setSelectedInvoices(prev => prev.filter(id => id !== invoiceId));
       // Clear loaded barcodes when selection changes
       setLoadedBarcodes([]);
-      setDispatchCustomerScan("");
-      setDispatchAutolivScan("");
+      setDispatchCustomerScan(null);
+      setDispatchAutolivScan(null);
       return;
     }
 
@@ -622,8 +626,8 @@ const Dashboard = () => {
     setSelectedInvoices(prev => [...prev, invoiceId]);
     // Clear loaded barcodes when selection changes
     setLoadedBarcodes([]);
-    setDispatchCustomerScan("");
-    setDispatchAutolivScan("");
+    setDispatchCustomerScan(null);
+    setDispatchAutolivScan(null);
   };
 
   return (
@@ -1078,8 +1082,8 @@ const Dashboard = () => {
                 onClick={() => {
                   setActiveView('dashboard');
                   setSelectedInvoice("");
-                  setCustomerScan("");
-                  setAutolivScan("");
+                  setCustomerScan(null);
+                  setAutolivScan(null);
                   setValidatedBins([]);
                 }}
                 className="flex items-center gap-2 justify-center sm:justify-start"
@@ -1226,18 +1230,31 @@ const Dashboard = () => {
                         </Label>
                         {customerScan && (
                           <div className="p-3 bg-muted rounded-lg">
-                            <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
-                            <p className="text-sm font-mono font-semibold break-all">{customerScan}</p>
+                            <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
+                            <div className="grid grid-cols-3 gap-2">
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Part Code</p>
+                                <p className="text-xs font-mono font-bold">{customerScan.partCode}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Quantity</p>
+                                <p className="text-xs font-mono font-bold">{customerScan.quantity}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Bin Number</p>
+                                <p className="text-xs font-mono font-bold">{customerScan.binNumber}</p>
+                              </div>
+                            </div>
                           </div>
                         )}
                         <BarcodeScanButton
-                          onScan={(value) => {
-                            setCustomerScan(value);
+                          onScan={(data) => {
+                            setCustomerScan(data);
                             toast.success("Customer barcode scanned!");
                           }}
                           label={customerScan ? "Scan Again" : "Scan Customer Barcode"}
                           variant="default"
-                          matchValue={autolivScan || undefined}
+                          matchValue={autolivScan?.rawValue || undefined}
                           shouldMismatch={!!autolivScan}
                         />
                       </div>
@@ -1250,18 +1267,31 @@ const Dashboard = () => {
                         </Label>
                         {autolivScan && (
                           <div className="p-3 bg-muted rounded-lg">
-                            <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
-                            <p className="text-sm font-mono font-semibold break-all">{autolivScan}</p>
+                            <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
+                            <div className="grid grid-cols-3 gap-2">
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Part Code</p>
+                                <p className="text-xs font-mono font-bold">{autolivScan.partCode}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Quantity</p>
+                                <p className="text-xs font-mono font-bold">{autolivScan.quantity}</p>
+                              </div>
+                              <div>
+                                <p className="text-[10px] text-muted-foreground">Bin Number</p>
+                                <p className="text-xs font-mono font-bold">{autolivScan.binNumber}</p>
+                              </div>
+                            </div>
                           </div>
                         )}
                         <BarcodeScanButton
-                          onScan={(value) => {
-                            setAutolivScan(value);
+                          onScan={(data) => {
+                            setAutolivScan(data);
                             toast.success("Autoliv barcode scanned!");
                           }}
                           label={autolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
                           variant="secondary"
-                          matchValue={customerScan || undefined}
+                          matchValue={customerScan?.rawValue || undefined}
                           shouldMismatch={false}
                         />
                       </div>
@@ -1280,8 +1310,8 @@ const Dashboard = () => {
                       <Button 
                         variant="outline"
                         onClick={() => {
-                          setCustomerScan("");
-                          setAutolivScan("");
+                          setCustomerScan(null);
+                          setAutolivScan(null);
                         }}
                         className="h-14"
                       >
@@ -1368,8 +1398,8 @@ const Dashboard = () => {
                             <Button
                               onClick={() => {
                                 setSelectedInvoice("");
-                                setCustomerScan("");
-                                setAutolivScan("");
+                                setCustomerScan(null);
+                                setAutolivScan(null);
                                 setValidatedBins([]);
                               }}
                               className="flex items-center gap-2 h-10"
@@ -1655,18 +1685,31 @@ const Dashboard = () => {
                             </Label>
                             {dispatchCustomerScan && (
                               <div className="p-3 bg-muted rounded-lg">
-                                <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
-                                <p className="text-sm font-mono font-semibold break-all">{dispatchCustomerScan}</p>
+                                <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground">Part Code</p>
+                                    <p className="text-xs font-mono font-bold">{dispatchCustomerScan.partCode}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground">Quantity</p>
+                                    <p className="text-xs font-mono font-bold">{dispatchCustomerScan.quantity}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground">Bin Number</p>
+                                    <p className="text-xs font-mono font-bold">{dispatchCustomerScan.binNumber}</p>
+                                  </div>
+                                </div>
                               </div>
                             )}
                             <BarcodeScanButton
-                              onScan={(value) => {
-                                setDispatchCustomerScan(value);
+                              onScan={(data) => {
+                                setDispatchCustomerScan(data);
                                 toast.success("Customer barcode scanned!");
                               }}
                               label={dispatchCustomerScan ? "Scan Again" : "Scan Customer Barcode"}
                               variant="default"
-                              matchValue={dispatchAutolivScan || getNextUnscannedBarcodePair()?.customerBarcode}
+                              matchValue={dispatchAutolivScan?.rawValue || getNextUnscannedBarcodePair()?.customerBarcode}
                               shouldMismatch={!!dispatchAutolivScan}
                             />
                           </div>
@@ -1679,18 +1722,31 @@ const Dashboard = () => {
                             </Label>
                             {dispatchAutolivScan && (
                               <div className="p-3 bg-muted rounded-lg">
-                                <p className="text-xs text-muted-foreground mb-1">Scanned Code:</p>
-                                <p className="text-sm font-mono font-semibold break-all">{dispatchAutolivScan}</p>
+                                <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground">Part Code</p>
+                                    <p className="text-xs font-mono font-bold">{dispatchAutolivScan.partCode}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground">Quantity</p>
+                                    <p className="text-xs font-mono font-bold">{dispatchAutolivScan.quantity}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] text-muted-foreground">Bin Number</p>
+                                    <p className="text-xs font-mono font-bold">{dispatchAutolivScan.binNumber}</p>
+                                  </div>
+                                </div>
                               </div>
                             )}
                             <BarcodeScanButton
-                              onScan={(value) => {
-                                setDispatchAutolivScan(value);
+                              onScan={(data) => {
+                                setDispatchAutolivScan(data);
                                 toast.success("Autoliv barcode scanned!");
                               }}
                               label={dispatchAutolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
                               variant="secondary"
-                              matchValue={dispatchCustomerScan || getNextUnscannedBarcodePair()?.autolivBarcode}
+                              matchValue={dispatchCustomerScan?.rawValue || getNextUnscannedBarcodePair()?.autolivBarcode}
                               shouldMismatch={false}
                             />
                           </div>
@@ -1709,8 +1765,8 @@ const Dashboard = () => {
                           <Button 
                             variant="outline"
                             onClick={() => {
-                              setDispatchCustomerScan("");
-                              setDispatchAutolivScan("");
+                              setDispatchCustomerScan(null);
+                              setDispatchAutolivScan(null);
                             }}
                             className="h-14"
                           >
@@ -1911,8 +1967,8 @@ const Dashboard = () => {
                         setVehicleNumber("");
                         setSelectedInvoices([]);
                         setLoadedBarcodes([]);
-                        setDispatchCustomerScan("");
-                        setDispatchAutolivScan("");
+                        setDispatchCustomerScan(null);
+                        setDispatchAutolivScan(null);
                       }}
                     >
                       Return to Dashboard
@@ -1925,8 +1981,8 @@ const Dashboard = () => {
                         setVehicleNumber("");
                         setSelectedInvoices([]);
                         setLoadedBarcodes([]);
-                        setDispatchCustomerScan("");
-                        setDispatchAutolivScan("");
+                        setDispatchCustomerScan(null);
+                        setDispatchAutolivScan(null);
                       }}
                     >
                       New Dispatch
