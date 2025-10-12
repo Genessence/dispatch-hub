@@ -231,14 +231,47 @@ const Dashboard = () => {
 
   const parseFile = async (file: File) => {
     return new Promise<{ rows: UploadedRow[], invoices: InvoiceData[] }>((resolve, reject) => {
+      // Check file size (limit to 10MB for mobile devices)
+      if (file.size > 10 * 1024 * 1024) {
+        reject(new Error('File too large. Please use files smaller than 10MB.'));
+        return;
+      }
+      
       const reader = new FileReader();
       
       reader.onload = (e) => {
         try {
           const data = e.target?.result;
-          const workbook = XLSX.read(data, { type: 'array' });
+          if (!data) {
+            reject(new Error('Failed to read file data'));
+            return;
+          }
+          
+          // Parse with better error handling for mobile
+          const workbook = XLSX.read(data, { 
+            type: 'array',
+            cellDates: true,
+            cellNF: false,
+            cellText: false
+          });
+          
+          if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+            reject(new Error('No sheets found in the file'));
+            return;
+          }
+          
           const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+          if (!firstSheet) {
+            reject(new Error('First sheet is empty or invalid'));
+            return;
+          }
+          
           const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+          
+          if (!jsonData || jsonData.length === 0) {
+            reject(new Error('No data found in the file'));
+            return;
+          }
           
           // Parse and validate the data
           const parsedData: UploadedRow[] = jsonData.map((row: any, index: number) => {
@@ -339,7 +372,15 @@ const Dashboard = () => {
         }
       };
       
-      reader.onerror = (error) => reject(error);
+      reader.onerror = (error) => {
+        console.error('FileReader error:', error);
+        reject(new Error('Failed to read file. Please try again.'));
+      };
+      
+      reader.onabort = () => {
+        reject(new Error('File reading was aborted'));
+      };
+      
       reader.readAsArrayBuffer(file);
     });
   };
@@ -353,10 +394,24 @@ const Dashboard = () => {
       const droppedFile = e.dataTransfer.files[0];
       setFile(droppedFile);
       
-      const loadingToast = toast.loading("Parsing file...");
+      const loadingToast = toast.loading("Parsing file...", {
+        duration: 0 // Prevent auto-dismiss
+      });
       
       try {
-        const { rows, invoices } = await parseFile(droppedFile);
+        // Add timeout for mobile devices (reduce to 15 seconds)
+        const parsePromise = parseFile(droppedFile);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), 15000)
+        );
+        
+        const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
+        
+        // Validate results
+        if (!rows || !invoices) {
+          throw new Error('Invalid file format - no data found');
+        }
+        
         setUploadedData(rows);
         setProcessedInvoices(invoices);
         setUploadStage('validate');
@@ -364,8 +419,28 @@ const Dashboard = () => {
         toast.success(`File uploaded successfully! Found ${rows.length} records from ${invoices.length} invoices.`);
       } catch (error) {
         toast.dismiss(loadingToast);
-        toast.error("Error parsing file. Please check the file format.");
-        console.error(error);
+        console.error('File parsing error:', error);
+        
+        // More specific error messages for mobile
+        let errorMessage = "Error parsing file. Please check the file format and try again.";
+        if (error instanceof Error) {
+          if (error.message.includes('timeout')) {
+            errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
+          } else if (error.message.includes('File too large')) {
+            errorMessage = "File is too large. Please use files smaller than 10MB.";
+          } else if (error.message.includes('No data found')) {
+            errorMessage = "No data found in the file. Please check the file format.";
+          } else {
+            errorMessage = error.message;
+          }
+        }
+        
+        toast.error(errorMessage);
+        
+        // Reset file state on error
+        setFile(null);
+        setUploadedData([]);
+        setProcessedInvoices([]);
       }
     }
   };
@@ -375,10 +450,24 @@ const Dashboard = () => {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
       
-      const loadingToast = toast.loading("Parsing file...");
+      const loadingToast = toast.loading("Parsing file...", {
+        duration: 0 // Prevent auto-dismiss
+      });
       
       try {
-        const { rows, invoices } = await parseFile(selectedFile);
+        // Add timeout for mobile devices (reduce to 15 seconds)
+        const parsePromise = parseFile(selectedFile);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), 15000)
+        );
+        
+        const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
+        
+        // Validate results
+        if (!rows || !invoices) {
+          throw new Error('Invalid file format - no data found');
+        }
+        
         setUploadedData(rows);
         setProcessedInvoices(invoices);
         setUploadStage('validate');
@@ -386,8 +475,28 @@ const Dashboard = () => {
         toast.success(`File uploaded successfully! Found ${rows.length} records from ${invoices.length} invoices.`);
       } catch (error) {
         toast.dismiss(loadingToast);
-        toast.error("Error parsing file. Please check the file format.");
-        console.error(error);
+        console.error('File parsing error:', error);
+        
+        // More specific error messages for mobile
+        let errorMessage = "Error parsing file. Please check the file format and try again.";
+        if (error instanceof Error) {
+          if (error.message.includes('timeout')) {
+            errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
+          } else if (error.message.includes('File too large')) {
+            errorMessage = "File is too large. Please use files smaller than 10MB.";
+          } else if (error.message.includes('No data found')) {
+            errorMessage = "No data found in the file. Please check the file format.";
+          } else {
+            errorMessage = error.message;
+          }
+        }
+        
+        toast.error(errorMessage);
+        
+        // Reset file state on error
+        setFile(null);
+        setUploadedData([]);
+        setProcessedInvoices([]);
       }
     }
   };
