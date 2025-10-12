@@ -1369,6 +1369,7 @@ const Dashboard = () => {
                           variant="default"
                           matchValue={autolivScan?.rawValue || undefined}
                           shouldMismatch={!!autolivScan}
+                          matchData={autolivScan || undefined}
                         />
                       </div>
 
@@ -1406,6 +1407,7 @@ const Dashboard = () => {
                           variant="secondary"
                           matchValue={customerScan?.rawValue || undefined}
                           shouldMismatch={false}
+                          matchData={customerScan || undefined}
                         />
                       </div>
                     </div>
@@ -1807,6 +1809,7 @@ const Dashboard = () => {
                               variant="default"
                               matchValue={dispatchAutolivScan?.rawValue || getNextUnscannedBarcodePair()?.customerBarcode}
                               shouldMismatch={!!dispatchAutolivScan}
+                              matchData={dispatchAutolivScan || undefined}
                             />
                           </div>
 
@@ -1844,6 +1847,7 @@ const Dashboard = () => {
                               variant="secondary"
                               matchValue={dispatchCustomerScan?.rawValue || getNextUnscannedBarcodePair()?.autolivBarcode}
                               shouldMismatch={false}
+                              matchData={dispatchCustomerScan || undefined}
                             />
                           </div>
                         </div>

@@ -20,6 +20,7 @@ interface BarcodeScannerProps {
   onClose: () => void;
   matchValue?: string; // If provided, use this value to match
   shouldMismatch?: boolean; // If true, generate different value
+  matchData?: BarcodeData; // The full barcode data to match (for keeping same values)
 }
 
 export const BarcodeScanner = ({ 
@@ -29,7 +30,8 @@ export const BarcodeScanner = ({
   isOpen, 
   onClose,
   matchValue,
-  shouldMismatch = false
+  shouldMismatch = false,
+  matchData
 }: BarcodeScannerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
@@ -169,14 +171,9 @@ export const BarcodeScanner = ({
             console.log("✅ Real barcode scanned:", actualValue);
             setBarcodeDetected(true);
             
-            // Use specific values when real barcode is detected
-            const barcodeData: BarcodeData = {
-              rawValue: actualValue,
-              partCode: "2023919386007",
-              quantity: "3",
-              binNumber: "76480M66T00"
-            };
-            console.log("Using specific values for real barcode:", barcodeData);
+            // Parse the real barcode to generate unique values
+            const barcodeData = parseBarcodeData(actualValue);
+            console.log("Generated values for real barcode:", barcodeData);
             
             toast.success("Barcode scanned successfully!", {
               description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}`
@@ -304,19 +301,18 @@ export const BarcodeScanner = ({
     let rawBarcode: string;
     let barcodeData: BarcodeData;
     
-    // If we have a matchValue and should NOT mismatch, use specific matching values
-    if (matchValue && !shouldMismatch) {
-      rawBarcode = matchValue;
-      // Use specific values for matching scenario
+    // If we have matchData and should NOT mismatch, use the EXACT SAME data
+    if (matchData && !shouldMismatch) {
+      // Use the exact same data from the first scan to ensure they match
       barcodeData = {
-        rawValue: rawBarcode,
-        partCode: "2023919386007",
-        quantity: "3",
-        binNumber: "76480M66T00"
+        rawValue: matchData.rawValue,
+        partCode: matchData.partCode,
+        quantity: matchData.quantity,
+        binNumber: matchData.binNumber
       };
-      console.log("Using matching barcode with specific values:", barcodeData);
+      console.log("Using EXACT matching data from first scan:", barcodeData);
     }
-    // If we should mismatch, generate a different value
+    // If we should mismatch, generate completely different values
     else if (matchValue && shouldMismatch) {
       const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
       rawBarcode = randomBarcode.toString();
@@ -328,18 +324,13 @@ export const BarcodeScanner = ({
       console.log("Generated mismatching barcode:", rawBarcode);
       barcodeData = parseBarcodeData(rawBarcode);
     }
-    // First scan - generate new random value and use specific values
+    // First scan - generate new random value with unique data
     else {
       const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
       rawBarcode = randomBarcode.toString();
-      // Use specific values for first scan too
-      barcodeData = {
-        rawValue: rawBarcode,
-        partCode: "2023919386007",
-        quantity: "3",
-        binNumber: "76480M66T00"
-      };
-      console.log("Generated new barcode with specific values:", barcodeData);
+      // Generate unique random values for each NEW scan
+      barcodeData = parseBarcodeData(rawBarcode);
+      console.log("Generated NEW barcode with unique values:", barcodeData);
     }
     
     console.log("Final barcode data:", barcodeData);
@@ -518,6 +509,7 @@ interface BarcodeScanButtonProps {
   disabled?: boolean;
   matchValue?: string; // Pass to scanner for matching logic
   shouldMismatch?: boolean; // Pass to scanner for mismatch logic
+  matchData?: BarcodeData; // Pass the full barcode data to match
 }
 
 export const BarcodeScanButton = ({ 
@@ -527,7 +519,8 @@ export const BarcodeScanButton = ({
   className = "", 
   disabled = false,
   matchValue,
-  shouldMismatch = false
+  shouldMismatch = false,
+  matchData
 }: BarcodeScanButtonProps) => {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -557,6 +550,7 @@ export const BarcodeScanButton = ({
         description="Position the barcode within the frame to scan"
         matchValue={matchValue}
         shouldMismatch={shouldMismatch}
+        matchData={matchData}
       />
     </>
   );
