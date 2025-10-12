@@ -232,12 +232,18 @@ const Dashboard = () => {
   const parseFile = async (file: File) => {
     return new Promise<{ rows: UploadedRow[], invoices: InvoiceData[] }>((resolve, reject) => {
       // Check file size (limit to 5MB for mobile devices)
-      const maxSize = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
-        || (window.innerWidth < 768 && ('ontouchstart' in window)) 
-        ? 5 * 1024 * 1024 : 10 * 1024 * 1024; // 5MB for mobile, 10MB for desktop
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+        || (window.innerWidth < 768 && ('ontouchstart' in window));
+      const maxSize = isMobile ? 5 * 1024 * 1024 : 10 * 1024 * 1024; // 5MB for mobile, 10MB for desktop
       
       if (file.size > maxSize) {
         reject(new Error(`File too large. Please use files smaller than ${Math.round(maxSize / (1024 * 1024))}MB.`));
+        return;
+      }
+      
+      // Check file type for mobile compatibility
+      if (isMobile && !file.name.match(/\.(xlsx|xls|csv)$/i)) {
+        reject(new Error('Mobile browsers support .xlsx, .xls, and .csv files only. Please convert your file to one of these formats.'));
         return;
       }
       
@@ -251,23 +257,52 @@ const Dashboard = () => {
             return;
           }
           
-          // Parse with simplified settings for better mobile compatibility
+          // Detect mobile device more accurately
           const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
             || (window.innerWidth < 768 && ('ontouchstart' in window));
           
-          const workbook = XLSX.read(data, { 
-            type: 'array',
-            cellDates: false, // Disable for mobile to reduce processing
-            cellNF: false,
-            cellText: false,
-            raw: false,
-            dateNF: 'yyyy-mm-dd', // Simple date format
-            sheetStubs: false, // Don't process empty cells
-            bookVBA: false, // Skip VBA processing
-            bookSheets: false, // Don't process all sheets at once
-            bookProps: false, // Skip metadata processing
-            bookFiles: false // Skip file references
+          console.log('Mobile detection:', {
+            userAgent: navigator.userAgent,
+            isMobile: isMobile,
+            screenWidth: window.innerWidth,
+            hasTouch: 'ontouchstart' in window
           });
+          
+          // Use different parsing strategy for mobile vs desktop
+          let workbook;
+          if (isMobile) {
+            // Mobile: Use basic parsing with minimal options
+            console.log('Using mobile parsing strategy');
+            workbook = XLSX.read(data, { 
+              type: 'array',
+              cellDates: false,
+              cellNF: false,
+              cellText: false,
+              raw: false,
+              sheetStubs: false,
+              bookVBA: false,
+              bookSheets: false,
+              bookProps: false,
+              bookFiles: false,
+              WTF: false // Disable warning messages
+            });
+          } else {
+            // Desktop: Use standard parsing
+            console.log('Using desktop parsing strategy');
+            workbook = XLSX.read(data, { 
+              type: 'array',
+              cellDates: false,
+              cellNF: false,
+              cellText: false,
+              raw: false,
+              dateNF: 'yyyy-mm-dd',
+              sheetStubs: false,
+              bookVBA: false,
+              bookSheets: false,
+              bookProps: false,
+              bookFiles: false
+            });
+          }
           
           if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
             reject(new Error('No sheets found in the file'));
@@ -286,46 +321,97 @@ const Dashboard = () => {
           let dataRows: string[][] = [];
           
           try {
-            // Try array format first
-            jsonData = XLSX.utils.sheet_to_json(firstSheet, {
-              header: 1, // Use array format
-              defval: '', // Default empty value
-              raw: false, // Convert to strings
-              range: isMobile ? 1000 : undefined // Limit to 1000 rows on mobile
-            });
-            
-            if (!jsonData || jsonData.length === 0) {
-              throw new Error('No data with array format');
-            }
-            
-            // Convert array format to headers and data rows
-            if (Array.isArray(jsonData[0])) {
-              headers = jsonData[0] as string[];
-              dataRows = jsonData.slice(1) as string[][];
+            if (isMobile) {
+              // Mobile: Try object format first (more reliable on mobile)
+              console.log('Mobile: Trying object format first');
+              jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+                defval: '',
+                raw: false,
+                range: 1000 // Limit to 1000 rows on mobile
+              });
+              
+              if (!jsonData || jsonData.length === 0) {
+                throw new Error('No data with object format');
+              }
+              
+              // Convert object format to headers and data rows
+              if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
+                headers = Object.keys(jsonData[0]);
+                dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
+                console.log('Mobile: Object format successful');
+              } else {
+                throw new Error('Invalid object format');
+              }
             } else {
-              throw new Error('Unexpected array format');
+              // Desktop: Try array format first
+              console.log('Desktop: Trying array format first');
+              jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+                header: 1,
+                defval: '',
+                raw: false
+              });
+              
+              if (!jsonData || jsonData.length === 0) {
+                throw new Error('No data with array format');
+              }
+              
+              // Convert array format to headers and data rows
+              if (Array.isArray(jsonData[0])) {
+                headers = jsonData[0] as string[];
+                dataRows = jsonData.slice(1) as string[][];
+                console.log('Desktop: Array format successful');
+              } else {
+                throw new Error('Unexpected array format');
+              }
             }
-          } catch (arrayError) {
-            console.log('Array format failed, trying object format:', arrayError);
+          } catch (firstError) {
+            console.log('First format failed, trying fallback:', firstError);
             
-            // Fallback to object format
-            jsonData = XLSX.utils.sheet_to_json(firstSheet, {
-              defval: '', // Default empty value
-              raw: false, // Convert to strings
-              range: isMobile ? 1000 : undefined // Limit to 1000 rows on mobile
-            });
-            
-            if (!jsonData || jsonData.length === 0) {
-              reject(new Error('No data found in the file'));
-              return;
-            }
-            
-            // Convert object format to headers and data rows
-            if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
-              headers = Object.keys(jsonData[0]);
-              dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
-            } else {
-              reject(new Error('Invalid data format in file'));
+            try {
+              if (isMobile) {
+                // Mobile fallback: Try array format
+                console.log('Mobile: Fallback to array format');
+                jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+                  header: 1,
+                  defval: '',
+                  raw: false,
+                  range: 1000
+                });
+                
+                if (!jsonData || jsonData.length === 0) {
+                  throw new Error('No data with array fallback');
+                }
+                
+                if (Array.isArray(jsonData[0])) {
+                  headers = jsonData[0] as string[];
+                  dataRows = jsonData.slice(1) as string[][];
+                  console.log('Mobile: Array fallback successful');
+                } else {
+                  throw new Error('Invalid array fallback format');
+                }
+              } else {
+                // Desktop fallback: Try object format
+                console.log('Desktop: Fallback to object format');
+                jsonData = XLSX.utils.sheet_to_json(firstSheet, {
+                  defval: '',
+                  raw: false
+                });
+                
+                if (!jsonData || jsonData.length === 0) {
+                  throw new Error('No data with object fallback');
+                }
+                
+                if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
+                  headers = Object.keys(jsonData[0]);
+                  dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
+                  console.log('Desktop: Object fallback successful');
+                } else {
+                  throw new Error('Invalid object fallback format');
+                }
+              }
+            } catch (fallbackError) {
+              console.error('Both parsing methods failed:', fallbackError);
+              reject(new Error('Unable to parse file format on this device. Please try a different file or device.'));
               return;
             }
           }
@@ -551,6 +637,8 @@ const Dashboard = () => {
             errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
           } else if (error.message.includes('No headers found')) {
             errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
+          } else if (error.message.includes('Unable to parse file format on this device')) {
+            errorMessage = "Mobile browser compatibility issue. Please try using Chrome or Safari on mobile, or upload from a desktop computer.";
           } else {
             errorMessage = error.message;
           }
@@ -626,6 +714,8 @@ const Dashboard = () => {
             errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
           } else if (error.message.includes('No headers found')) {
             errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
+          } else if (error.message.includes('Unable to parse file format on this device')) {
+            errorMessage = "Mobile browser compatibility issue. Please try using Chrome or Safari on mobile, or upload from a desktop computer.";
           } else {
             errorMessage = error.message;
           }
