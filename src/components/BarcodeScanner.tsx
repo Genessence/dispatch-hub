@@ -47,10 +47,15 @@ export const BarcodeScanner = ({
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const [barcodeDetected, setBarcodeDetected] = useState(false);
   const [cameraType, setCameraType] = useState<'front' | 'back'>('front');
+  const [hasScanned, setHasScanned] = useState(false); // Prevent multiple scans
 
   useEffect(() => {
     if (isOpen) {
       console.log('Scanner dialog opened');
+      
+      // Reset scan state when dialog opens
+      setHasScanned(false);
+      setBarcodeDetected(false);
       
       if (!readerRef.current) {
         readerRef.current = new BrowserMultiFormatReader();
@@ -173,18 +178,48 @@ export const BarcodeScanner = ({
       if (readerRef.current && videoRef.current) {
         console.log('Starting barcode detection...');
         readerRef.current.decodeFromVideoElement(videoRef.current, (result, error) => {
-          if (result) {
+          if (result && !hasScanned) {
+            // Prevent multiple scans
+            setHasScanned(true);
+            
             // Barcode detected - extract the actual value
             const actualValue = result.getText();
             console.log("✅ Real barcode scanned:", actualValue);
             setBarcodeDetected(true);
             
-            // Parse the real barcode to generate unique values
-            const barcodeData = parseBarcodeData(actualValue);
-            console.log("Generated values for real barcode:", barcodeData);
+            // Always use the same demo data regardless of real barcode
+            // This ensures consistent behavior for POC
+            let barcodeData: BarcodeData;
+            
+            // If we have matchData and should NOT mismatch, use the EXACT SAME data
+            if (matchData && !shouldMismatch) {
+              barcodeData = {
+                rawValue: matchData.rawValue,
+                partCode: matchData.partCode,
+                quantity: matchData.quantity,
+                binNumber: matchData.binNumber
+              };
+              console.log("Using EXACT matching data from first scan:", barcodeData);
+            }
+            // If we should mismatch, generate completely different values
+            else if (matchValue && shouldMismatch) {
+              const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
+              const rawBarcode = randomBarcode.toString();
+              barcodeData = parseBarcodeData(rawBarcode);
+              console.log("Generated mismatching barcode:", barcodeData);
+            }
+            // First scan - generate new random value with unique data
+            else {
+              const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
+              const rawBarcode = randomBarcode.toString();
+              barcodeData = parseBarcodeData(rawBarcode);
+              console.log("Generated NEW barcode with unique values:", barcodeData);
+            }
+            
+            console.log("Final barcode data (same as demo):", barcodeData);
             
             toast.success("Barcode scanned successfully!", {
-              description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}`
+              description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}, Bin: ${barcodeData.binNumber}`
             });
             
             // Stop scanning and send data
@@ -244,6 +279,7 @@ export const BarcodeScanner = ({
     setIsScanning(false);
     setBarcodeDetected(false);
     setHasPermission(null);
+    setHasScanned(false);
     console.log('Scanner state reset');
   };
   
@@ -337,6 +373,13 @@ export const BarcodeScanner = ({
 
   const handleDemoScan = () => {
     console.log("Scan button clicked!");
+    
+    // Prevent multiple scans
+    if (hasScanned) {
+      console.log("Already scanned, ignoring duplicate scan");
+      return;
+    }
+    setHasScanned(true);
     
     let rawBarcode: string;
     let barcodeData: BarcodeData;
@@ -503,10 +546,15 @@ export const BarcodeScanner = ({
             <button 
               type="button"
               onClick={handleDemoScan}
-              className="w-full h-12 sm:h-14 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md font-semibold text-sm sm:text-base shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer"
+              disabled={hasScanned}
+              className={`w-full h-12 sm:h-14 rounded-md font-semibold text-sm sm:text-base shadow-lg transition-all duration-200 flex items-center justify-center gap-2 ${
+                hasScanned 
+                  ? 'bg-gray-400 text-gray-600 cursor-not-allowed' 
+                  : 'bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-xl cursor-pointer'
+              }`}
             >
               <Zap className="h-4 w-4 sm:h-5 sm:w-5" />
-              Scan This Barcode
+              {hasScanned ? 'Scanned!' : 'Scan This Barcode'}
             </button>
           </div>
 
