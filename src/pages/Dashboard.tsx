@@ -321,16 +321,31 @@ const Dashboard = () => {
           
           // Use universal parsing approach that works on all devices
           try {
-            console.log('Trying universal data extraction');
+            console.log('Step 1: Trying universal data extraction');
+            console.log('Sheet info:', {
+              sheetName: workbook.SheetNames[0],
+              isMobile: isMobile,
+              sheetKeys: Object.keys(firstSheet).slice(0, 10)
+            });
             
             // Try object format first (most compatible across all browsers)
+            console.log('Step 2: Attempting object format parsing...');
             jsonData = XLSX.utils.sheet_to_json(firstSheet, {
               defval: '',
               raw: false,
               range: isMobile ? 1000 : undefined // Limit rows on mobile
             });
             
+            console.log('Step 3: Object format result:', {
+              dataLength: jsonData?.length || 0,
+              dataType: typeof jsonData,
+              isArray: Array.isArray(jsonData),
+              firstRowType: jsonData && jsonData.length > 0 ? typeof jsonData[0] : 'none',
+              firstRowKeys: jsonData && jsonData.length > 0 && typeof jsonData[0] === 'object' ? Object.keys(jsonData[0]) : []
+            });
+            
             if (!jsonData || jsonData.length === 0) {
+              console.error('Object format returned empty data');
               throw new Error('No data with object format');
             }
             
@@ -338,15 +353,20 @@ const Dashboard = () => {
             if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
               headers = Object.keys(jsonData[0]);
               dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
-              console.log('Universal object format successful');
+              console.log('✅ Universal object format successful', {
+                headersCount: headers.length,
+                rowsCount: dataRows.length
+              });
             } else {
+              console.error('Object format data is not in expected format');
               throw new Error('Invalid object format');
             }
           } catch (objectError) {
-            console.log('Object format failed, trying array format:', objectError);
+            console.log('❌ Object format failed, trying array format:', objectError);
             
             try {
               // Fallback to array format
+              console.log('Step 4: Attempting array format parsing...');
               jsonData = XLSX.utils.sheet_to_json(firstSheet, {
                 header: 1,
                 defval: '',
@@ -354,7 +374,16 @@ const Dashboard = () => {
                 range: isMobile ? 1000 : undefined
               });
               
+              console.log('Step 5: Array format result:', {
+                dataLength: jsonData?.length || 0,
+                dataType: typeof jsonData,
+                isArray: Array.isArray(jsonData),
+                firstRowType: jsonData && jsonData.length > 0 ? typeof jsonData[0] : 'none',
+                firstRowIsArray: jsonData && jsonData.length > 0 ? Array.isArray(jsonData[0]) : false
+              });
+              
               if (!jsonData || jsonData.length === 0) {
+                console.error('Array format returned empty data');
                 throw new Error('No data with array format');
               }
               
@@ -362,14 +391,66 @@ const Dashboard = () => {
               if (Array.isArray(jsonData[0])) {
                 headers = jsonData[0] as string[];
                 dataRows = jsonData.slice(1) as string[][];
-                console.log('Universal array format successful');
+                console.log('✅ Universal array format successful', {
+                  headersCount: headers.length,
+                  rowsCount: dataRows.length
+                });
               } else {
+                console.error('Array format data is not in expected format');
                 throw new Error('Invalid array format');
               }
             } catch (arrayError) {
-              console.error('Both parsing methods failed:', arrayError);
-              reject(new Error('File parsing failed. Please ensure your file is a valid Excel file (.xlsx or .xls) and try again.'));
-              return;
+              console.error('❌ Both parsing methods failed');
+              console.error('Object error:', objectError);
+              console.error('Array error:', arrayError);
+              console.error('Sheet structure:', {
+                sheetKeys: Object.keys(firstSheet).slice(0, 20),
+                sheetRef: firstSheet['!ref'],
+                sheetRange: firstSheet['!range']
+              });
+              
+              // Last resort: Try to manually extract data from sheet cells
+              console.log('Step 6: Attempting manual cell extraction...');
+              try {
+                const range = XLSX.utils.decode_range(firstSheet['!ref'] || 'A1');
+                console.log('Sheet range:', range);
+                
+                // Extract headers from first row
+                const tempHeaders: string[] = [];
+                for (let col = range.s.c; col <= range.e.c; col++) {
+                  const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: col });
+                  const cell = firstSheet[cellAddress];
+                  tempHeaders.push(cell ? String(cell.v || cell.w || '') : '');
+                }
+                
+                console.log('Extracted headers:', tempHeaders);
+                
+                // Extract data rows
+                const tempRows: string[][] = [];
+                for (let row = range.s.r + 1; row <= Math.min(range.e.r, isMobile ? 1000 : range.e.r); row++) {
+                  const rowData: string[] = [];
+                  for (let col = range.s.c; col <= range.e.c; col++) {
+                    const cellAddress = XLSX.utils.encode_cell({ r: row, c: col });
+                    const cell = firstSheet[cellAddress];
+                    rowData.push(cell ? String(cell.v || cell.w || '') : '');
+                  }
+                  tempRows.push(rowData);
+                }
+                
+                console.log('Extracted rows:', tempRows.length);
+                
+                if (tempHeaders.length > 0 && tempRows.length > 0) {
+                  headers = tempHeaders;
+                  dataRows = tempRows;
+                  console.log('✅ Manual extraction successful!');
+                } else {
+                  throw new Error('Manual extraction failed - no data found');
+                }
+              } catch (manualError) {
+                console.error('❌ Manual extraction also failed:', manualError);
+                reject(new Error('Unable to read file. Please try a different Excel file or contact support.'));
+                return;
+              }
             }
           }
           
