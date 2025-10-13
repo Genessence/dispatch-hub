@@ -86,9 +86,12 @@ const MasterData = () => {
   ]);
 
   const [customerMasterData, setCustomerMasterData] = useState<CustomerMaster[]>([
-    { id: '1', companyName: 'Acme Corporation', partCode: '2023919386004', quantity: '6', binNumber: '76480M66T01' },
-    { id: '2', companyName: 'Tech Solutions Inc', partCode: '2023919386005', quantity: '9', binNumber: '76480M66T02' },
-    { id: '3', companyName: 'Global Industries', partCode: '2023919386006', quantity: '4', binNumber: '76480M66T03' },
+    { id: '1', companyName: 'BHARAT SEATS LIMITED', partCode: '2023919386004', quantity: '6', binNumber: '76480M66T01' },
+    { id: '2', companyName: 'KRISHNA MARUTI LTD SEATING', partCode: '2023919386005', quantity: '9', binNumber: '76480M66T02' },
+    { id: '3', companyName: 'HONDA CARS INDIA LTD', partCode: '2023919386006', quantity: '4', binNumber: '76480M66T03' },
+    { id: '4', companyName: 'SUZUKI MOTORS GUJARAT PVT LT', partCode: '2023919386007', quantity: '7', binNumber: '76480M66T04' },
+    { id: '5', companyName: 'VENDOR CODE: 703160', partCode: '2023919386008', quantity: '5', binNumber: '76480M66T05' },
+    { id: '6', companyName: 'MARUTI SUZUKI INDIA Ltd-II', partCode: '2023919386009', quantity: '8', binNumber: '76480M66T06' },
   ]);
 
   // Edit form states

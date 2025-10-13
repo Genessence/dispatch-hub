@@ -784,6 +784,160 @@ const Dashboard = () => {
   const handleImport = () => {
     // Add invoices to shared session
     addInvoices(processedInvoices, currentUser);
+    
+    // Add additional dummy invoices across multiple dates after upload
+    const today = new Date();
+    const additionalInvoices: InvoiceData[] = [
+      // Oct 13 - Additional invoices
+      {
+        id: '2510706713',
+        customer: 'BHARAT SEATS LIMITED',
+        invoiceDate: new Date(today),
+        totalQty: 160,
+        binCapacity: 80,
+        expectedBins: 2,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      {
+        id: '2510706727',
+        customer: 'HONDA CARS INDIA LTD',
+        invoiceDate: new Date(today),
+        totalQty: 240,
+        binCapacity: 80,
+        expectedBins: 3,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      // Oct 14 - Additional invoices
+      {
+        id: '2510706716',
+        customer: 'KRISHNA MARUTI LTD SEATING',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
+        totalQty: 80,
+        binCapacity: 80,
+        expectedBins: 1,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      {
+        id: '2510706728',
+        customer: 'MARUTI SUZUKI INDIA Ltd-II',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
+        totalQty: 150,
+        binCapacity: 50,
+        expectedBins: 3,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      // Oct 15 - New invoices
+      {
+        id: '2510706717',
+        customer: 'HONDA CARS INDIA LTD',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2),
+        totalQty: 160,
+        binCapacity: 80,
+        expectedBins: 2,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      {
+        id: '2510706718',
+        customer: 'SUZUKI MOTORS GUJARAT PVT LT',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2),
+        totalQty: 200,
+        binCapacity: 50,
+        expectedBins: 4,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      // Oct 16 - New invoices
+      {
+        id: '2510706720',
+        customer: 'SUZUKI MOTORS GUJARAT PVT LT',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3),
+        totalQty: 100,
+        binCapacity: 50,
+        expectedBins: 2,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      {
+        id: '2510706721',
+        customer: 'VENDOR CODE: 703160',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3),
+        totalQty: 240,
+        binCapacity: 80,
+        expectedBins: 3,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      // Oct 17 - New invoices
+      {
+        id: '2510706723',
+        customer: 'VENDOR CODE: 703160',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 4),
+        totalQty: 80,
+        binCapacity: 80,
+        expectedBins: 1,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      },
+      {
+        id: '2510706724',
+        customer: 'MARUTI SUZUKI INDIA Ltd-II',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 4),
+        totalQty: 150,
+        binCapacity: 50,
+        expectedBins: 3,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: currentUser,
+        uploadedAt: new Date()
+      }
+    ];
+    
+    // Add additional dummy invoices to the session
+    addInvoices(additionalInvoices, currentUser);
+    
     setUploadStage('complete');
     toast.success(`Data imported successfully by ${currentUser}!`, {
       description: "Invoices are now available for all users to audit"

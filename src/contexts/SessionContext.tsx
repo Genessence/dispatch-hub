@@ -82,264 +82,80 @@ const SessionContext = createContext<SessionContextType | undefined>(undefined);
 export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [currentUser, setCurrentUser] = useState("User 1");
   
-  // Initialize with default invoices (16 invoices scheduled for today)
-  const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([
-    // BHARAT SEATS LIMITED - 3 invoices
-    {
-      id: '2510706711',
-      customer: 'BHARAT SEATS LIMITED',
-      invoiceDate: new Date(),
-      totalQty: 240,
-      binCapacity: 80,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000) // 30 minutes ago
-    },
-    {
-      id: '2510706712',
-      customer: 'BHARAT SEATS LIMITED',
-      invoiceDate: new Date(),
-      totalQty: 150,
-      binCapacity: 50,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706713',
-      customer: 'BHARAT SEATS LIMITED',
-      invoiceDate: new Date(),
-      totalQty: 160,
-      binCapacity: 80,
-      expectedBins: 2,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    // KRISHNA MARUTI LTD SEATING - 3 invoices
-    {
-      id: '2510706714',
-      customer: 'KRISHNA MARUTI LTD SEATING',
-      invoiceDate: new Date(),
-      totalQty: 100,
-      binCapacity: 50,
-      expectedBins: 2,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706715',
-      customer: 'KRISHNA MARUTI LTD SEATING',
-      invoiceDate: new Date(),
-      totalQty: 200,
-      binCapacity: 50,
-      expectedBins: 4,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706716',
-      customer: 'KRISHNA MARUTI LTD SEATING',
-      invoiceDate: new Date(),
-      totalQty: 80,
-      binCapacity: 80,
-      expectedBins: 1,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    // HONDA CARS INDIA LTD - 3 invoices
-    {
-      id: '2510706717',
-      customer: 'HONDA CARS INDIA LTD',
-      invoiceDate: new Date(),
-      totalQty: 240,
-      binCapacity: 80,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706718',
-      customer: 'HONDA CARS INDIA LTD',
-      invoiceDate: new Date(),
-      totalQty: 160,
-      binCapacity: 80,
-      expectedBins: 2,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706719',
-      customer: 'HONDA CARS INDIA LTD',
-      invoiceDate: new Date(),
-      totalQty: 150,
-      binCapacity: 50,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    // SUZUKI MOTORS GUJARAT PVT LT - 3 invoices
-    {
-      id: '2510706720',
-      customer: 'SUZUKI MOTORS GUJARAT PVT LT',
-      invoiceDate: new Date(),
-      totalQty: 200,
-      binCapacity: 50,
-      expectedBins: 4,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706721',
-      customer: 'SUZUKI MOTORS GUJARAT PVT LT',
-      invoiceDate: new Date(),
-      totalQty: 100,
-      binCapacity: 50,
-      expectedBins: 2,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706722',
-      customer: 'SUZUKI MOTORS GUJARAT PVT LT',
-      invoiceDate: new Date(),
-      totalQty: 160,
-      binCapacity: 80,
-      expectedBins: 2,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    // VENDOR CODE: 703160 - 2 invoices
-    {
-      id: '2510706723',
-      customer: 'VENDOR CODE: 703160',
-      invoiceDate: new Date(),
-      totalQty: 240,
-      binCapacity: 80,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706724',
-      customer: 'VENDOR CODE: 703160',
-      invoiceDate: new Date(),
-      totalQty: 80,
-      binCapacity: 80,
-      expectedBins: 1,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    // MARUTI SUZUKI INDIA Ltd-II - 2 invoices
-    {
-      id: '2510706725',
-      customer: 'MARUTI SUZUKI INDIA Ltd-II',
-      invoiceDate: new Date(),
-      totalQty: 150,
-      binCapacity: 50,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: '2510706726',
-      customer: 'MARUTI SUZUKI INDIA Ltd-II',
-      invoiceDate: new Date(),
-      totalQty: 200,
-      binCapacity: 50,
-      expectedBins: 4,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    }
-  ]);
+  // Initialize with minimal default invoices (only Oct 13 and 14)
+  const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>(() => {
+    const today = new Date();
+    
+    return [
+      // Today (Oct 13) - 2 invoices
+      {
+        id: '2510706711',
+        customer: 'BHARAT SEATS LIMITED',
+        invoiceDate: new Date(today),
+        totalQty: 240,
+        binCapacity: 80,
+        expectedBins: 3,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: 'Admin',
+        uploadedAt: new Date(Date.now() - 1800000)
+      },
+      {
+        id: '2510706712',
+        customer: 'BHARAT SEATS LIMITED',
+        invoiceDate: new Date(today),
+        totalQty: 150,
+        binCapacity: 50,
+        expectedBins: 3,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: 'Admin',
+        uploadedAt: new Date(Date.now() - 1800000)
+      },
+      // Oct 14 - 2 invoices
+      {
+        id: '2510706714',
+        customer: 'KRISHNA MARUTI LTD SEATING',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
+        totalQty: 100,
+        binCapacity: 50,
+        expectedBins: 2,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: 'Admin',
+        uploadedAt: new Date(Date.now() - 1800000)
+      },
+      {
+        id: '2510706715',
+        customer: 'KRISHNA MARUTI LTD SEATING',
+        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
+        totalQty: 200,
+        binCapacity: 50,
+        expectedBins: 4,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        uploadedBy: 'Admin',
+        uploadedAt: new Date(Date.now() - 1800000)
+      }
+    ];
+  });
   
   // Initialize with upload logs
   const [logs, setLogs] = useState<LogEntry[]>([
     {
       id: 'log-1',
       user: 'Admin',
-      action: 'Uploaded 6 invoice(s)',
-      details: 'Invoices: 2510706711, 2510706712, 2510706713, 2510706714, 2510706715, 2510706716',
+      action: 'Uploaded 4 invoice(s)',
+      details: 'Invoices: 2510706711, 2510706712, 2510706714, 2510706715',
       timestamp: new Date(Date.now() - 1800000), // 30 minutes ago
-      type: 'upload'
-    },
-    {
-      id: 'log-2',
-      user: 'Admin',
-      action: 'Uploaded 5 invoice(s)',
-      details: 'Invoices: 2510706717, 2510706718, 2510706719, 2510706720, 2510706721',
-      timestamp: new Date(Date.now() - 1800000),
-      type: 'upload'
-    },
-    {
-      id: 'log-3',
-      user: 'Admin',
-      action: 'Uploaded 5 invoice(s)',
-      details: 'Invoices: 2510706722, 2510706723, 2510706724, 2510706725, 2510706726',
-      timestamp: new Date(Date.now() - 1800000),
       type: 'upload'
     }
   ]);
