@@ -31,7 +31,8 @@ import {
   Download,
   Users,
   ArrowLeft,
-  Calendar as CalendarIcon
+  Calendar as CalendarIcon,
+  X
 } from "lucide-react";
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
@@ -773,6 +774,14 @@ const Dashboard = () => {
     }
   }, [sharedInvoices, selectedInvoices]);
 
+  // Auto-validate when both barcodes are scanned
+  useEffect(() => {
+    if (customerScan && autolivScan) {
+      // Automatically trigger validation
+      handleValidateBarcodes();
+    }
+  }, [customerScan, autolivScan]);
+
   const handleValidateBarcodes = () => {
     if (!customerScan || !autolivScan) {
       toast.error("Please scan both barcodes");
@@ -861,7 +870,7 @@ const Dashboard = () => {
       // Automatically show approval message
       setTimeout(() => {
         toast.info("📨 Message sent to senior for approval", {
-          description: "Approval request has been automatically sent to the supervisor.",
+          description: "Request has been sent to supervisor for correction.",
           duration: 5000,
         });
       }, 500);
@@ -886,6 +895,14 @@ const Dashboard = () => {
       )
     );
   };
+
+  // Auto-validate dispatch when both barcodes are scanned
+  useEffect(() => {
+    if (dispatchCustomerScan && dispatchAutolivScan) {
+      // Automatically trigger validation for dispatch
+      handleDispatchScan();
+    }
+  }, [dispatchCustomerScan, dispatchAutolivScan]);
 
   const handleDispatchScan = () => {
     if (!dispatchCustomerScan || !dispatchAutolivScan) {
@@ -934,7 +951,7 @@ const Dashboard = () => {
       // Automatically show approval message
       setTimeout(() => {
         toast.info("📨 Message sent to senior for approval", {
-          description: "Approval request has been automatically sent to the supervisor.",
+          description: "Request has been sent to supervisor for correction.",
           duration: 5000,
         });
       }, 500);
@@ -1650,14 +1667,6 @@ const Dashboard = () => {
                         <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
                         <p className="font-semibold">{currentInvoice.totalQty}</p>
                       </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1">Bin Capacity</p>
-                        <p className="font-semibold">{currentInvoice.binCapacity}</p>
-                    </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1">Bin Quantity</p>
-                        <p className="font-semibold">{currentInvoice.scannedBins}/{currentInvoice.expectedBins} BINs</p>
-                      </div>
                     </div>
                     <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
                       {currentInvoice.uploadedBy && (
@@ -1796,27 +1805,21 @@ const Dashboard = () => {
                       </div>
                     </div>
 
-                    {/* Single Validate Button */}
-                    <div className="flex gap-3">
-                      <Button 
-                        onClick={handleValidateBarcodes}
-                        className="flex-1 h-14 text-base font-semibold"
-                        disabled={!customerScan || !autolivScan}
-                      >
-                        <CheckCircle2 className="h-5 w-5 mr-2" />
-                        Validate & Match Barcodes
-                      </Button>
+                    {/* Clear Button Only */}
+                    {(customerScan || autolivScan) && (
+                      <div className="flex justify-end">
                       <Button 
                         variant="outline"
                         onClick={() => {
-                          setCustomerScan(null);
-                          setAutolivScan(null);
+                            setCustomerScan(null);
+                            setAutolivScan(null);
                         }}
-                        className="h-14"
+                          className="h-12"
                       >
-                        Clear
+                          Clear Scans
                       </Button>
                     </div>
+                    )}
 
                     {/* Status Indicator */}
                     {(customerScan || autolivScan) && (
@@ -2189,97 +2192,164 @@ const Dashboard = () => {
                 {/* Invoice Selection */}
                 <Card>
                   <CardHeader>
-                    <CardTitle>Select Invoices for Loading</CardTitle>
-                    <CardDescription>Choose audited invoices to load onto the vehicle</CardDescription>
+                    <CardTitle>Select Invoice for Loading</CardTitle>
+                    <CardDescription>Choose an audited invoice to load onto the vehicle</CardDescription>
                   </CardHeader>
                   <CardContent>
-                    {selectedInvoices.length > 0 && (
-                      <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                        <p className="text-sm font-medium">
-                          📦 Loading for: <strong>{sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer}</strong>
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Only invoices from this customer can be loaded on this vehicle
-                        </p>
-                      </div>
-                    )}
-                    <div className="space-y-3">
-                      {sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 ? (
-                        sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).map(invoice => {
-                          const selectedCustomer = selectedInvoices.length > 0 
-                            ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="invoice-select">Select Invoice(s)</Label>
+                        <div className="flex gap-2">
+                          <Select 
+                            value="" 
+                            onValueChange={(value) => {
+                              if (value && value !== "no-invoices") {
+                                const selectedInvoice = sharedInvoices.find(inv => inv.id === value);
+                                if (selectedInvoice) {
+                                  // Check if this is the first invoice or if customer matches
+                                  const currentCustomer = selectedInvoices.length > 0 
+                                    ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
                             : null;
-                          const isDifferentCustomer = selectedCustomer && selectedCustomer !== invoice.customer;
-                          const isDisabled = isDifferentCustomer;
+                                  
+                                  if (!currentCustomer || currentCustomer === selectedInvoice.customer) {
+                                    // Add only if not already selected
+                                    if (!selectedInvoices.includes(value)) {
+                                      setSelectedInvoices(prev => [...prev, value]);
+                                    }
+                                  } else {
+                                    toast.error("Cannot add invoice from different customer", {
+                                      description: `All invoices must be from ${currentCustomer}`
+                                    });
+                                  }
+                                }
+                              }
+                            }}
+                          >
+                            <SelectTrigger id="invoice-select" className="h-14 text-base flex-1">
+                              <SelectValue placeholder="Select an invoice to add" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 ? (
+                                sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).map(invoice => {
+                                  const currentCustomer = selectedInvoices.length > 0 
+                                    ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
+                                    : null;
+                                  const isDifferentCustomer = currentCustomer && currentCustomer !== invoice.customer;
+                                  const isAlreadySelected = selectedInvoices.includes(invoice.id);
 
                           return (
-                            <div 
+                                    <SelectItem 
                               key={invoice.id}
-                              className={`border rounded-lg p-4 transition-colors ${
-                                isDisabled 
-                                  ? 'opacity-50 cursor-not-allowed bg-muted/30' 
-                                  : selectedInvoices.includes(invoice.id) 
-                                    ? 'border-primary bg-primary/5 cursor-pointer' 
-                                    : 'border-border hover:bg-muted/50 cursor-pointer'
-                              }`}
-                              onClick={() => !isDisabled && toggleInvoice(invoice.id)}
-                            >
-                              <div className="flex items-start gap-3">
-                                <Checkbox
-                                  checked={selectedInvoices.includes(invoice.id)}
-                                  onCheckedChange={() => !isDisabled && toggleInvoice(invoice.id)}
-                                  disabled={isDisabled}
-                                  className="mt-1"
-                                />
-                              <div className="flex-1">
-                                <div className="flex items-start justify-between mb-2">
-                                  <div>
-                                    <p className="font-semibold text-foreground">{invoice.id}</p>
-                                    <p className="text-sm text-muted-foreground">{invoice.customer}</p>
+                                      value={invoice.id} 
+                                      className="py-3"
+                                      disabled={isDifferentCustomer || isAlreadySelected}
+                                    >
+                                      <div className="flex items-center justify-between w-full gap-4">
+                                        <div className="flex flex-col">
+                                          <span className="font-semibold">{invoice.id}</span>
+                                          <span className="text-xs text-muted-foreground">{invoice.customer}</span>
                                   </div>
-                                  <div className="text-right">
-                                    <Badge variant="default" className="mb-1">
+                                        <div className="flex items-center gap-2">
+                                          {isAlreadySelected && (
+                                            <Badge variant="secondary" className="text-xs">
+                                              Added
+                                            </Badge>
+                                          )}
+                                          <Badge variant="outline" className="text-xs">
+                                            Qty: {invoice.totalQty}
+                                          </Badge>
+                                          <Badge variant="default" className="text-xs">
                                       <CheckCircle2 className="h-3 w-3 mr-1" />
-                                      Audit Complete
+                                            Audited
                                     </Badge>
-                                    <p className="text-xs text-muted-foreground mt-1">
-                                      {invoice.auditDate ? new Date(invoice.auditDate).toLocaleDateString() : 'N/A'}
-                                    </p>
                                   </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4 text-sm mb-2">
+                                    </SelectItem>
+                                  );
+                                })
+                              ) : (
+                                <SelectItem value="no-invoices" disabled>
+                                  No audited invoices available
+                                </SelectItem>
+                              )}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      {/* Selected Invoices List */}
+                      {selectedInvoices.length > 0 && (
+                        <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                          <div className="flex items-center justify-between mb-3">
+                            <p className="text-sm font-medium">
+                              📦 Selected Invoice{selectedInvoices.length > 1 ? 's' : ''} ({selectedInvoices.length})
+                            </p>
+                            {selectedInvoices.length > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedInvoices([]);
+                                  setLoadedBarcodes([]);
+                                }}
+                                className="h-8 text-xs"
+                              >
+                                Clear All
+                              </Button>
+                            )}
+                                  </div>
+                          <div className="space-y-2">
+                            {selectedInvoices.map((invoiceId, index) => {
+                              const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+                              return invoice ? (
+                                <div key={invoiceId} className="p-3 bg-white dark:bg-gray-900 border border-border rounded-lg">
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                      <div className="flex items-center gap-2 mb-2">
+                                        <Badge variant="outline" className="text-xs">#{index + 1}</Badge>
+                                        <p className="font-semibold text-sm">{invoice.id}</p>
+                                        <p className="text-xs text-muted-foreground">{invoice.customer}</p>
+                                </div>
+                                      <div className="grid grid-cols-2 gap-2 text-xs">
                                   <div>
-                                    <p className="text-muted-foreground">Items Scanned</p>
+                                          <p className="text-muted-foreground">Items</p>
                                     <p className="font-medium">{invoice.scannedBins}/{invoice.expectedBins}</p>
                                   </div>
                                   <div>
-                                    <p className="text-muted-foreground">Total Qty</p>
+                                          <p className="text-muted-foreground">Quantity</p>
                                     <p className="font-medium">{invoice.totalQty}</p>
                                   </div>
                                 </div>
-                                <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
-                                  {invoice.uploadedBy && (
-                                    <Badge variant="outline" className="text-xs">
-                                      <Upload className="h-3 w-3 mr-1" />
-                                      {invoice.uploadedBy}
-                                    </Badge>
-                                  )}
-                                  {invoice.auditedBy && (
-                                    <Badge variant="secondary" className="text-xs">
-                                      <ScanBarcode className="h-3 w-3 mr-1" />
-                                      {invoice.auditedBy}
-                                    </Badge>
-                                  )}
-                                </div>
                               </div>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => {
+                                        setSelectedInvoices(prev => prev.filter(id => id !== invoiceId));
+                                        setLoadedBarcodes([]);
+                                      }}
+                                      className="h-8 w-8 p-0"
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </Button>
                             </div>
                           </div>
-                          );
-                        })
-                      ) : (
-                        <div className="text-center py-8 text-muted-foreground">
-                          <p className="text-lg font-medium mb-2">No audited invoices available</p>
-                          <p className="text-sm">Complete document audit before loading for dispatch</p>
+                              ) : null;
+                            })}
+                          </div>
+                          {selectedInvoices.length > 0 && (() => {
+                            const firstInvoice = sharedInvoices.find(inv => inv.id === selectedInvoices[0]);
+                            return firstInvoice ? (
+                              <div className="mt-3 pt-3 border-t border-border">
+                                <p className="text-xs text-muted-foreground mb-2">
+                                  🚚 Loading for: <strong>{firstInvoice.customer}</strong>
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  Only invoices from this customer can be added
+                                </p>
+                              </div>
+                            ) : null;
+                          })()}
                         </div>
                       )}
                     </div>
@@ -2403,27 +2473,21 @@ const Dashboard = () => {
                           </div>
                         </div>
 
-                        {/* Action Buttons */}
-                        <div className="flex gap-3">
-                          <Button 
-                            onClick={handleDispatchScan}
-                            className="flex-1 h-14 text-base font-semibold"
-                            disabled={!dispatchCustomerScan || !dispatchAutolivScan}
-                          >
-                            <CheckCircle2 className="h-5 w-5 mr-2" />
-                            Validate & Load Item
-                          </Button>
+                        {/* Clear Button Only */}
+                        {(dispatchCustomerScan || dispatchAutolivScan) && (
+                          <div className="flex justify-end">
                           <Button 
                             variant="outline"
                             onClick={() => {
-                              setDispatchCustomerScan(null);
-                              setDispatchAutolivScan(null);
+                                setDispatchCustomerScan(null);
+                                setDispatchAutolivScan(null);
                             }}
-                            className="h-14"
+                              className="h-12"
                           >
-                            Clear
+                              Clear Scans
                           </Button>
                         </div>
+                        )}
 
                         {/* Status Indicator */}
                         {(dispatchCustomerScan || dispatchAutolivScan) && (

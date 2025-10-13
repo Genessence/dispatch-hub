@@ -1,10 +1,37 @@
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, Download, AlertTriangle, CheckCircle2, Truck, ScanBarcode } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, FileText, AlertTriangle, CheckCircle2, Truck, ScanBarcode, Upload, Clock, User } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useSession } from "@/contexts/SessionContext";
 
 const Analytics = () => {
+  const { getUploadLogs, getAuditLogs, getDispatchLogs, mismatchAlerts, sharedInvoices } = useSession();
+  const [showReportDialog, setShowReportDialog] = useState(false);
+  const [activeReportTab, setActiveReportTab] = useState<'upload' | 'audit' | 'dispatch' | 'mismatch'>('upload');
+  
+  const formatDate = (date: Date) => {
+    return new Date(date).toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+  
+  // Get today's audit count
+  const today = new Date();
+  const todayAudits = sharedInvoices.filter(inv => {
+    if (!inv.auditedAt) return false;
+    const auditDate = new Date(inv.auditedAt);
+    return auditDate.getDate() === today.getDate() &&
+           auditDate.getMonth() === today.getMonth() &&
+           auditDate.getFullYear() === today.getFullYear();
+  }).length;
   // Sample monthly data for the past 12 months
   const monthlyData = [
     { month: "Jan 2024", dispatched: 45, docAuditMismatches: 3, loadingDispatchMismatches: 2 },
@@ -60,9 +87,9 @@ const Analytics = () => {
                 <p className="text-sm text-muted-foreground">Performance metrics and insights</p>
               </div>
             </div>
-            <Button variant="outline">
-              <Download className="h-4 w-4 mr-2" />
-              Export Report
+            <Button variant="outline" onClick={() => setShowReportDialog(true)}>
+              <FileText className="h-4 w-4 mr-2" />
+              View Reports
             </Button>
           </div>
         </div>
@@ -264,6 +291,329 @@ const Analytics = () => {
           </CardContent>
         </Card>
       </main>
+
+      {/* Reports Dialog */}
+      <Dialog open={showReportDialog} onOpenChange={setShowReportDialog}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Detailed Reports
+            </DialogTitle>
+          </DialogHeader>
+
+          {/* Report Tabs */}
+          <div className="flex gap-2 border-b pb-2 overflow-x-auto">
+            <Button
+              variant={activeReportTab === 'upload' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setActiveReportTab('upload')}
+              className="flex items-center gap-2"
+            >
+              <Upload className="h-4 w-4" />
+              Upload Report
+            </Button>
+            <Button
+              variant={activeReportTab === 'audit' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setActiveReportTab('audit')}
+              className="flex items-center gap-2"
+            >
+              <ScanBarcode className="h-4 w-4" />
+              Audit Report
+            </Button>
+            <Button
+              variant={activeReportTab === 'dispatch' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setActiveReportTab('dispatch')}
+              className="flex items-center gap-2"
+            >
+              <Truck className="h-4 w-4" />
+              Dispatch Report
+            </Button>
+            <Button
+              variant={activeReportTab === 'mismatch' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setActiveReportTab('mismatch')}
+              className="flex items-center gap-2"
+            >
+              <AlertTriangle className="h-4 w-4" />
+              Mismatch Report
+            </Button>
+          </div>
+
+          {/* Report Content */}
+          <ScrollArea className="h-[500px] pr-4">
+            {/* Upload Report */}
+            {activeReportTab === 'upload' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <Upload className="h-4 w-4" />
+                    Upload Activity Report
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Summary of all data uploads to the system
+                  </p>
+                </div>
+
+                {getUploadLogs().length > 0 ? (
+                  <div className="space-y-3">
+                    {getUploadLogs().map((log) => (
+                      <Card key={log.id}>
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-full">
+                                <User className="h-4 w-4 text-blue-600" />
+                              </div>
+                              <div>
+                                <p className="font-semibold">{log.user}</p>
+                                <p className="text-xs text-muted-foreground">Uploaded data</p>
+                              </div>
+                            </div>
+                            <Badge variant="outline" className="text-xs">
+                              <Clock className="h-3 w-3 mr-1" />
+                              {formatDate(log.timestamp)}
+                            </Badge>
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            {log.action}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Upload className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                    <p>No upload activity recorded</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Audit Report */}
+            {activeReportTab === 'audit' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <ScanBarcode className="h-4 w-4" />
+                    Doc Audit Activity Report
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Summary of all document audits completed
+                  </p>
+                  <div className="flex items-center gap-4 pt-2 border-t border-green-200 dark:border-green-800">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Total Audits Today</p>
+                      <p className="text-2xl font-bold text-green-600">{todayAudits}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">All Time Audits</p>
+                      <p className="text-2xl font-bold">{getAuditLogs().length}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {getAuditLogs().length > 0 ? (
+                  <div className="space-y-3">
+                    {getAuditLogs().map((log) => (
+                      <Card key={log.id}>
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 bg-green-100 dark:bg-green-900 rounded-full">
+                                <User className="h-4 w-4 text-green-600" />
+                              </div>
+                              <div>
+                                <p className="font-semibold">{log.user}</p>
+                                <p className="text-xs text-muted-foreground">Completed audit</p>
+                              </div>
+                            </div>
+                            <Badge variant="outline" className="text-xs">
+                              <Clock className="h-3 w-3 mr-1" />
+                              {formatDate(log.timestamp)}
+                            </Badge>
+                          </div>
+                          <div className="text-sm">
+                            <p className="font-medium">{log.action}</p>
+                            <p className="text-xs text-muted-foreground mt-1">{log.details}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <ScanBarcode className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                    <p>No audit activity recorded</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Dispatch Report */}
+            {activeReportTab === 'dispatch' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded-lg">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <Truck className="h-4 w-4" />
+                    Dispatch Activity Report
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Summary of all dispatched invoices
+                  </p>
+                </div>
+
+                {getDispatchLogs().length > 0 ? (
+                  <div className="space-y-3">
+                    {getDispatchLogs().map((log) => (
+                      <Card key={log.id}>
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-full">
+                                <User className="h-4 w-4 text-purple-600" />
+                              </div>
+                              <div>
+                                <p className="font-semibold">{log.user}</p>
+                                <p className="text-xs text-muted-foreground">Dispatched invoice</p>
+                              </div>
+                            </div>
+                            <Badge variant="outline" className="text-xs">
+                              <Clock className="h-3 w-3 mr-1" />
+                              {formatDate(log.timestamp)}
+                            </Badge>
+                          </div>
+                          <div className="text-sm">
+                            <p className="font-medium">{log.action}</p>
+                            <p className="text-xs text-muted-foreground mt-1">{log.details}</p>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Truck className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                    <p>No dispatch activity recorded</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Mismatch Report */}
+            {activeReportTab === 'mismatch' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4" />
+                    Mismatch Activity Report
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    All barcode mismatches detected in the system
+                  </p>
+                  <div className="flex items-center gap-4 pt-2 border-t border-red-200 dark:border-red-800">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Total Mismatches</p>
+                      <p className="text-2xl font-bold text-red-600">{mismatchAlerts.length}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Pending</p>
+                      <p className="text-2xl font-bold text-orange-600">{mismatchAlerts.filter(a => a.status === 'pending').length}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Corrected</p>
+                      <p className="text-2xl font-bold text-green-600">{mismatchAlerts.filter(a => a.status === 'approved').length}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {mismatchAlerts.length > 0 ? (
+                  <div className="space-y-3">
+                    {mismatchAlerts.map((alert) => (
+                      <Card key={alert.id} className="border-2 border-orange-200 dark:border-orange-900">
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 bg-red-100 dark:bg-red-900 rounded-full">
+                                <User className="h-4 w-4 text-red-600" />
+                              </div>
+                              <div>
+                                <p className="font-semibold">{alert.user}</p>
+                                <p className="text-xs text-muted-foreground">Scanned mismatched barcode</p>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-1">
+                              <Badge 
+                                variant={alert.status === 'pending' ? 'destructive' : 'default'}
+                                className={alert.status === 'approved' ? 'bg-green-600' : ''}
+                              >
+                                {alert.status === 'pending' ? 'PENDING' : 'CORRECTED'}
+                              </Badge>
+                              <Badge variant="outline" className="text-xs">
+                                {alert.step === 'doc-audit' ? (
+                                  <><ScanBarcode className="h-3 w-3 mr-1" />Doc Audit</>
+                                ) : (
+                                  <><Truck className="h-3 w-3 mr-1" />Loading & Dispatch</>
+                                )}
+                              </Badge>
+                            </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-3 mb-3">
+                            <div className="text-xs">
+                              <p className="text-muted-foreground mb-1">Invoice</p>
+                              <p className="font-semibold">{alert.invoiceId}</p>
+                            </div>
+                            <div className="text-xs">
+                              <p className="text-muted-foreground mb-1">Customer</p>
+                              <p className="font-semibold">{alert.customer}</p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-xs">
+                            <div className="p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded">
+                              <p className="font-semibold mb-1">Customer Label</p>
+                              <p className="text-muted-foreground">Part: {alert.customerScan.partCode}</p>
+                              <p className="text-muted-foreground">Qty: {alert.customerScan.quantity}</p>
+                              <p className="text-muted-foreground">Bin: {alert.customerScan.binNumber}</p>
+                            </div>
+                            <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
+                              <p className="font-semibold mb-1">Autoliv Label</p>
+                              <p className="text-muted-foreground">Part: {alert.autolivScan.partCode}</p>
+                              <p className="text-muted-foreground">Qty: {alert.autolivScan.quantity}</p>
+                              <p className="text-muted-foreground">Bin: {alert.autolivScan.binNumber}</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between mt-3 pt-3 border-t">
+                            <p className="text-xs text-muted-foreground">
+                              <Clock className="h-3 w-3 inline mr-1" />
+                              {formatDate(alert.timestamp)}
+                            </p>
+                            {alert.reviewedBy && (
+                              <p className="text-xs text-green-600 font-medium">
+                                Corrected by {alert.reviewedBy}
+                              </p>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <AlertTriangle className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                    <p>No mismatches recorded</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -136,17 +136,10 @@ const MasterData = () => {
   };
 
   const handleSaveEdit = () => {
-    if (selectedMasterType === 'item') {
-      setItemMasterData(prev => prev.map(item => 
-        item.id === selectedRecord?.id ? editFormData as ItemMaster : item
-      ));
-      toast.success("Item updated successfully!");
-    } else {
-      setCustomerMasterData(prev => prev.map(customer => 
-        customer.id === selectedRecord?.id ? editFormData as CustomerMaster : customer
-      ));
-      toast.success("Customer updated successfully!");
-    }
+    setCustomerMasterData(prev => prev.map(customer => 
+      customer.id === selectedRecord?.id ? editFormData as CustomerMaster : customer
+    ));
+    toast.success("Customer updated successfully!");
     setShowEditDialog(false);
     setSelectedRecord(null);
   };
@@ -157,38 +150,24 @@ const MasterData = () => {
   };
 
   const handleSaveAdd = () => {
-    if (selectedMasterType === 'item') {
-      const newItem: ItemMaster = {
-        id: Date.now().toString(),
-        ...editFormData
-      };
-      setItemMasterData(prev => [...prev, newItem]);
-      toast.success("New item added successfully!");
-    } else {
-      const newCustomer: CustomerMaster = {
-        id: Date.now().toString(),
-        ...editFormData
-      };
-      setCustomerMasterData(prev => [...prev, newCustomer]);
-      toast.success("New customer added successfully!");
-    }
+    const newCustomer: CustomerMaster = {
+      id: Date.now().toString(),
+      ...editFormData
+    };
+    setCustomerMasterData(prev => [...prev, newCustomer]);
+    toast.success("New customer added successfully!");
     setShowAddDialog(false);
     setEditFormData({});
   };
 
-  const handleDeleteClick = (record: ItemMaster | CustomerMaster) => {
+  const handleDeleteClick = (record: CustomerMaster) => {
     setSelectedRecord(record);
     setShowDeleteDialog(true);
   };
 
   const handleConfirmDelete = () => {
-    if (selectedMasterType === 'item') {
-      setItemMasterData(prev => prev.filter(item => item.id !== selectedRecord?.id));
-      toast.success("Item deleted successfully!");
-    } else {
-      setCustomerMasterData(prev => prev.filter(customer => customer.id !== selectedRecord?.id));
-      toast.success("Customer deleted successfully!");
-    }
+    setCustomerMasterData(prev => prev.filter(customer => customer.id !== selectedRecord?.id));
+    toast.success("Customer deleted successfully!");
     setShowDeleteDialog(false);
     setSelectedRecord(null);
   };
@@ -270,86 +249,14 @@ const MasterData = () => {
             <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
               <p className="text-sm font-medium mb-2">📊 Master Data Upload</p>
               <div className="text-xs text-muted-foreground space-y-1">
-                <p>• Upload Item Master: Part Code, Item Name, and Bin Quantity</p>
                 <p>• Upload Customer Master: Company Name, Part Code, Quantity, and Bin Number</p>
                 <p>• Files will be validated before import</p>
               </div>
             </div>
 
             {/* Upload Options */}
-            <div className="grid md:grid-cols-2 gap-6">
-          {/* Option 1: Upload Item Master */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <div className="flex items-center gap-3 mb-3">
-                <div className="p-3 bg-primary/10 rounded-lg">
-                  <Package className="h-6 w-6 text-primary" />
-                </div>
-                <div>
-                  <CardTitle className="text-xl">Upload Item Master</CardTitle>
-                  <CardDescription>Upload part codes, item names and quantities</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {/* Upload Area */}
-                <div className="border-2 border-dashed border-border rounded-lg p-8 text-center hover:border-primary transition-colors">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="p-3 bg-primary/10 rounded-full">
-                      <Upload className="h-8 w-8 text-primary" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium mb-1">Upload Item Master File</p>
-                      <p className="text-xs text-muted-foreground mb-3">Excel or CSV format</p>
-                      <Button 
-                        type="button" 
-                        variant="outline"
-                        onClick={() => document.getElementById('item-master-upload')?.click()}
-                      >
-                        <FileSpreadsheet className="h-4 w-4 mr-2" />
-                        Browse Files
-                      </Button>
-                      <input
-                        id="item-master-upload"
-                        type="file"
-                        className="hidden"
-                        accept=".xlsx,.xls,.csv"
-                        onChange={handleItemMasterUpload}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Upload Status */}
-                {itemMasterFile && (
-                  <div className={`p-4 rounded-lg border ${itemMasterUploaded ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-muted'}`}>
-                    <div className="flex items-center gap-3">
-                      {itemMasterUploaded && <CheckCircle2 className="h-5 w-5 text-green-600" />}
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">{itemMasterFile.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {itemMasterUploaded ? `Uploaded by ${currentUser}` : 'Processing...'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Expected Format */}
-                <div className="bg-muted rounded-lg p-3">
-                  <p className="text-xs font-medium mb-2">Expected Columns:</p>
-                  <ul className="text-xs text-muted-foreground space-y-1">
-                    <li>• Part Code</li>
-                    <li>• Item Name</li>
-                    <li>• Bin Quantity</li>
-                  </ul>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Option 2: Upload Customer Master */}
+            <div className="max-w-2xl mx-auto">
+          {/* Upload Customer Master */}
           <Card className="hover:shadow-lg transition-shadow">
             <CardHeader>
               <div className="flex items-center gap-3 mb-3">
@@ -423,26 +330,14 @@ const MasterData = () => {
         </div>
 
         {/* Summary */}
-        {(itemMasterUploaded || customerMasterUploaded) && (
-          <Card className="mt-6">
+        {customerMasterUploaded && (
+          <Card className="mt-6 max-w-2xl mx-auto">
             <CardHeader>
               <CardTitle>Upload Summary</CardTitle>
               <CardDescription>Master data files uploaded in this session</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {itemMasterUploaded && (
-                  <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <CheckCircle2 className="h-5 w-5 text-green-600" />
-                      <div>
-                        <p className="text-sm font-medium">Item Master</p>
-                        <p className="text-xs text-muted-foreground">{itemMasterFile?.name}</p>
-                      </div>
-                    </div>
-                    <Badge variant="default">Uploaded</Badge>
-                  </div>
-                )}
                 {customerMasterUploaded && (
                   <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
                     <div className="flex items-center gap-3">
@@ -468,9 +363,7 @@ const MasterData = () => {
                 <Button 
                   variant="outline"
                   onClick={() => {
-                    setItemMasterFile(null);
                     setCustomerMasterFile(null);
-                    setItemMasterUploaded(false);
                     setCustomerMasterUploaded(false);
                   }}
                 >
@@ -486,122 +379,30 @@ const MasterData = () => {
         {/* Edit Master Data View */}
         {activeView === 'edit' && (
           <>
-            {!selectedMasterType ? (
-              /* Master Type Selection */
+            {/* Auto-select Customer Master */}
+            {(() => {
+              if (!selectedMasterType) {
+                setSelectedMasterType('customer');
+                return null;
+              }
+              return null;
+            })()}
+            
+            {selectedMasterType && (
+              /* Edit Interface for Customer Master */
               <>
-                <div className="mb-6 p-4 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded-lg">
-                  <p className="text-sm font-medium mb-2">✏️ Edit Master Data</p>
-                  <p className="text-xs text-muted-foreground">
-                    Select which master data you want to edit, add, or delete records from
-                  </p>
-                </div>
-
-                <div className="grid md:grid-cols-2 gap-6">
-                  {/* Edit Item Master */}
-                  <Card 
-                    className="hover:shadow-lg transition-all hover:scale-[1.02] cursor-pointer"
-                    onClick={() => setSelectedMasterType('item')}
-                  >
-                    <CardHeader>
-                      <div className="flex items-center gap-3 mb-3">
-                        <div className="p-3 bg-primary/10 rounded-lg">
-                          <Package className="h-8 w-8 text-primary" />
-                        </div>
-                        <div>
-                          <CardTitle className="text-xl">Edit Item Master</CardTitle>
-                          <CardDescription>Manage part codes and item details</CardDescription>
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Edit className="h-4 w-4" />
-                          <span>Edit existing items</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Plus className="h-4 w-4" />
-                          <span>Add new items</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Trash2 className="h-4 w-4" />
-                          <span>Delete items</span>
-                        </div>
-                      </div>
-                      <Button className="w-full mt-4">
-                        Select Item Master
-                      </Button>
-                    </CardContent>
-                  </Card>
-
-                  {/* Edit Customer Master */}
-                  <Card 
-                    className="hover:shadow-lg transition-all hover:scale-[1.02] cursor-pointer"
-                    onClick={() => setSelectedMasterType('customer')}
-                  >
-                    <CardHeader>
-                      <div className="flex items-center gap-3 mb-3">
-                        <div className="p-3 bg-accent/10 rounded-lg">
-                          <UsersIcon className="h-8 w-8 text-accent" />
-                        </div>
-                  <div>
-                    <CardTitle className="text-xl">Edit Customer Master</CardTitle>
-                    <CardDescription>Manage company names, part codes, quantities, and bin numbers</CardDescription>
-                  </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Edit className="h-4 w-4" />
-                          <span>Edit existing customer records</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Plus className="h-4 w-4" />
-                          <span>Add new customer records</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Trash2 className="h-4 w-4" />
-                          <span>Delete customer records</span>
-                        </div>
-                      </div>
-                      <Button className="w-full mt-4" variant="secondary">
-                        Select Customer Master
-                      </Button>
-                    </CardContent>
-                  </Card>
-                </div>
-              </>
-            ) : (
-              /* Edit Interface for Selected Master */
-              <>
-                {/* Back Button */}
-                <Button
-                  variant="ghost"
-                  onClick={() => setSelectedMasterType(null)}
-                  className="flex items-center gap-2 mb-6"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  Back to Selection
-                </Button>
 
                 <Card>
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <div className={`p-3 rounded-lg ${selectedMasterType === 'item' ? 'bg-primary/10' : 'bg-accent/10'}`}>
-                          {selectedMasterType === 'item' ? (
-                            <Package className="h-6 w-6 text-primary" />
-                          ) : (
-                            <UsersIcon className="h-6 w-6 text-accent" />
-                          )}
+                        <div className="p-3 rounded-lg bg-accent/10">
+                          <UsersIcon className="h-6 w-6 text-accent" />
                         </div>
                         <div>
-                          <CardTitle className="text-xl">
-                            {selectedMasterType === 'item' ? 'Item Master' : 'Customer Master'}
-                          </CardTitle>
+                          <CardTitle className="text-xl">Customer Master</CardTitle>
                           <CardDescription>
-                            Edit or add {selectedMasterType === 'item' ? 'items' : 'customers'}
+                            Edit, add, or delete customer records
                           </CardDescription>
                         </div>
                       </div>
@@ -616,75 +417,42 @@ const MasterData = () => {
                     {/* Record Count */}
                     <div className="mb-4 p-3 bg-muted rounded-lg flex items-center justify-between">
                       <p className="text-sm font-medium">
-                        Total Records: <span className="text-primary">{selectedMasterType === 'item' ? itemMasterData.length : customerMasterData.length}</span>
+                        Total Records: <span className="text-primary">{customerMasterData.length}</span>
                       </p>
-                      <Badge variant="outline">
-                        {selectedMasterType === 'item' ? 'Item Master' : 'Customer Master'}
-                      </Badge>
+                      <Badge variant="outline">Customer Master</Badge>
                     </div>
 
-                    {/* Sample Table */}
+                    {/* Customer Master Table */}
                     <div className="border rounded-lg overflow-hidden overflow-x-auto">
                       <table className="w-full text-xs sm:text-sm min-w-[600px]">
                         <thead className="bg-muted">
                           <tr>
-                            {selectedMasterType === 'item' ? (
-                              <>
-                                <th className="text-left p-3 font-semibold">Part Code</th>
-                                <th className="text-left p-3 font-semibold">Item Name</th>
-                                <th className="text-left p-3 font-semibold">Bin Quantity</th>
-                                <th className="text-left p-3 font-semibold">Actions</th>
-                              </>
-                            ) : (
-                              <>
-                                <th className="text-left p-3 font-semibold">Company Name</th>
-                                <th className="text-left p-3 font-semibold">Part Code</th>
-                                <th className="text-left p-3 font-semibold">Quantity</th>
-                                <th className="text-left p-3 font-semibold">Bin Number</th>
-                                <th className="text-left p-3 font-semibold">Actions</th>
-                              </>
-                            )}
+                            <th className="text-left p-3 font-semibold">Company Name</th>
+                            <th className="text-left p-3 font-semibold">Part Code</th>
+                            <th className="text-left p-3 font-semibold">Quantity</th>
+                            <th className="text-left p-3 font-semibold">Bin Number</th>
+                            <th className="text-left p-3 font-semibold">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedMasterType === 'item' ? (
-                            itemMasterData.map((item) => (
-                              <tr key={item.id} className="border-t hover:bg-muted/50">
-                                <td className="p-3 font-mono">{item.partCode}</td>
-                                <td className="p-3">{item.itemName}</td>
-                                <td className="p-3 font-semibold">{item.quantity}</td>
-                                <td className="p-3">
-                                  <div className="flex gap-2">
-                                    <Button size="sm" variant="ghost" onClick={() => handleEdit(item)}>
-                                      <Edit className="h-3 w-3" />
-                                    </Button>
-                                    <Button size="sm" variant="ghost" onClick={() => handleDeleteClick(item)}>
-                                      <Trash2 className="h-3 w-3 text-destructive" />
-                                    </Button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))
-                          ) : (
-                            customerMasterData.map((customer) => (
-                              <tr key={customer.id} className="border-t hover:bg-muted/50">
-                                <td className="p-3">{customer.companyName}</td>
-                                <td className="p-3 font-mono">{customer.partCode}</td>
-                                <td className="p-3">{customer.quantity}</td>
-                                <td className="p-3 font-mono">{customer.binNumber}</td>
-                                <td className="p-3">
-                                  <div className="flex gap-2">
-                                    <Button size="sm" variant="ghost" onClick={() => handleEdit(customer)}>
-                                      <Edit className="h-3 w-3" />
-                                    </Button>
-                                    <Button size="sm" variant="ghost" onClick={() => handleDeleteClick(customer)}>
-                                      <Trash2 className="h-3 w-3 text-destructive" />
-                                    </Button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))
-                          )}
+                          {customerMasterData.map((customer) => (
+                            <tr key={customer.id} className="border-t hover:bg-muted/50">
+                              <td className="p-3">{customer.companyName}</td>
+                              <td className="p-3 font-mono">{customer.partCode}</td>
+                              <td className="p-3">{customer.quantity}</td>
+                              <td className="p-3 font-mono">{customer.binNumber}</td>
+                              <td className="p-3">
+                                <div className="flex gap-2">
+                                  <Button size="sm" variant="ghost" onClick={() => handleEdit(customer)}>
+                                    <Edit className="h-3 w-3" />
+                                  </Button>
+                                  <Button size="sm" variant="ghost" onClick={() => handleDeleteClick(customer)}>
+                                    <Trash2 className="h-3 w-3 text-destructive" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>
@@ -711,75 +479,43 @@ const MasterData = () => {
           <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-md w-full p-6">
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <Edit className="h-5 w-5" />
-              Edit {selectedMasterType === 'item' ? 'Item' : 'Customer'}
+              Edit Customer
             </h3>
             
             <div className="space-y-4">
-              {selectedMasterType === 'item' ? (
-                <>
-                  <div>
-                    <Label>Part Code</Label>
-                    <Input
-                      value={editFormData.partCode || ''}
-                      onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Item Name</Label>
-                    <Input
-                      value={editFormData.itemName || ''}
-                      onChange={(e) => setEditFormData({...editFormData, itemName: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Bin Quantity</Label>
-                    <Input
-                      type="number"
-                      value={editFormData.quantity || ''}
-                      onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <Label>Company Name</Label>
-                    <Input
-                      value={editFormData.companyName || ''}
-                      onChange={(e) => setEditFormData({...editFormData, companyName: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Part Code</Label>
-                    <Input
-                      value={editFormData.partCode || ''}
-                      onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Quantity</Label>
-                    <Input
-                      type="number"
-                      value={editFormData.quantity || ''}
-                      onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Bin Number</Label>
-                    <Input
-                      value={editFormData.binNumber || ''}
-                      onChange={(e) => setEditFormData({...editFormData, binNumber: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                </>
-              )}
+              <div>
+                <Label>Company Name</Label>
+                <Input
+                  value={editFormData.companyName || ''}
+                  onChange={(e) => setEditFormData({...editFormData, companyName: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label>Part Code</Label>
+                <Input
+                  value={editFormData.partCode || ''}
+                  onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label>Quantity</Label>
+                <Input
+                  type="number"
+                  value={editFormData.quantity || ''}
+                  onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label>Bin Number</Label>
+                <Input
+                  value={editFormData.binNumber || ''}
+                  onChange={(e) => setEditFormData({...editFormData, binNumber: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
             </div>
 
             <div className="flex gap-3 mt-6">
@@ -801,88 +537,53 @@ const MasterData = () => {
           <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-md w-full p-6">
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <Plus className="h-5 w-5" />
-              Add New {selectedMasterType === 'item' ? 'Item' : 'Customer'}
+              Add New Customer
             </h3>
             
             <div className="space-y-4">
-              {selectedMasterType === 'item' ? (
-                <>
-                  <div>
-                    <Label>Part Code</Label>
-                    <Input
-                      placeholder="e.g., 2023919386008"
-                      value={editFormData.partCode || ''}
-                      onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Item Name</Label>
-                    <Input
-                      placeholder="e.g., Sensor Module"
-                      value={editFormData.itemName || ''}
-                      onChange={(e) => setEditFormData({...editFormData, itemName: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Bin Quantity</Label>
-                    <Input
-                      type="number"
-                      placeholder="e.g., 5"
-                      value={editFormData.quantity || ''}
-                      onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <Label>Company Name</Label>
-                    <Input
-                      placeholder="e.g., New Company Inc"
-                      value={editFormData.companyName || ''}
-                      onChange={(e) => setEditFormData({...editFormData, companyName: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Part Code</Label>
-                    <Input
-                      placeholder="e.g., 2023919386009"
-                      value={editFormData.partCode || ''}
-                      onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Quantity</Label>
-                    <Input
-                      type="number"
-                      placeholder="e.g., 7"
-                      value={editFormData.quantity || ''}
-                      onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>Bin Number</Label>
-                    <Input
-                      placeholder="e.g., 76480M66T04"
-                      value={editFormData.binNumber || ''}
-                      onChange={(e) => setEditFormData({...editFormData, binNumber: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                </>
-              )}
+              <div>
+                <Label>Company Name</Label>
+                <Input
+                  placeholder="e.g., New Company Inc"
+                  value={editFormData.companyName || ''}
+                  onChange={(e) => setEditFormData({...editFormData, companyName: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label>Part Code</Label>
+                <Input
+                  placeholder="e.g., 2023919386009"
+                  value={editFormData.partCode || ''}
+                  onChange={(e) => setEditFormData({...editFormData, partCode: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label>Quantity</Label>
+                <Input
+                  type="number"
+                  placeholder="e.g., 7"
+                  value={editFormData.quantity || ''}
+                  onChange={(e) => setEditFormData({...editFormData, quantity: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label>Bin Number</Label>
+                <Input
+                  placeholder="e.g., 76480M66T04"
+                  value={editFormData.binNumber || ''}
+                  onChange={(e) => setEditFormData({...editFormData, binNumber: e.target.value})}
+                  className="mt-1"
+                />
+              </div>
             </div>
 
             <div className="flex gap-3 mt-6">
               <Button onClick={handleSaveAdd} className="flex-1">
                 <Plus className="h-4 w-4 mr-2" />
-                Add {selectedMasterType === 'item' ? 'Item' : 'Customer'}
+                Add Customer
               </Button>
               <Button variant="outline" onClick={() => setShowAddDialog(false)}>
                 Cancel
@@ -902,17 +603,13 @@ const MasterData = () => {
             </h3>
             
             <p className="text-sm text-muted-foreground mb-6">
-              Are you sure you want to delete this {selectedMasterType === 'item' ? 'item' : 'customer'}? This action cannot be undone.
+              Are you sure you want to delete this customer? This action cannot be undone.
             </p>
 
             {selectedRecord && (
               <div className="bg-muted p-3 rounded-lg mb-6">
                 <p className="text-xs font-medium mb-2">Record to delete:</p>
-                {selectedMasterType === 'item' ? (
-                  <p className="text-sm font-mono">{(selectedRecord as ItemMaster).partCode} - {(selectedRecord as ItemMaster).itemName}</p>
-                ) : (
-                  <p className="text-sm font-mono">{(selectedRecord as CustomerMaster).companyName} - {(selectedRecord as CustomerMaster).partCode} - Qty: {(selectedRecord as CustomerMaster).quantity} - {(selectedRecord as CustomerMaster).binNumber}</p>
-                )}
+                <p className="text-sm font-mono">{(selectedRecord as CustomerMaster).companyName} - {(selectedRecord as CustomerMaster).partCode} - Qty: {(selectedRecord as CustomerMaster).quantity} - {(selectedRecord as CustomerMaster).binNumber}</p>
               </div>
             )}
 

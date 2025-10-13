@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertTriangle, CheckCircle2, XCircle, ArrowLeft, User, Building2, Calendar, Clock, ScanBarcode, Truck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ArrowLeft, User, Building2, Clock, ScanBarcode, Truck } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -22,7 +22,6 @@ const ExceptionAlerts = () => {
   const navigate = useNavigate();
   const { currentUser, mismatchAlerts, updateMismatchStatus } = useSession();
   const [selectedAlert, setSelectedAlert] = useState<string | null>(null);
-  const [actionType, setActionType] = useState<'approve' | 'reject' | null>(null);
 
   // Permission check
   if (currentUser !== "Admin") {
@@ -46,27 +45,17 @@ const ExceptionAlerts = () => {
     );
   }
 
-  const handleApprove = (alertId: string) => {
+  const handleCorrected = (alertId: string) => {
     setSelectedAlert(alertId);
-    setActionType('approve');
   };
 
-  const handleReject = (alertId: string) => {
-    setSelectedAlert(alertId);
-    setActionType('reject');
-  };
-
-  const confirmAction = () => {
-    if (selectedAlert && actionType) {
-      updateMismatchStatus(selectedAlert, actionType === 'approve' ? 'approved' : 'rejected', currentUser);
-      toast.success(
-        actionType === 'approve' ? 'Mismatch approved successfully!' : 'Mismatch rejected successfully!',
-        {
-          description: `Action recorded by ${currentUser}`
-        }
-      );
+  const confirmCorrected = () => {
+    if (selectedAlert) {
+      updateMismatchStatus(selectedAlert, 'approved', currentUser);
+      toast.success('Barcode corrected successfully!', {
+        description: `Correction confirmed by ${currentUser}`
+      });
       setSelectedAlert(null);
-      setActionType(null);
     }
   };
 
@@ -130,7 +119,7 @@ const ExceptionAlerts = () => {
           </Card>
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Reviewed</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Corrected</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-green-600">{reviewedAlerts.length}</div>
@@ -172,23 +161,15 @@ const ExceptionAlerts = () => {
                             </div>
                             <CardTitle className="text-xl">{alert.customer}</CardTitle>
                           </div>
-                          <div className="flex gap-2">
+                          <div>
                             <Button
                               size="sm"
                               variant="default"
                               className="bg-green-600 hover:bg-green-700"
-                              onClick={() => handleApprove(alert.id)}
+                              onClick={() => handleCorrected(alert.id)}
                             >
                               <CheckCircle2 className="h-4 w-4 mr-1" />
-                              Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => handleReject(alert.id)}
-                            >
-                              <XCircle className="h-4 w-4 mr-1" />
-                              Reject
+                              Mark as Corrected
                             </Button>
                           </div>
                         </div>
@@ -272,7 +253,7 @@ const ExceptionAlerts = () => {
                             <AlertTriangle className="h-5 w-5 text-red-600 mt-0.5" />
                             <div className="text-sm">
                               <p className="font-semibold text-red-900 dark:text-red-100">Barcode Mismatch Detected</p>
-                              <p className="text-red-700 dark:text-red-300">The customer and Autoliv barcodes do not match. Please review and approve or reject.</p>
+                              <p className="text-red-700 dark:text-red-300">The customer and Autoliv barcodes do not match. After correction, mark this alert as corrected.</p>
                             </div>
                           </div>
                         </div>
@@ -285,15 +266,15 @@ const ExceptionAlerts = () => {
           </Card>
         )}
 
-        {/* Reviewed Alerts */}
+        {/* Corrected Alerts */}
         {reviewedAlerts.length > 0 && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <CheckCircle2 className="h-5 w-5 text-green-600" />
-                Reviewed Mismatches
+                Corrected Mismatches
               </CardTitle>
-              <CardDescription>Previously reviewed and actioned</CardDescription>
+              <CardDescription>Previously corrected barcodes</CardDescription>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px]">
@@ -305,15 +286,11 @@ const ExceptionAlerts = () => {
                           <div className="flex-1">
                             <div className="flex items-center gap-3 mb-2 flex-wrap">
                               <Badge
-                                variant={alert.status === 'approved' ? 'default' : 'destructive'}
-                                className={alert.status === 'approved' ? 'bg-green-600' : ''}
+                                variant="default"
+                                className="bg-green-600"
                               >
-                                {alert.status === 'approved' ? (
-                                  <CheckCircle2 className="h-3 w-3 mr-1" />
-                                ) : (
-                                  <XCircle className="h-3 w-3 mr-1" />
-                                )}
-                                {alert.status.toUpperCase()}
+                                <CheckCircle2 className="h-3 w-3 mr-1" />
+                                CORRECTED
                               </Badge>
                               <Badge variant="outline" className="flex items-center gap-1">
                                 {alert.step === 'doc-audit' ? (
@@ -332,7 +309,7 @@ const ExceptionAlerts = () => {
                                 <p className="font-medium">{alert.user}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-muted-foreground">Reviewed By</p>
+                                <p className="text-xs text-muted-foreground">Corrected By</p>
                                 <p className="font-medium">{alert.reviewedBy}</p>
                               </div>
                               <div>
@@ -340,7 +317,7 @@ const ExceptionAlerts = () => {
                                 <p className="font-medium">{formatDate(alert.timestamp)}</p>
                               </div>
                               <div>
-                                <p className="text-xs text-muted-foreground">Reviewed At</p>
+                                <p className="text-xs text-muted-foreground">Corrected At</p>
                                 <p className="font-medium">{alert.reviewedAt ? formatDate(alert.reviewedAt) : 'N/A'}</p>
                               </div>
                             </div>
@@ -373,22 +350,20 @@ const ExceptionAlerts = () => {
       <AlertDialog open={selectedAlert !== null} onOpenChange={() => setSelectedAlert(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {actionType === 'approve' ? 'Approve Mismatch?' : 'Reject Mismatch?'}
-            </AlertDialogTitle>
+            <AlertDialogTitle>Confirm Barcode Correction</AlertDialogTitle>
             <AlertDialogDescription>
-              {actionType === 'approve'
-                ? 'This will approve the mismatched barcode and allow it to proceed in the workflow.'
-                : 'This will reject the mismatched barcode and it will need to be re-scanned.'}
+              This will mark the barcode mismatch as corrected and remove it from pending alerts.
+              Make sure the physical barcode has been corrected before confirming.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={confirmAction}
-              className={actionType === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-destructive hover:bg-destructive/90'}
+              onClick={confirmCorrected}
+              className="bg-green-600 hover:bg-green-700"
             >
-              {actionType === 'approve' ? 'Approve' : 'Reject'}
+              <CheckCircle2 className="h-4 w-4 mr-2" />
+              Confirm Corrected
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

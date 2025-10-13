@@ -84,10 +84,10 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   
   // Initialize with default invoices (16 invoices scheduled for today)
   const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([
-    // First batch - 6 invoices
+    // BHARAT SEATS LIMITED - 3 invoices
     {
-      id: 'INV-2024-101',
-      customer: 'Acme Corporation',
+      id: '2510706711',
+      customer: 'BHARAT SEATS LIMITED',
       invoiceDate: new Date(),
       totalQty: 240,
       binCapacity: 80,
@@ -100,8 +100,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000) // 30 minutes ago
     },
     {
-      id: 'INV-2024-102',
-      customer: 'Tech Solutions Inc',
+      id: '2510706712',
+      customer: 'BHARAT SEATS LIMITED',
       invoiceDate: new Date(),
       totalQty: 150,
       binCapacity: 50,
@@ -114,8 +114,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000)
     },
     {
-      id: 'INV-2024-103',
-      customer: 'Global Industries',
+      id: '2510706713',
+      customer: 'BHARAT SEATS LIMITED',
       invoiceDate: new Date(),
       totalQty: 160,
       binCapacity: 80,
@@ -127,9 +127,10 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedBy: 'Admin',
       uploadedAt: new Date(Date.now() - 1800000)
     },
+    // KRISHNA MARUTI LTD SEATING - 3 invoices
     {
-      id: 'INV-2024-104',
-      customer: 'Manufacturing Co',
+      id: '2510706714',
+      customer: 'KRISHNA MARUTI LTD SEATING',
       invoiceDate: new Date(),
       totalQty: 100,
       binCapacity: 50,
@@ -142,37 +143,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000)
     },
     {
-      id: 'INV-2024-105',
-      customer: 'Auto Parts Ltd',
-      invoiceDate: new Date(),
-      totalQty: 240,
-      binCapacity: 80,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: 'INV-2024-106',
-      customer: 'Precision Engineering',
-      invoiceDate: new Date(),
-      totalQty: 80,
-      binCapacity: 80,
-      expectedBins: 1,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    // Second batch - 5 invoices
-    {
-      id: 'INV-2024-107',
-      customer: 'Delta Automotive',
+      id: '2510706715',
+      customer: 'KRISHNA MARUTI LTD SEATING',
       invoiceDate: new Date(),
       totalQty: 200,
       binCapacity: 50,
@@ -185,12 +157,12 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000)
     },
     {
-      id: 'INV-2024-108',
-      customer: 'Omega Components',
+      id: '2510706716',
+      customer: 'KRISHNA MARUTI LTD SEATING',
       invoiceDate: new Date(),
-      totalQty: 160,
+      totalQty: 80,
       binCapacity: 80,
-      expectedBins: 2,
+      expectedBins: 1,
       scannedBins: 0,
       binsLoaded: 0,
       auditComplete: false,
@@ -198,23 +170,10 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedBy: 'Admin',
       uploadedAt: new Date(Date.now() - 1800000)
     },
+    // HONDA CARS INDIA LTD - 3 invoices
     {
-      id: 'INV-2024-109',
-      customer: 'Sigma Systems',
-      invoiceDate: new Date(),
-      totalQty: 150,
-      binCapacity: 50,
-      expectedBins: 3,
-      scannedBins: 0,
-      binsLoaded: 0,
-      auditComplete: false,
-      items: [],
-      uploadedBy: 'Admin',
-      uploadedAt: new Date(Date.now() - 1800000)
-    },
-    {
-      id: 'INV-2024-110',
-      customer: 'Alpha Manufacturing',
+      id: '2510706717',
+      customer: 'HONDA CARS INDIA LTD',
       invoiceDate: new Date(),
       totalQty: 240,
       binCapacity: 80,
@@ -227,8 +186,51 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000)
     },
     {
-      id: 'INV-2024-111',
-      customer: 'Beta Industries',
+      id: '2510706718',
+      customer: 'HONDA CARS INDIA LTD',
+      invoiceDate: new Date(),
+      totalQty: 160,
+      binCapacity: 80,
+      expectedBins: 2,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: '2510706719',
+      customer: 'HONDA CARS INDIA LTD',
+      invoiceDate: new Date(),
+      totalQty: 150,
+      binCapacity: 50,
+      expectedBins: 3,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    // SUZUKI MOTORS GUJARAT PVT LT - 3 invoices
+    {
+      id: '2510706720',
+      customer: 'SUZUKI MOTORS GUJARAT PVT LT',
+      invoiceDate: new Date(),
+      totalQty: 200,
+      binCapacity: 50,
+      expectedBins: 4,
+      scannedBins: 0,
+      binsLoaded: 0,
+      auditComplete: false,
+      items: [],
+      uploadedBy: 'Admin',
+      uploadedAt: new Date(Date.now() - 1800000)
+    },
+    {
+      id: '2510706721',
+      customer: 'SUZUKI MOTORS GUJARAT PVT LT',
       invoiceDate: new Date(),
       totalQty: 100,
       binCapacity: 50,
@@ -240,10 +242,9 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedBy: 'Admin',
       uploadedAt: new Date(Date.now() - 1800000)
     },
-    // Third batch - 5 invoices
     {
-      id: 'INV-2024-112',
-      customer: 'Gamma Technologies',
+      id: '2510706722',
+      customer: 'SUZUKI MOTORS GUJARAT PVT LT',
       invoiceDate: new Date(),
       totalQty: 160,
       binCapacity: 80,
@@ -255,13 +256,14 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedBy: 'Admin',
       uploadedAt: new Date(Date.now() - 1800000)
     },
+    // VENDOR CODE: 703160 - 2 invoices
     {
-      id: 'INV-2024-113',
-      customer: 'Theta Solutions',
+      id: '2510706723',
+      customer: 'VENDOR CODE: 703160',
       invoiceDate: new Date(),
-      totalQty: 200,
-      binCapacity: 50,
-      expectedBins: 4,
+      totalQty: 240,
+      binCapacity: 80,
+      expectedBins: 3,
       scannedBins: 0,
       binsLoaded: 0,
       auditComplete: false,
@@ -270,8 +272,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000)
     },
     {
-      id: 'INV-2024-114',
-      customer: 'Epsilon Engineering',
+      id: '2510706724',
+      customer: 'VENDOR CODE: 703160',
       invoiceDate: new Date(),
       totalQty: 80,
       binCapacity: 80,
@@ -283,9 +285,10 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedBy: 'Admin',
       uploadedAt: new Date(Date.now() - 1800000)
     },
+    // MARUTI SUZUKI INDIA Ltd-II - 2 invoices
     {
-      id: 'INV-2024-115',
-      customer: 'Zeta Automotive',
+      id: '2510706725',
+      customer: 'MARUTI SUZUKI INDIA Ltd-II',
       invoiceDate: new Date(),
       totalQty: 150,
       binCapacity: 50,
@@ -298,12 +301,12 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       uploadedAt: new Date(Date.now() - 1800000)
     },
     {
-      id: 'INV-2024-116',
-      customer: 'Kappa Components',
+      id: '2510706726',
+      customer: 'MARUTI SUZUKI INDIA Ltd-II',
       invoiceDate: new Date(),
-      totalQty: 240,
-      binCapacity: 80,
-      expectedBins: 3,
+      totalQty: 200,
+      binCapacity: 50,
+      expectedBins: 4,
       scannedBins: 0,
       binsLoaded: 0,
       auditComplete: false,
@@ -319,7 +322,7 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       id: 'log-1',
       user: 'Admin',
       action: 'Uploaded 6 invoice(s)',
-      details: 'Invoices: INV-2024-101, INV-2024-102, INV-2024-103, INV-2024-104, INV-2024-105, INV-2024-106',
+      details: 'Invoices: 2510706711, 2510706712, 2510706713, 2510706714, 2510706715, 2510706716',
       timestamp: new Date(Date.now() - 1800000), // 30 minutes ago
       type: 'upload'
     },
@@ -327,7 +330,7 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       id: 'log-2',
       user: 'Admin',
       action: 'Uploaded 5 invoice(s)',
-      details: 'Invoices: INV-2024-107, INV-2024-108, INV-2024-109, INV-2024-110, INV-2024-111',
+      details: 'Invoices: 2510706717, 2510706718, 2510706719, 2510706720, 2510706721',
       timestamp: new Date(Date.now() - 1800000),
       type: 'upload'
     },
@@ -335,7 +338,7 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       id: 'log-3',
       user: 'Admin',
       action: 'Uploaded 5 invoice(s)',
-      details: 'Invoices: INV-2024-112, INV-2024-113, INV-2024-114, INV-2024-115, INV-2024-116',
+      details: 'Invoices: 2510706722, 2510706723, 2510706724, 2510706725, 2510706726',
       timestamp: new Date(Date.now() - 1800000),
       type: 'upload'
     }
@@ -345,8 +348,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     {
       id: 'mismatch-1',
       user: 'User 1',
-      customer: 'Acme Corporation',
-      invoiceId: 'INV-2024-001',
+      customer: 'BHARAT SEATS LIMITED',
+      invoiceId: '2510706711',
       step: 'doc-audit',
       customerScan: {
         partCode: '2023919386001',
@@ -366,8 +369,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     {
       id: 'mismatch-2',
       user: 'User 2',
-      customer: 'Tech Solutions Inc',
-      invoiceId: 'INV-2024-002',
+      customer: 'HONDA CARS INDIA LTD',
+      invoiceId: '2510706717',
       step: 'loading-dispatch',
       customerScan: {
         partCode: '2023919386002',
@@ -387,8 +390,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     {
       id: 'mismatch-3',
       user: 'User 1',
-      customer: 'Global Industries',
-      invoiceId: 'INV-2024-003',
+      customer: 'MARUTI SUZUKI INDIA Ltd-II',
+      invoiceId: '2510706725',
       step: 'doc-audit',
       customerScan: {
         partCode: '2023919386003',
