@@ -53,6 +53,9 @@ interface UploadedRow {
 interface ValidatedBarcodePair {
   customerBarcode: string;
   autolivBarcode: string;
+  binNumber?: string;
+  quantity?: string;
+  partCode?: string;
 }
 
 interface InvoiceData {
@@ -1206,10 +1209,13 @@ const Dashboard = () => {
       return;
     }
 
-    // Add to loaded list with the scanned barcode rawValues
+    // Add to loaded list with the scanned barcode data including bin number and quantity
     const newPair: ValidatedBarcodePair = {
       customerBarcode: dispatchCustomerScan.rawValue,
-      autolivBarcode: dispatchAutolivScan.rawValue
+      autolivBarcode: dispatchAutolivScan.rawValue,
+      binNumber: dispatchCustomerScan.binNumber,
+      quantity: dispatchCustomerScan.quantity,
+      partCode: dispatchCustomerScan.partCode
     };
     
     setLoadedBarcodes(prev => [...prev, newPair]);
@@ -1252,7 +1258,19 @@ const Dashboard = () => {
     // Mark invoices as dispatched by current user
     const dispatchedInvoicesList = selectedInvoices.join(', ');
     selectedInvoices.forEach(invoiceId => {
-      updateInvoiceDispatch(invoiceId, currentUser);
+      // Get bin number and quantity from the first loaded barcode
+      const binNumber = loadedBarcodes.length > 0 ? loadedBarcodes[0].binNumber : undefined;
+      const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+      
+      console.log('Dispatching with:', {
+        invoiceId,
+        vehicleNumber,
+        binNumber,
+        totalQuantity,
+        loadedBarcodesCount: loadedBarcodes.length
+      });
+      
+      updateInvoiceDispatch(invoiceId, currentUser, vehicleNumber, binNumber, totalQuantity || undefined);
     });
 
     setGatepassGenerated(true);

@@ -63,7 +63,7 @@ interface SessionContextType {
   sharedInvoices: InvoiceData[];
   addInvoices: (invoices: InvoiceData[], uploadedBy: string) => void;
   updateInvoiceAudit: (invoiceId: string, auditData: Partial<InvoiceData>, auditedBy: string) => void;
-  updateInvoiceDispatch: (invoiceId: string, dispatchedBy: string) => void;
+  updateInvoiceDispatch: (invoiceId: string, dispatchedBy: string, vehicleNumber?: string, binNumber?: string, quantity?: number) => void;
   getUploadedInvoices: () => InvoiceData[];
   getAuditedInvoices: () => InvoiceData[];
   getDispatchableInvoices: () => InvoiceData[];
@@ -279,7 +279,7 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const updateInvoiceDispatch = (invoiceId: string, dispatchedBy: string) => {
+  const updateInvoiceDispatch = (invoiceId: string, dispatchedBy: string, vehicleNumber?: string, binNumber?: string, quantity?: number) => {
     const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
     
     setSharedInvoices(prev => prev.map(inv => 
@@ -292,11 +292,16 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         : inv
     ));
     
-    // Add log entry
+    // Build detailed dispatch log with bin number and quantity
+    const binInfo = binNumber || 'N/A';
+    const qtyInfo = quantity || invoice?.totalQty || 0;
+    const vehicleInfo = vehicleNumber || 'N/A';
+    
+    // Add log entry with enhanced details
     addLog({
       user: dispatchedBy,
       action: `Dispatched invoice ${invoiceId}`,
-      details: `Customer: ${invoice?.customer || 'Unknown'}, Items: ${invoice?.scannedBins || 0}`,
+      details: `Customer: ${invoice?.customer || 'Unknown'}, Bin Number: ${binInfo}, Quantity: ${qtyInfo}, Vehicle: ${vehicleInfo}`,
       type: 'dispatch'
     });
   };

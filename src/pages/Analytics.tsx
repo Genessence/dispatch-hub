@@ -462,37 +462,75 @@ const Analytics = () => {
                     Dispatch Activity Report
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    Summary of all dispatched invoices
+                    Summary of all dispatched invoices with vehicle and bin details
                   </p>
                 </div>
 
                 {getDispatchLogs().length > 0 ? (
                   <div className="space-y-3">
-                    {getDispatchLogs().map((log) => (
-                      <Card key={log.id}>
-                        <CardContent className="p-4">
-                          <div className="flex items-start justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-full">
-                                <User className="h-4 w-4 text-purple-600" />
+                    {getDispatchLogs().map((log) => {
+                      // Parse details to extract information
+                      const detailsMatch = log.details.match(/Customer: (.+?),\s*Bin Number:\s*(.+?),\s*Quantity:\s*(\d+),\s*Vehicle:\s*(.+)$/);
+                      const customer = detailsMatch?.[1] || 'Unknown';
+                      const binNumber = detailsMatch?.[2] || 'N/A';
+                      const quantity = detailsMatch?.[3] || 'N/A';
+                      const vehicle = detailsMatch?.[4] || 'N/A';
+                      
+                      // Extract invoice number
+                      const invoiceMatch = log.action.match(/Dispatched invoice (.+)/);
+                      const invoiceId = invoiceMatch?.[1] || '';
+                      
+                      return (
+                        <Card key={log.id}>
+                          <CardContent className="p-4">
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="flex items-center gap-2">
+                                <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-full">
+                                  <User className="h-4 w-4 text-purple-600" />
+                                </div>
+                                <div>
+                                  <p className="font-semibold">{log.user}</p>
+                                  <p className="text-xs text-muted-foreground">Dispatched invoice</p>
+                                </div>
                               </div>
-                              <div>
-                                <p className="font-semibold">{log.user}</p>
-                                <p className="text-xs text-muted-foreground">Dispatched invoice</p>
+                              <Badge variant="outline" className="text-xs">
+                                <Clock className="h-3 w-3 mr-1" />
+                                {formatDate(log.timestamp)}
+                              </Badge>
+                            </div>
+                            
+                            {/* Dispatch Details */}
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="p-2 bg-muted rounded">
+                                  <p className="text-xs text-muted-foreground mb-1">Invoice Number</p>
+                                  <p className="font-semibold text-sm">{invoiceId}</p>
+                                </div>
+                                <div className="p-2 bg-muted rounded">
+                                  <p className="text-xs text-muted-foreground mb-1">Customer</p>
+                                  <p className="font-semibold text-sm">{customer}</p>
+                                </div>
+                              </div>
+                              
+                              <div className="grid grid-cols-3 gap-2">
+                                <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
+                                  <p className="text-xs text-muted-foreground mb-1">Bin Number</p>
+                                  <p className="font-bold text-sm font-mono">{binNumber}</p>
+                                </div>
+                                <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
+                                  <p className="text-xs text-muted-foreground mb-1">Quantity</p>
+                                  <p className="font-bold text-sm">{quantity}</p>
+                                </div>
+                                <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
+                                  <p className="text-xs text-muted-foreground mb-1">Vehicle Number</p>
+                                  <p className="font-bold text-sm">{vehicle}</p>
+                                </div>
                               </div>
                             </div>
-                            <Badge variant="outline" className="text-xs">
-                              <Clock className="h-3 w-3 mr-1" />
-                              {formatDate(log.timestamp)}
-                            </Badge>
-                          </div>
-                          <div className="text-sm">
-                            <p className="font-medium">{log.action}</p>
-                            <p className="text-xs text-muted-foreground mt-1">{log.details}</p>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
