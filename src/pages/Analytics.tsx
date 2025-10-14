@@ -512,18 +512,20 @@ const Analytics = () => {
                                 </div>
                               </div>
                               
-                              <div className="grid grid-cols-3 gap-2">
+                              <div className="space-y-2">
                                 <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
                                   <p className="text-xs text-muted-foreground mb-1">Bin Number</p>
-                                  <p className="font-bold text-sm font-mono">{binNumber}</p>
+                                  <p className="font-bold text-sm font-mono break-all">{binNumber}</p>
                                 </div>
-                                <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
-                                  <p className="text-xs text-muted-foreground mb-1">Quantity</p>
-                                  <p className="font-bold text-sm">{quantity}</p>
-                                </div>
-                                <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
-                                  <p className="text-xs text-muted-foreground mb-1">Vehicle Number</p>
-                                  <p className="font-bold text-sm">{vehicle}</p>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
+                                    <p className="text-xs text-muted-foreground mb-1">Quantity</p>
+                                    <p className="font-bold text-sm">{quantity}</p>
+                                  </div>
+                                  <div className="p-2 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded">
+                                    <p className="text-xs text-muted-foreground mb-1">Vehicle Number</p>
+                                    <p className="font-bold text-sm break-all">{vehicle}</p>
+                                  </div>
                                 </div>
                               </div>
                             </div>
