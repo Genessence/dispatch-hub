@@ -85,8 +85,10 @@ const Dashboard = () => {
   
   // Upload Data states
   const [file, setFile] = useState<File | null>(null);
+  const [scheduleFile, setScheduleFile] = useState<File | null>(null);
   const [uploadStage, setUploadStage] = useState<'upload' | 'validate' | 'complete'>('upload');
   const [dragActive, setDragActive] = useState(false);
+  const [scheduleDragActive, setScheduleDragActive] = useState(false);
   const [uploadedData, setUploadedData] = useState<UploadedRow[]>([]);
   const [processedInvoices, setProcessedInvoices] = useState<InvoiceData[]>([]);
   
@@ -225,6 +227,16 @@ const Dashboard = () => {
       setDragActive(true);
     } else if (e.type === "dragleave") {
       setDragActive(false);
+    }
+  };
+
+  const handleScheduleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setScheduleDragActive(true);
+    } else if (e.type === "dragleave") {
+      setScheduleDragActive(false);
     }
   };
 
@@ -629,7 +641,7 @@ const Dashboard = () => {
     });
   };
 
-  const handleDrop = async (e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
@@ -637,153 +649,114 @@ const Dashboard = () => {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const droppedFile = e.dataTransfer.files[0];
       setFile(droppedFile);
-      
-      const loadingToast = toast.loading("Parsing file...", {
-        duration: 0 // Prevent auto-dismiss
-      });
-      
-      try {
-        // Add timeout for mobile devices (reduce to 10 seconds for mobile)
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
-          || (window.innerWidth < 768 && ('ontouchstart' in window));
-        
-        const timeoutDuration = isMobile ? 10000 : 15000; // 10s mobile, 15s desktop
-        
-        const parsePromise = parseFile(droppedFile);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
-        );
-        
-        const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
-        
-        // Validate results
-        if (!rows || !invoices) {
-          throw new Error('Invalid file format - no data found');
-        }
-        
-        // Show progress for large files on mobile
-        if (isMobile && rows.length > 100) {
-          toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
-        }
-        
-        setUploadedData(rows);
-        setProcessedInvoices(invoices);
-        setUploadStage('validate');
-        toast.dismiss(loadingToast);
-        toast.dismiss('processing');
-        toast.success(`File uploaded successfully! Found ${rows.length} records from ${invoices.length} invoices.`);
-      } catch (error) {
-        toast.dismiss(loadingToast);
-        toast.dismiss('processing');
-        console.error('File parsing error:', error);
-        
-        // More specific error messages for mobile
-        let errorMessage = "Error parsing file. Please check the file format and try again.";
-        if (error instanceof Error) {
-          if (error.message.includes('timeout')) {
-            errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
-          } else if (error.message.includes('File too large')) {
-            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
-              || (window.innerWidth < 768 && ('ontouchstart' in window));
-            const maxSize = isMobile ? '5MB' : '10MB';
-            errorMessage = `File is too large. Please use files smaller than ${maxSize}.`;
-          } else if (error.message.includes('No data found')) {
-            errorMessage = "No data found in the file. Please check the file format.";
-          } else if (error.message.includes('too many rows')) {
-            errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
-          } else if (error.message.includes('No headers found')) {
-            errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
-          } else if (error.message.includes('File parsing failed')) {
-            errorMessage = "Unable to read the Excel file. Please ensure it's a valid .xlsx or .xls file and try again.";
-          } else {
-            errorMessage = error.message;
-          }
-        }
-        
-        toast.error(errorMessage);
-        
-        // Reset file state on error
-        setFile(null);
-        setUploadedData([]);
-        setProcessedInvoices([]);
-      }
+      toast.success("Invoices file selected!");
+      // Don't auto-advance - wait for both files
     }
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleScheduleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setScheduleDragActive(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setScheduleFile(e.dataTransfer.files[0]);
+      toast.success("Schedule file selected!");
+      // Don't auto-advance - wait for both files
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
+      toast.success("Invoices file selected!");
+      // Don't auto-advance - wait for both files
+    }
+  };
+
+  const handleScheduleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setScheduleFile(e.target.files[0]);
+      toast.success("Schedule file selected!");
+      // Don't auto-advance - wait for both files
+    }
+  };
+
+  const handleProceedToValidation = async () => {
+    if (!file) {
+      toast.error("Please upload Invoices file");
+      return;
+    }
+    if (!scheduleFile) {
+      toast.error("Please upload Schedule file");
+      return;
+    }
+
+    // Parse the invoices file
+    const loadingToast = toast.loading("Parsing invoices file...", {
+      duration: 0
+    });
+    
+    try {
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+        || (window.innerWidth < 768 && ('ontouchstart' in window));
       
-      const loadingToast = toast.loading("Parsing file...", {
-        duration: 0 // Prevent auto-dismiss
-      });
+      const timeoutDuration = isMobile ? 10000 : 15000;
       
-      try {
-        // Add timeout for mobile devices (reduce to 10 seconds for mobile)
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
-          || (window.innerWidth < 768 && ('ontouchstart' in window));
-        
-        const timeoutDuration = isMobile ? 10000 : 15000; // 10s mobile, 15s desktop
-        
-        const parsePromise = parseFile(selectedFile);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
-        );
-        
-        const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
-        
-        // Validate results
-        if (!rows || !invoices) {
-          throw new Error('Invalid file format - no data found');
-        }
-        
-        // Show progress for large files on mobile
-        if (isMobile && rows.length > 100) {
-          toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
-        }
-        
-        setUploadedData(rows);
-        setProcessedInvoices(invoices);
-        setUploadStage('validate');
-        toast.dismiss(loadingToast);
-        toast.dismiss('processing');
-        toast.success(`File uploaded successfully! Found ${rows.length} records from ${invoices.length} invoices.`);
-      } catch (error) {
-        toast.dismiss(loadingToast);
-        toast.dismiss('processing');
-        console.error('File parsing error:', error);
-        
-        // More specific error messages for mobile
-        let errorMessage = "Error parsing file. Please check the file format and try again.";
-        if (error instanceof Error) {
-          if (error.message.includes('timeout')) {
-            errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
-          } else if (error.message.includes('File too large')) {
-            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
-              || (window.innerWidth < 768 && ('ontouchstart' in window));
-            const maxSize = isMobile ? '5MB' : '10MB';
-            errorMessage = `File is too large. Please use files smaller than ${maxSize}.`;
-          } else if (error.message.includes('No data found')) {
-            errorMessage = "No data found in the file. Please check the file format.";
-          } else if (error.message.includes('too many rows')) {
-            errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
-          } else if (error.message.includes('No headers found')) {
-            errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
-          } else if (error.message.includes('File parsing failed')) {
-            errorMessage = "Unable to read the Excel file. Please ensure it's a valid .xlsx or .xls file and try again.";
-          } else {
-            errorMessage = error.message;
-          }
-        }
-        
-        toast.error(errorMessage);
-        
-        // Reset file state on error
-        setFile(null);
-        setUploadedData([]);
-        setProcessedInvoices([]);
+      const parsePromise = parseFile(file);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
+      );
+      
+      const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
+      
+      if (!rows || !invoices) {
+        throw new Error('Invalid file format - no data found');
       }
+      
+      if (isMobile && rows.length > 100) {
+        toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
+      }
+      
+      setUploadedData(rows);
+      setProcessedInvoices(invoices);
+      setUploadStage('validate');
+      toast.dismiss(loadingToast);
+      toast.dismiss('processing');
+      toast.success(`Both files uploaded! Found ${rows.length} records from ${invoices.length} invoices.`);
+    } catch (error) {
+      toast.dismiss(loadingToast);
+      toast.dismiss('processing');
+      console.error('File parsing error:', error);
+      
+      let errorMessage = "Error parsing file. Please check the file format and try again.";
+      if (error instanceof Error) {
+        if (error.message.includes('timeout')) {
+          errorMessage = "File is too large or complex for mobile processing. Please try a smaller file.";
+        } else if (error.message.includes('File too large')) {
+          const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+            || (window.innerWidth < 768 && ('ontouchstart' in window));
+          const maxSize = isMobile ? '5MB' : '10MB';
+          errorMessage = `File is too large. Please use files smaller than ${maxSize}.`;
+        } else if (error.message.includes('No data found')) {
+          errorMessage = "No data found in the file. Please check the file format.";
+        } else if (error.message.includes('too many rows')) {
+          errorMessage = "File has too many rows for mobile processing. Please use a file with fewer than 500 rows.";
+        } else if (error.message.includes('No headers found')) {
+          errorMessage = "File format is invalid. Please ensure your Excel file has proper column headers.";
+        } else if (error.message.includes('File parsing failed')) {
+          errorMessage = "Unable to read the Excel file. Please ensure it's a valid .xlsx or .xls file and try again.";
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      toast.error(errorMessage);
+      
+      setFile(null);
+      setUploadedData([]);
+      setProcessedInvoices([]);
     }
   };
 
@@ -1596,61 +1569,196 @@ const Dashboard = () => {
 
             {/* Upload Stage */}
             {uploadStage === 'upload' && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Select Excel File</CardTitle>
-                  <CardDescription>Upload an Excel file containing sales order data</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                    <p className="text-sm font-medium mb-2">Expected File Format:</p>
-                    <p className="text-xs text-muted-foreground mb-2">Your Excel/CSV file should contain the following columns:</p>
-                    <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
-                      <li><strong>Invoice Number</strong> (or Invoice, Invoice No) - Invoice number</li>
-                      <li><strong>Cust Name</strong> (or Customer, Customer Name) - Customer name</li>
-                      <li><strong>Item Number</strong> (or Part, Part Code) - Part code/number</li>
-                      <li><strong>Quantity Invoiced</strong> (or Qty, Quantity) - Quantity (number)</li>
-                    </ul>
-                    <p className="text-xs text-muted-foreground mt-2 italic">
-                      Note: Column names are flexible. Try the sample file: <strong>sales_dump_dummy.xlsx</strong> in the public folder
-                    </p>
-                  </div>
-                  <div
-                    className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-                      dragActive ? 'border-primary bg-primary/5' : 'border-border'
-                    }`}
-                    onDragEnter={handleDrag}
-                    onDragLeave={handleDrag}
-                    onDragOver={handleDrag}
-                    onDrop={handleDrop}
-                  >
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="p-4 bg-primary/10 rounded-full">
-                        <Upload className="h-12 w-12 text-primary" />
-                      </div>
+              <>
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Select Excel File</CardTitle>
+                    <CardDescription>Upload Excel files containing invoices data and schedule data</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid md:grid-cols-2 gap-6">
+                      {/* Upload Invoices */}
                       <div>
-                        <p className="text-lg font-medium mb-2">Drag and drop your file here</p>
-                        <p className="text-sm text-muted-foreground mb-4">or</p>
-                        <Button 
-                          type="button" 
-                          variant="outline"
-                          onClick={() => document.getElementById('file-upload')?.click()}
+                        <div className="flex items-center gap-2 mb-3">
+                          <FileSpreadsheet className="h-5 w-5 text-primary" />
+                          <h3 className="font-semibold text-base">Upload Invoices</h3>
+                        </div>
+                        <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                          <p className="text-xs font-medium mb-1">Expected Format:</p>
+                          <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                            <li>Invoice Number</li>
+                            <li>Customer Name</li>
+                            <li>Part Code</li>
+                            <li>Quantity</li>
+                          </ul>
+                        </div>
+                        <div
+                          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                            dragActive ? 'border-primary bg-primary/5' : 'border-border'
+                          }`}
+                          onDragEnter={handleDrag}
+                          onDragLeave={handleDrag}
+                          onDragOver={handleDrag}
+                          onDrop={handleDrop}
                         >
-                          Browse Files
-                        </Button>
-                        <input
-                          id="file-upload"
-                          type="file"
-                          className="hidden"
-                          accept=".xlsx,.xls,.csv"
-                          onChange={handleFileChange}
-                        />
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="p-2 bg-primary/10 rounded-full">
+                              <Upload className="h-8 w-8 text-primary" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium mb-1">Drag and drop your file here</p>
+                              <p className="text-xs text-muted-foreground mb-2">or</p>
+                              <Button 
+                                type="button"
+                                variant="outline" 
+                                className="cursor-pointer" 
+                                size="sm"
+                                onClick={() => document.getElementById('file-upload')?.click()}
+                              >
+                                Browse Files
+                              </Button>
+                              <input
+                                id="file-upload"
+                                type="file"
+                                className="hidden"
+                                accept=".xlsx,.xls,.csv"
+                                onChange={handleFileChange}
+                              />
+                            </div>
+                            {file && (
+                              <p className="text-xs text-primary font-medium mt-1">
+                                ✓ {file.name}
+                              </p>
+                            )}
+                            <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
+                          </div>
+                        </div>
                       </div>
-                      <p className="text-xs text-muted-foreground">Supported formats: .xlsx, .xls, .csv</p>
+
+                      {/* Upload Schedule */}
+                      <div>
+                        <div className="flex items-center gap-2 mb-3">
+                          <CalendarIcon className="h-5 w-5 text-primary" />
+                          <h3 className="font-semibold text-base">Upload Schedule</h3>
+                        </div>
+                        <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                          <p className="text-xs font-medium mb-1">Expected Format:</p>
+                          <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                            <li>Schedule data</li>
+                            <li>Dispatch dates</li>
+                            <li>Time slots</li>
+                          </ul>
+                        </div>
+                        <div
+                          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                            scheduleDragActive ? 'border-primary bg-primary/5' : 'border-border'
+                          }`}
+                          onDragEnter={handleScheduleDrag}
+                          onDragLeave={handleScheduleDrag}
+                          onDragOver={handleScheduleDrag}
+                          onDrop={handleScheduleDrop}
+                        >
+                          <div className="flex flex-col items-center gap-3">
+                            <div className="p-2 bg-primary/10 rounded-full">
+                              <CalendarIcon className="h-8 w-8 text-primary" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium mb-1">Drag and drop your schedule file here</p>
+                              <p className="text-xs text-muted-foreground mb-2">or</p>
+                              <Button 
+                                type="button"
+                                variant="outline" 
+                                className="cursor-pointer" 
+                                size="sm"
+                                onClick={() => document.getElementById('schedule-file-upload')?.click()}
+                              >
+                                Browse Files
+                              </Button>
+                              <input
+                                id="schedule-file-upload"
+                                type="file"
+                                className="hidden"
+                                accept=".xlsx,.xls,.csv"
+                                onChange={handleScheduleFileChange}
+                              />
+                            </div>
+                            {scheduleFile && (
+                              <p className="text-xs text-primary font-medium mt-1">
+                                ✓ {scheduleFile.name}
+                              </p>
+                            )}
+                            <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+
+                {/* Continue Button - Only enabled when both files are uploaded */}
+                <Card className="mt-6">
+                  <CardContent className="pt-6">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="flex items-center gap-4 w-full max-w-md">
+                        <div className={`flex-1 p-3 rounded-lg border-2 ${
+                          file ? 'border-green-500 bg-green-50 dark:bg-green-950' : 'border-border bg-muted'
+                        }`}>
+                          <div className="flex items-center gap-2">
+                            <FileSpreadsheet className={`h-5 w-5 ${file ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}`} />
+                            <div className="flex-1">
+                              <p className={`text-sm font-medium ${file ? 'text-green-700 dark:text-green-300' : 'text-muted-foreground'}`}>
+                                Invoices
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {file ? file.name : 'Not uploaded'}
+                              </p>
+                            </div>
+                            {file && <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />}
+                          </div>
+                        </div>
+                        <div className={`flex-1 p-3 rounded-lg border-2 ${
+                          scheduleFile ? 'border-green-500 bg-green-50 dark:bg-green-950' : 'border-border bg-muted'
+                        }`}>
+                          <div className="flex items-center gap-2">
+                            <CalendarIcon className={`h-5 w-5 ${scheduleFile ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}`} />
+                            <div className="flex-1">
+                              <p className={`text-sm font-medium ${scheduleFile ? 'text-green-700 dark:text-green-300' : 'text-muted-foreground'}`}>
+                                Schedule
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {scheduleFile ? scheduleFile.name : 'Not uploaded'}
+                              </p>
+                            </div>
+                            {scheduleFile && <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        onClick={handleProceedToValidation}
+                        disabled={!file || !scheduleFile}
+                        className="h-12 px-8 text-base font-semibold"
+                        size="lg"
+                      >
+                        {!file || !scheduleFile ? (
+                          <>
+                            {!file && !scheduleFile ? (
+                              "Upload Both Files to Continue"
+                            ) : !file ? (
+                              "Upload Invoices File to Continue"
+                            ) : (
+                              "Upload Schedule File to Continue"
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            ✓ Continue to Validation
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
             )}
 
             {/* Validate Stage */}
@@ -1662,6 +1770,7 @@ const Dashboard = () => {
                   onClick={() => {
                     setUploadStage('upload');
                     setFile(null);
+                    setScheduleFile(null);
                     setUploadedData([]);
                     setProcessedInvoices([]);
                   }}
