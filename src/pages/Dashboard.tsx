@@ -52,7 +52,7 @@ interface UploadedRow {
 
 interface ValidatedBarcodePair {
   customerBarcode: string;
-  autolivBarcode: string;
+  autolivBarcode: string; // Optional for dispatch, required for doc audit
   binNumber?: string;
   quantity?: string;
   partCode?: string;
@@ -116,6 +116,7 @@ const Dashboard = () => {
   const [dispatchCustomerScan, setDispatchCustomerScan] = useState<BarcodeData | null>(null);
   const [dispatchAutolivScan, setDispatchAutolivScan] = useState<BarcodeData | null>(null);
   const [loadedBarcodes, setLoadedBarcodes] = useState<ValidatedBarcodePair[]>([]);
+  const [selectInvoiceValue, setSelectInvoiceValue] = useState<string>("");
 
   const factoryOperations = [
     {
@@ -1012,6 +1013,23 @@ const Dashboard = () => {
     }
   }, [sharedInvoices, selectedInvoices]);
 
+  // Prevent auto-selection: Ensure selectInvoiceValue stays empty unless explicitly set
+  // This prevents invoices from being auto-selected when they become audited
+  useEffect(() => {
+    // If selectInvoiceValue is set but not intentionally selected, reset it
+    if (selectInvoiceValue && selectInvoiceValue !== "" && !selectedInvoices.includes(selectInvoiceValue)) {
+      // If the value doesn't match any selected invoice, reset it
+      setSelectInvoiceValue("");
+    }
+  }, [sharedInvoices, selectInvoiceValue, selectedInvoices]);
+
+  // Reset select value when switching to dispatch view
+  useEffect(() => {
+    if (activeView === 'dispatch') {
+      setSelectInvoiceValue("");
+    }
+  }, [activeView]);
+
   // Auto-validate when both barcodes are scanned
   useEffect(() => {
     if (customerScan && autolivScan) {
@@ -1116,90 +1134,52 @@ const Dashboard = () => {
   };
 
   // Dispatch handlers
+  // For dispatch, we only scan customer barcodes, so count is based on scannedBins (items scanned during audit)
   const getExpectedBarcodes = () => {
     const selectedInvoiceData = sharedInvoices.filter(inv => 
       selectedInvoices.includes(inv.id) && inv.auditComplete
     );
-    return selectedInvoiceData.flatMap(inv => inv.validatedBarcodes || []);
+    // Return the total number of items to load (sum of scannedBins from all selected invoices)
+    // Each scannedBin represents one item that needs to be loaded
+    return selectedInvoiceData.reduce((total, inv) => total + (inv.scannedBins || 0), 0);
   };
 
-  // Get next unscanned barcode pair for dispatch
+  // Get next unscanned customer barcode for dispatch
+  // Since we only scan customer barcodes in dispatch, we check against customer barcodes from validatedBarcodes
   const getNextUnscannedBarcodePair = () => {
-    const expectedBarcodes = getExpectedBarcodes();
-    return expectedBarcodes.find(pair => 
+    const selectedInvoiceData = sharedInvoices.filter(inv => 
+      selectedInvoices.includes(inv.id) && inv.auditComplete
+    );
+    
+    // Get all validated customer barcodes from selected invoices
+    const allValidatedBarcodes = selectedInvoiceData.flatMap(inv => inv.validatedBarcodes || []);
+    
+    // Find the first customer barcode that hasn't been loaded yet
+    return allValidatedBarcodes.find(pair => 
       !loadedBarcodes.find(loaded => 
-        loaded.customerBarcode === pair.customerBarcode && 
-        loaded.autolivBarcode === pair.autolivBarcode
+        loaded.customerBarcode === pair.customerBarcode
       )
     );
   };
 
-  // Auto-validate dispatch when both barcodes are scanned
+  // Auto-validate dispatch when customer barcode is scanned (only customer scan needed for dispatch)
   useEffect(() => {
-    if (dispatchCustomerScan && dispatchAutolivScan) {
-      // Automatically trigger validation for dispatch
+    if (dispatchCustomerScan) {
+      // Automatically trigger validation for dispatch (only customer scan needed)
       handleDispatchScan();
     }
-  }, [dispatchCustomerScan, dispatchAutolivScan]);
+  }, [dispatchCustomerScan]);
 
   const handleDispatchScan = () => {
-    if (!dispatchCustomerScan || !dispatchAutolivScan) {
-      toast.error("Please scan both barcodes");
+    if (!dispatchCustomerScan) {
+      toast.error("Please scan customer barcode");
       return;
     }
 
-    // Check if customer and autoliv scans match each other (same data)
-    const customerAutolivMatch = 
-      dispatchCustomerScan.partCode === dispatchAutolivScan.partCode &&
-      dispatchCustomerScan.quantity === dispatchAutolivScan.quantity &&
-      dispatchCustomerScan.binNumber === dispatchAutolivScan.binNumber;
-
-    if (!customerAutolivMatch) {
-      // Record the mismatch in the system for Loading & Dispatch
-      const currentInvoice = sharedInvoices.find(inv => 
-        selectedInvoices.includes(inv.id) && inv.auditComplete
-      );
-      
-      if (currentInvoice) {
-        addMismatchAlert({
-          user: currentUser,
-          customer: currentInvoice.customer,
-          invoiceId: currentInvoice.id,
-          step: 'loading-dispatch',
-          customerScan: {
-            partCode: dispatchCustomerScan.partCode,
-            quantity: dispatchCustomerScan.quantity,
-            binNumber: dispatchCustomerScan.binNumber,
-            rawValue: dispatchCustomerScan.rawValue
-          },
-          autolivScan: {
-            partCode: dispatchAutolivScan.partCode,
-            quantity: dispatchAutolivScan.quantity,
-            binNumber: dispatchAutolivScan.binNumber,
-            rawValue: dispatchAutolivScan.rawValue
-          }
-        });
-      }
-      
-      toast.error("⚠️ Barcode Mismatch Detected!", {
-        description: "The customer barcode and Autoliv barcode do not match.",
-        duration: 5000,
-      });
-      
-      // Automatically show approval message
-      setTimeout(() => {
-        toast.info("📨 Message sent to senior for approval", {
-          description: "Request has been sent to supervisor for correction.",
-          duration: 5000,
-        });
-      }, 500);
-      return;
-    }
-
-    // Check if already loaded (based on barcode data)
+    // For dispatch, we only need customer barcode (no autoliv scan required)
+    // Check if already loaded (based on customer barcode only)
     const alreadyLoaded = loadedBarcodes.find(pair => 
-      pair.customerBarcode === dispatchCustomerScan.rawValue && 
-      pair.autolivBarcode === dispatchAutolivScan.rawValue
+      pair.customerBarcode === dispatchCustomerScan.rawValue
     );
 
     if (alreadyLoaded) {
@@ -1210,9 +1190,10 @@ const Dashboard = () => {
     }
 
     // Add to loaded list with the scanned barcode data including bin number and quantity
+    // Autoliv barcode is not required for dispatch, so we set it to empty string
     const newPair: ValidatedBarcodePair = {
       customerBarcode: dispatchCustomerScan.rawValue,
-      autolivBarcode: dispatchAutolivScan.rawValue,
+      autolivBarcode: "", // Not required for dispatch
       binNumber: dispatchCustomerScan.binNumber,
       quantity: dispatchCustomerScan.quantity,
       partCode: dispatchCustomerScan.partCode
@@ -1248,9 +1229,9 @@ const Dashboard = () => {
     }
 
     const expectedBarcodes = getExpectedBarcodes();
-    if (loadedBarcodes.length < expectedBarcodes.length) {
+    if (loadedBarcodes.length < expectedBarcodes) {
       toast.error("⚠️ Not All Items Loaded!", {
-        description: `Please scan all items. Loaded: ${loadedBarcodes.length}/${expectedBarcodes.length}`,
+        description: `Please scan all items. Loaded: ${loadedBarcodes.length}/${expectedBarcodes}`,
       });
       return;
     }
@@ -2351,10 +2332,11 @@ const Dashboard = () => {
                   setActiveView('dashboard');
                   setVehicleNumber("");
                   setSelectedInvoices([]);
-                  setDispatchCustomerScan("");
-                  setDispatchAutolivScan("");
+                  setDispatchCustomerScan(null);
+                  setDispatchAutolivScan(null);
                   setLoadedBarcodes([]);
                   setGatepassGenerated(false);
+                  setSelectInvoiceValue("");
                 }}
                 className="flex items-center gap-2 justify-center sm:justify-start"
               >
@@ -2454,15 +2436,33 @@ const Dashboard = () => {
                         <Label htmlFor="invoice-select">Select Invoice(s)</Label>
                         <div className="flex gap-2">
                           <Select 
-                            value="" 
+                            value={selectInvoiceValue}
                             onValueChange={(value) => {
-                              if (value && value !== "no-invoices") {
+                              // Reset the select value immediately to prevent auto-selection
+                              setSelectInvoiceValue("");
+                              
+                              // Only process if value is explicitly selected and not empty/no-invoices
+                              if (value && value !== "no-invoices" && value.trim() !== "") {
                                 const selectedInvoice = sharedInvoices.find(inv => inv.id === value);
                                 if (selectedInvoice) {
+                                  // Ensure invoice is audited and not dispatched
+                                  if (!selectedInvoice.auditComplete) {
+                                    toast.error("Invoice not audited", {
+                                      description: "Please complete audit before selecting for dispatch"
+                                    });
+                                    return;
+                                  }
+                                  if (selectedInvoice.dispatchedBy) {
+                                    toast.error("Invoice already dispatched", {
+                                      description: "This invoice has already been dispatched"
+                                    });
+                                    return;
+                                  }
+                                  
                                   // Check if this is the first invoice or if customer matches
                                   const currentCustomer = selectedInvoices.length > 0 
                                     ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
-                            : null;
+                                    : null;
                                   
                                   if (!currentCustomer || currentCustomer === selectedInvoice.customer) {
                                     // Add only if not already selected
@@ -2544,6 +2544,7 @@ const Dashboard = () => {
                                 onClick={() => {
                                   setSelectedInvoices([]);
                                   setLoadedBarcodes([]);
+                                  setSelectInvoiceValue("");
                                 }}
                                 className="h-8 text-xs"
                               >
@@ -2580,6 +2581,7 @@ const Dashboard = () => {
                                       onClick={() => {
                                         setSelectedInvoices(prev => prev.filter(id => id !== invoiceId));
                                         setLoadedBarcodes([]);
+                                        setSelectInvoiceValue("");
                                       }}
                                       className="h-8 w-8 p-0"
                                     >
@@ -2619,7 +2621,7 @@ const Dashboard = () => {
                         </div>
                         <div>
                           <CardTitle className="text-lg">Scan Items for Loading</CardTitle>
-                          <CardDescription>Scan each item to load onto the vehicle</CardDescription>
+                          <CardDescription>Scan customer barcode for each item to load onto the vehicle</CardDescription>
                         </div>
                       </div>
                     </CardHeader>
@@ -2630,133 +2632,87 @@ const Dashboard = () => {
                           <div className="flex justify-between text-sm mb-2">
                             <span className="font-medium">Loading Progress</span>
                             <span className="text-muted-foreground">
-                              {loadedBarcodes.length} of {getExpectedBarcodes().length} items loaded
+                              {loadedBarcodes.length} of {getExpectedBarcodes()} items loaded
                             </span>
                           </div>
                           <Progress 
-                            value={getExpectedBarcodes().length > 0 ? (loadedBarcodes.length / getExpectedBarcodes().length) * 100 : 0} 
+                            value={getExpectedBarcodes() > 0 ? (loadedBarcodes.length / getExpectedBarcodes()) * 100 : 0} 
                             className="h-2"
                           />
                         </div>
 
-                        {/* Scanning Inputs */}
-                        <div className="grid md:grid-cols-2 gap-6">
-                          {/* Customer Label Scan */}
-                          <div className="space-y-2">
-                            <Label htmlFor="dispatch-customer-barcode" className="flex items-center gap-2">
-                              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold">1</span>
-                              Customer Label
-                            </Label>
-                            {dispatchCustomerScan && (
-                              <div className="p-3 bg-muted rounded-lg">
-                                <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
-                                <div className="grid grid-cols-3 gap-2">
-                                  <div>
-                                    <p className="text-[10px] text-muted-foreground">Part Code</p>
-                                    <p className="text-xs font-mono font-bold">{dispatchCustomerScan.partCode}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-[10px] text-muted-foreground">Quantity</p>
-                                    <p className="text-xs font-mono font-bold">{dispatchCustomerScan.quantity}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-[10px] text-muted-foreground">Bin Number</p>
-                                    <p className="text-xs font-mono font-bold">{dispatchCustomerScan.binNumber}</p>
+                        {/* Scanning Inputs - Only Customer Barcode for Dispatch */}
+                        <div className="flex justify-center">
+                          <div className="w-full max-w-lg">
+                            {/* Customer Label Scan */}
+                            <div className="space-y-4">
+                              <div className="text-center mb-4">
+                                <Label htmlFor="dispatch-customer-barcode" className="flex items-center justify-center gap-2 text-base font-semibold">
+                                  <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-primary/10 text-primary text-sm font-bold">1</span>
+                                  Scan Customer Label
+                                </Label>
+                                <p className="text-sm text-muted-foreground mt-2">
+                                  Scan the customer barcode to load the item
+                                </p>
+                              </div>
+                              
+                              {dispatchCustomerScan && (
+                                <div className="p-4 bg-muted rounded-lg border-2 border-primary/20">
+                                  <p className="text-sm font-semibold text-foreground mb-3 text-center">Scanned Data:</p>
+                                  <div className="grid grid-cols-3 gap-4">
+                                    <div className="text-center">
+                                      <p className="text-xs text-muted-foreground mb-1">Part Code</p>
+                                      <p className="text-sm font-mono font-bold break-all">{dispatchCustomerScan.partCode}</p>
+                                    </div>
+                                    <div className="text-center">
+                                      <p className="text-xs text-muted-foreground mb-1">Quantity</p>
+                                      <p className="text-sm font-mono font-bold">{dispatchCustomerScan.quantity}</p>
+                                    </div>
+                                    <div className="text-center">
+                                      <p className="text-xs text-muted-foreground mb-1">Bin Number</p>
+                                      <p className="text-sm font-mono font-bold break-all">{dispatchCustomerScan.binNumber}</p>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            )}
-                            <BarcodeScanButton
-                              onScan={(data) => {
-                                setDispatchCustomerScan(data);
-                                toast.success("Customer barcode scanned!");
-                              }}
-                              label={dispatchCustomerScan ? "Scan Again" : "Scan Customer Barcode"}
-                              variant="default"
-                              matchValue={dispatchAutolivScan?.rawValue || getNextUnscannedBarcodePair()?.customerBarcode}
-                              shouldMismatch={!!dispatchAutolivScan}
-                              matchData={dispatchAutolivScan || undefined}
-                              totalQuantity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.totalQty : undefined}
-                              binCapacity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.binCapacity : undefined}
-                              expectedBins={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.expectedBins : undefined}
-                              currentBinIndex={loadedBarcodes.length}
-                            />
-                          </div>
-
-                          {/* Autoliv Label Scan */}
-                          <div className="space-y-2">
-                            <Label htmlFor="dispatch-autoliv-barcode" className="flex items-center gap-2">
-                              <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-accent/10 text-accent text-xs font-bold">2</span>
-                              Autoliv Label
-                            </Label>
-                            {dispatchAutolivScan && (
-                              <div className="p-3 bg-muted rounded-lg">
-                                <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
-                                <div className="grid grid-cols-3 gap-2">
-                                  <div>
-                                    <p className="text-[10px] text-muted-foreground">Part Code</p>
-                                    <p className="text-xs font-mono font-bold">{dispatchAutolivScan.partCode}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-[10px] text-muted-foreground">Quantity</p>
-                                    <p className="text-xs font-mono font-bold">{dispatchAutolivScan.quantity}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-[10px] text-muted-foreground">Bin Number</p>
-                                    <p className="text-xs font-mono font-bold">{dispatchAutolivScan.binNumber}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                            <BarcodeScanButton
-                              onScan={(data) => {
-                                setDispatchAutolivScan(data);
-                                toast.success("Autoliv barcode scanned!");
-                              }}
-                              label={dispatchAutolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
-                              variant="secondary"
-                              matchValue={dispatchCustomerScan?.rawValue || getNextUnscannedBarcodePair()?.autolivBarcode}
-                              shouldMismatch={false}
-                              matchData={dispatchCustomerScan || undefined}
-                              totalQuantity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.totalQty : undefined}
-                              binCapacity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.binCapacity : undefined}
-                              expectedBins={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.expectedBins : undefined}
-                              currentBinIndex={loadedBarcodes.length}
-                            />
+                              )}
+                              
+                              <BarcodeScanButton
+                                onScan={(data) => {
+                                  setDispatchCustomerScan(data);
+                                  toast.success("Customer barcode scanned!");
+                                }}
+                                label={dispatchCustomerScan ? "Scan Again" : "Scan Customer Barcode"}
+                                variant="default"
+                                matchValue={getNextUnscannedBarcodePair()?.customerBarcode}
+                                shouldMismatch={false}
+                                totalQuantity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.totalQty : undefined}
+                                binCapacity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.binCapacity : undefined}
+                                expectedBins={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.expectedBins : undefined}
+                                currentBinIndex={loadedBarcodes.length}
+                              />
+                            </div>
                           </div>
                         </div>
 
-                        {/* Clear Button Only */}
-                        {(dispatchCustomerScan || dispatchAutolivScan) && (
-                          <div className="flex justify-end">
-                          <Button 
-                            variant="outline"
-                            onClick={() => {
+                        {/* Status and Clear Button */}
+                        {dispatchCustomerScan && (
+                          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                            <div className="flex items-center gap-2">
+                              <div className="h-3 w-3 rounded-full bg-green-500 animate-pulse" />
+                              <span className="text-sm font-medium text-green-700 dark:text-green-300">
+                                ✓ Customer Label Scanned - Item loaded automatically
+                              </span>
+                            </div>
+                            <Button 
+                              variant="outline"
+                              onClick={() => {
                                 setDispatchCustomerScan(null);
                                 setDispatchAutolivScan(null);
-                            }}
-                              className="h-12"
-                          >
-                              Clear Scans
-                          </Button>
-                        </div>
-                        )}
-
-                        {/* Status Indicator */}
-                        {(dispatchCustomerScan || dispatchAutolivScan) && (
-                          <div className="p-3 bg-muted rounded-lg text-sm">
-                            <div className="flex items-center gap-2">
-                              <div className={`h-2 w-2 rounded-full ${dispatchCustomerScan ? 'bg-green-500' : 'bg-gray-300'}`} />
-                              <span className={dispatchCustomerScan ? 'text-foreground' : 'text-muted-foreground'}>
-                                Customer Label {dispatchCustomerScan ? 'Scanned' : 'Pending'}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                              <div className={`h-2 w-2 rounded-full ${dispatchAutolivScan ? 'bg-green-500' : 'bg-gray-300'}`} />
-                              <span className={dispatchAutolivScan ? 'text-foreground' : 'text-muted-foreground'}>
-                                Autoliv Label {dispatchAutolivScan ? 'Scanned' : 'Pending'}
-                              </span>
-                            </div>
+                              }}
+                              className="h-9 text-sm"
+                            >
+                              Clear Scan
+                            </Button>
                           </div>
                         )}
 
@@ -2779,10 +2735,24 @@ const Dashboard = () => {
                                       <span className="text-xs text-muted-foreground min-w-[80px]">Customer:</span>
                                       <span className="font-mono text-xs">{barcodePair.customerBarcode}</span>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-muted-foreground min-w-[80px]">Autoliv:</span>
-                                      <span className="font-mono text-xs">{barcodePair.autolivBarcode}</span>
-                                    </div>
+                                    {barcodePair.partCode && (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs text-muted-foreground min-w-[80px]">Part Code:</span>
+                                        <span className="font-mono text-xs">{barcodePair.partCode}</span>
+                                      </div>
+                                    )}
+                                    {barcodePair.quantity && (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs text-muted-foreground min-w-[80px]">Quantity:</span>
+                                        <span className="font-mono text-xs">{barcodePair.quantity}</span>
+                                      </div>
+                                    )}
+                                    {barcodePair.binNumber && (
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs text-muted-foreground min-w-[80px]">Bin Number:</span>
+                                        <span className="font-mono text-xs">{barcodePair.binNumber}</span>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               ))}
@@ -2795,7 +2765,7 @@ const Dashboard = () => {
                 )}
 
                 {/* Summary */}
-                {selectedInvoices.length > 0 && loadedBarcodes.length === getExpectedBarcodes().length && (
+                {selectedInvoices.length > 0 && loadedBarcodes.length === getExpectedBarcodes() && (
                   <Card>
                     <CardHeader>
                       <CardTitle>Loading Summary</CardTitle>
@@ -2937,6 +2907,7 @@ const Dashboard = () => {
                         setLoadedBarcodes([]);
                         setDispatchCustomerScan(null);
                         setDispatchAutolivScan(null);
+                        setSelectInvoiceValue("");
                       }}
                     >
                       Return to Dashboard
@@ -2951,6 +2922,7 @@ const Dashboard = () => {
                         setLoadedBarcodes([]);
                         setDispatchCustomerScan(null);
                         setDispatchAutolivScan(null);
+                        setSelectInvoiceValue("");
                       }}
                     >
                       New Dispatch
