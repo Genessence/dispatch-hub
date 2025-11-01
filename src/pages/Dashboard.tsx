@@ -38,6 +38,7 @@ import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { LogEntry } from "@/contexts/SessionContext";
+import { QRCodeSVG } from "qrcode.react";
 
 type ViewType = 'dashboard' | 'upload' | 'doc-audit' | 'dispatch';
 
@@ -117,6 +118,7 @@ const Dashboard = () => {
   const [dispatchAutolivScan, setDispatchAutolivScan] = useState<BarcodeData | null>(null);
   const [loadedBarcodes, setLoadedBarcodes] = useState<ValidatedBarcodePair[]>([]);
   const [selectInvoiceValue, setSelectInvoiceValue] = useState<string>("");
+  const [gatepassNumber, setGatepassNumber] = useState<string>("");
 
   const factoryOperations = [
     {
@@ -1254,11 +1256,57 @@ const Dashboard = () => {
       updateInvoiceDispatch(invoiceId, currentUser, vehicleNumber, binNumber, totalQuantity || undefined);
     });
 
+    // Generate gatepass number
+    const newGatepassNumber = `GP-${Date.now().toString().slice(-8)}`;
+    setGatepassNumber(newGatepassNumber);
+
     setGatepassGenerated(true);
     toast.success(`✅ Gatepass generated successfully by ${currentUser}!`, {
       description: `Vehicle ${vehicleNumber} dispatched with ${selectedInvoices.length} invoice(s). Invoices removed from workflow.`,
       duration: 6000
     });
+  };
+
+  // Generate QR code data with all gatepass information
+  const generateGatepassQRData = () => {
+    const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
+    const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
+    const customerName = customers.join(", ");
+    
+    // Collect all part codes, bin numbers, and quantities from loaded barcodes
+    const partCodes = [...new Set(loadedBarcodes.map(b => b.partCode).filter(Boolean))];
+    const binNumbers = [...new Set(loadedBarcodes.map(b => b.binNumber).filter(Boolean))];
+    const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+    
+    // Create detailed items list with part code, bin number, and quantity for each item
+    const items = loadedBarcodes.map((barcode, index) => ({
+      itemNumber: index + 1,
+      partCode: barcode.partCode || "N/A",
+      binNumber: barcode.binNumber || "N/A",
+      quantity: barcode.quantity || "0",
+      customerBarcode: barcode.customerBarcode
+    }));
+    
+    const qrData = {
+      gatepassNumber: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`,
+      vehicleNumber: vehicleNumber,
+      dateTime: new Date().toISOString(),
+      authorizedBy: currentUser,
+      customer: customerName,
+      invoices: selectedInvoices,
+      summary: {
+        totalItems: loadedBarcodes.length,
+        invoiceCount: selectedInvoices.length,
+        totalQuantity: totalQuantity,
+        uniquePartCodes: partCodes.length,
+        uniqueBinNumbers: binNumbers.length
+      },
+      partCodes: partCodes,
+      binNumbers: binNumbers,
+      items: items // Detailed list of all items with part code, bin number, and quantity
+    };
+    
+    return JSON.stringify(qrData, null, 2);
   };
 
   const toggleInvoice = (invoiceId: string) => {
@@ -2328,16 +2376,17 @@ const Dashboard = () => {
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 sm:gap-0 mb-4">
               <Button
                 variant="outline"
-                onClick={() => {
-                  setActiveView('dashboard');
-                  setVehicleNumber("");
-                  setSelectedInvoices([]);
-                  setDispatchCustomerScan(null);
-                  setDispatchAutolivScan(null);
-                  setLoadedBarcodes([]);
-                  setGatepassGenerated(false);
-                  setSelectInvoiceValue("");
-                }}
+                  onClick={() => {
+                    setActiveView('dashboard');
+                    setVehicleNumber("");
+                    setSelectedInvoices([]);
+                    setDispatchCustomerScan(null);
+                    setDispatchAutolivScan(null);
+                    setLoadedBarcodes([]);
+                    setGatepassGenerated(false);
+                    setSelectInvoiceValue("");
+                    setGatepassNumber("");
+                  }}
                 className="flex items-center gap-2 justify-center sm:justify-start"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -2815,7 +2864,10 @@ const Dashboard = () => {
                 {/* Back Button for Gatepass */}
                 <Button
                   variant="ghost"
-                  onClick={() => setGatepassGenerated(false)}
+                  onClick={() => {
+                    setGatepassGenerated(false);
+                    setGatepassNumber("");
+                  }}
                   className="flex items-center gap-2 mb-4 text-sm sm:text-base"
                 >
                   <ArrowLeft className="h-4 w-4" />
@@ -2831,7 +2883,7 @@ const Dashboard = () => {
                     </div>
                   </div>
                   <CardTitle className="text-2xl">Gatepass Generated</CardTitle>
-                  <CardDescription>Gatepass #{Math.floor(Math.random() * 10000).toString().padStart(5, '0')}</CardDescription>
+                  <CardDescription>Gatepass #{gatepassNumber || `GP-${Date.now().toString().slice(-8)}`}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   {/* Gatepass Details */}
@@ -2852,7 +2904,7 @@ const Dashboard = () => {
                       </div>
                       <div>
                         <p className="text-muted-foreground mb-1">Authorized By</p>
-                        <p className="font-semibold">John Operator</p>
+                        <p className="font-semibold">{currentUser}</p>
                       </div>
                       <div>
                         <p className="text-muted-foreground mb-1">Total Invoices</p>
@@ -2875,10 +2927,41 @@ const Dashboard = () => {
                       </div>
                     </div>
 
-                    {/* QR Code Placeholder */}
-                    <div className="flex justify-center pt-4 border-t">
-                      <div className="w-40 h-40 bg-muted rounded-lg flex items-center justify-center">
-                        <QrCode className="h-32 w-32 text-muted-foreground" />
+                    {/* QR Code with Gatepass Data */}
+                    <div className="flex flex-col items-center pt-4 border-t">
+                      <p className="text-sm font-semibold mb-3 text-muted-foreground">Scan QR Code for Details</p>
+                      <div className="p-4 bg-white rounded-lg border-2 border-border shadow-sm">
+                        <QRCodeSVG
+                          value={generateGatepassQRData()}
+                          size={200}
+                          level="H"
+                          includeMargin={true}
+                        />
+                      </div>
+                      <div className="mt-4 p-3 bg-muted rounded-lg w-full max-w-md">
+                        <p className="text-xs font-semibold text-muted-foreground mb-2">QR Code Contains:</p>
+                        <div className="text-xs space-y-1 text-foreground">
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Customer:</span>
+                            <span className="font-medium">{[...new Set(sharedInvoices.filter(inv => selectedInvoices.includes(inv.id)).map(inv => inv.customer))].join(", ")}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Part Codes:</span>
+                            <span className="font-medium">{[...new Set(loadedBarcodes.map(b => b.partCode).filter(Boolean))].length} unique</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Bin Numbers:</span>
+                            <span className="font-medium">{[...new Set(loadedBarcodes.map(b => b.binNumber).filter(Boolean))].length} unique</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Total Quantity:</span>
+                            <span className="font-medium">{loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Vehicle:</span>
+                            <span className="font-medium">{vehicleNumber}</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2908,6 +2991,7 @@ const Dashboard = () => {
                         setDispatchCustomerScan(null);
                         setDispatchAutolivScan(null);
                         setSelectInvoiceValue("");
+                        setGatepassNumber("");
                       }}
                     >
                       Return to Dashboard
@@ -2923,6 +3007,7 @@ const Dashboard = () => {
                         setDispatchCustomerScan(null);
                         setDispatchAutolivScan(null);
                         setSelectInvoiceValue("");
+                        setGatepassNumber("");
                       }}
                     >
                       New Dispatch
