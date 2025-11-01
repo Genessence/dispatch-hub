@@ -4,9 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, FileText, AlertTriangle, CheckCircle2, Truck, ScanBarcode, Upload, Clock, User } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, FileText, AlertTriangle, CheckCircle2, Truck, ScanBarcode, Upload, Clock, User, Download } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useSession } from "@/contexts/SessionContext";
+import * as XLSX from 'xlsx';
+import { toast } from "sonner";
 
 const Analytics = () => {
   const { getUploadLogs, getAuditLogs, getDispatchLogs, mismatchAlerts, sharedInvoices } = useSession();
@@ -20,6 +22,86 @@ const Analytics = () => {
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
+    });
+  };
+
+  const handleDownloadReport = () => {
+    const dispatchLogs = getDispatchLogs();
+    
+    if (dispatchLogs.length === 0) {
+      toast.error("No dispatch data available to download");
+      return;
+    }
+
+    // Parse dispatch logs to extract data
+    const reportData: Array<{
+      'Invoice Number': string;
+      'Dispatch Date': string;
+      'Customer Name': string;
+      'Vehicle Number': string;
+      'Number of Invoices in Vehicle': number;
+    }> = [];
+
+    // Group invoices by vehicle to count invoices per vehicle
+    const vehicleInvoiceMap = new Map<string, Set<string>>();
+    
+    dispatchLogs.forEach((log) => {
+      // Extract invoice number
+      const invoiceMatch = log.action.match(/Dispatched invoice (.+)/);
+      const invoiceId = invoiceMatch?.[1] || '';
+      
+      // Parse details to extract vehicle and customer
+      const detailsMatch = log.details.match(/Customer: (.+?),\s*Bin Number:\s*(.+?),\s*Quantity:\s*(\d+),\s*Vehicle:\s*(.+)$/);
+      const customer = detailsMatch?.[1] || 'Unknown';
+      const vehicle = detailsMatch?.[4] || 'N/A';
+      
+      // Group by vehicle
+      if (!vehicleInvoiceMap.has(vehicle)) {
+        vehicleInvoiceMap.set(vehicle, new Set());
+      }
+      vehicleInvoiceMap.get(vehicle)?.add(invoiceId);
+    });
+
+    // Create report data
+    dispatchLogs.forEach((log) => {
+      const invoiceMatch = log.action.match(/Dispatched invoice (.+)/);
+      const invoiceId = invoiceMatch?.[1] || '';
+      
+      const detailsMatch = log.details.match(/Customer: (.+?),\s*Bin Number:\s*(.+?),\s*Quantity:\s*(\d+),\s*Vehicle:\s*(.+)$/);
+      const customer = detailsMatch?.[1] || 'Unknown';
+      const vehicle = detailsMatch?.[4] || 'N/A';
+      
+      const dispatchDate = new Date(log.timestamp).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+      
+      const invoiceCount = vehicleInvoiceMap.get(vehicle)?.size || 0;
+      
+      reportData.push({
+        'Invoice Number': invoiceId,
+        'Dispatch Date': dispatchDate,
+        'Customer Name': customer,
+        'Vehicle Number': vehicle,
+        'Number of Invoices in Vehicle': invoiceCount
+      });
+    });
+
+    // Create workbook and worksheet
+    const worksheet = XLSX.utils.json_to_sheet(reportData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Dispatch Report');
+
+    // Generate filename with current date
+    const today = new Date();
+    const dateStr = today.toISOString().split('T')[0];
+    const filename = `Dispatch_Report_${dateStr}.xlsx`;
+
+    // Download the file
+    XLSX.writeFile(workbook, filename);
+    toast.success(`Report downloaded successfully!`, {
+      description: `${reportData.length} records exported to ${filename}`
     });
   };
   
@@ -87,10 +169,16 @@ const Analytics = () => {
                 <p className="text-sm text-muted-foreground">Performance metrics and insights</p>
               </div>
             </div>
-            <Button variant="outline" onClick={() => setShowReportDialog(true)}>
-              <FileText className="h-4 w-4 mr-2" />
-              View Reports
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={() => setShowReportDialog(true)}>
+                <FileText className="h-4 w-4 mr-2" />
+                View Reports
+              </Button>
+              <Button variant="default" onClick={handleDownloadReport}>
+                <Download className="h-4 w-4 mr-2" />
+                Download Report
+              </Button>
+            </div>
           </div>
         </div>
       </header>

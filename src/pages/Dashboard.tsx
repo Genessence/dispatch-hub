@@ -941,14 +941,10 @@ const Dashboard = () => {
   };
 
   // Use shared invoices from session - show only today's non-dispatched invoices
-  const invoices = sharedInvoices.length > 0 
-    ? sharedInvoices.filter(inv => 
-        !inv.dispatchedBy && // Hide dispatched invoices
-        isToday(inv.invoiceDate) // Only show invoices scheduled for today
-      )
-      : [
-          { id: "No Data", customer: "Please upload sales data first", totalQty: 0, binCapacity: 0, expectedBins: 0, scannedBins: 0, binsLoaded: 0, auditComplete: false, invoiceDate: new Date(), items: [] }
-        ];
+  const invoices = sharedInvoices.filter(inv => 
+    !inv.dispatchedBy && // Hide dispatched invoices
+    isToday(inv.invoiceDate) // Only show invoices scheduled for today
+  );
 
   const currentInvoice = invoices.find(inv => inv.id === selectedInvoice);
   const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
@@ -2014,7 +2010,7 @@ const Dashboard = () => {
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg flex items-center justify-between gap-2">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.filter(inv => inv.id !== "No Data").length} invoice(s) scheduled for {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                        📅 Showing {invoices.length} invoice(s) scheduled for {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                       </p>
                       <Button
                         variant="outline"
@@ -2028,16 +2024,22 @@ const Dashboard = () => {
                     </div>
                 <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
                   <SelectTrigger className="h-12 text-base">
-                    <SelectValue placeholder="Select an invoice" />
+                    <SelectValue placeholder={invoices.length === 0 ? "No invoices available" : "Select an invoice"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {invoices.map(invoice => (
-                      <SelectItem key={invoice.id} value={invoice.id}>
-                        {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
+                    {invoices.length === 0 ? (
+                      <div className="p-4 text-center text-sm text-muted-foreground">
+                        No invoices scheduled for today
+                      </div>
+                    ) : (
+                      invoices.map(invoice => (
+                        <SelectItem key={invoice.id} value={invoice.id}>
+                          {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
                             {invoice.uploadedBy && ` [Uploaded by: ${invoice.uploadedBy}]`}
                             {invoice.auditedBy && ` [Audited by: ${invoice.auditedBy}]`}
-                      </SelectItem>
-                    ))}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
                   </>
@@ -2640,8 +2642,8 @@ const Dashboard = () => {
                               <SelectValue placeholder="Select an invoice to add" />
                             </SelectTrigger>
                             <SelectContent>
-                              {sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 ? (
-                                sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).map(invoice => {
+                              {sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy && inv.id !== "No Data").length > 0 ? (
+                                sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy && inv.id !== "No Data").map(invoice => {
                                   const currentCustomer = selectedInvoices.length > 0 
                                     ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
                                     : null;
@@ -2679,9 +2681,9 @@ const Dashboard = () => {
                                   );
                                 })
                               ) : (
-                                <SelectItem value="no-invoices" disabled>
+                                <div className="p-4 text-center text-sm text-muted-foreground">
                                   No audited invoices available
-                                </SelectItem>
+                                </div>
                               )}
                             </SelectContent>
                           </Select>
