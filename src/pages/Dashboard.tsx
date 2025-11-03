@@ -1688,119 +1688,131 @@ const Dashboard = () => {
                   <CardContent>
                     <div className="grid md:grid-cols-2 gap-6">
                       {/* Upload Invoices */}
-                      <div>
-                        <div className="flex items-center gap-2 mb-3">
-                          <FileSpreadsheet className="h-5 w-5 text-primary" />
-                          <h3 className="font-semibold text-base">Upload Invoices</h3>
-                        </div>
-                        <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                          <p className="text-xs font-medium mb-1">Expected Format:</p>
-                          <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
-                            <li>Invoice Number</li>
-                            <li>Customer Name</li>
-                            <li>Part Code</li>
-                            <li>Quantity</li>
-                          </ul>
-                        </div>
-                        <div
-                          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                            dragActive ? 'border-primary bg-primary/5' : 'border-border'
-                          }`}
-                          onDragEnter={handleDrag}
-                          onDragLeave={handleDrag}
-                          onDragOver={handleDrag}
-                          onDrop={handleDrop}
-                        >
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="p-2 bg-primary/10 rounded-full">
-                              <Upload className="h-8 w-8 text-primary" />
+                      <Card className="h-full flex flex-col">
+                        <CardHeader className="pb-4">
+                          <div className="flex items-center gap-2">
+                            <div className="p-2 bg-primary/10 rounded-lg">
+                              <FileSpreadsheet className="h-5 w-5 text-primary" />
                             </div>
-                            <div>
-                              <p className="text-sm font-medium mb-1">Drag and drop your file here</p>
-                              <p className="text-xs text-muted-foreground mb-2">or</p>
-                              <Button 
-                                type="button"
-                                variant="outline" 
-                                className="cursor-pointer" 
-                                size="sm"
-                                onClick={() => document.getElementById('file-upload')?.click()}
-                              >
-                                Browse Files
-                              </Button>
-                              <input
-                                id="file-upload"
-                                type="file"
-                                className="hidden"
-                                accept=".xlsx,.xls,.csv"
-                                onChange={handleFileChange}
-                              />
-                            </div>
-                            {file && (
-                              <p className="text-xs text-primary font-medium mt-1">
-                                ✓ {file.name}
-                              </p>
-                            )}
-                            <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
+                            <CardTitle className="text-lg">Upload Invoices</CardTitle>
                           </div>
-                        </div>
-                      </div>
+                        </CardHeader>
+                        <CardContent className="flex-1 flex flex-col">
+                          <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                            <p className="text-xs font-medium mb-1">Expected Format:</p>
+                            <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                              <li>Invoice Number</li>
+                              <li>Customer Name</li>
+                              <li>Part Code</li>
+                              <li>Quantity</li>
+                            </ul>
+                          </div>
+                          <div
+                            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors flex-1 flex items-center justify-center min-h-[200px] ${
+                              dragActive ? 'border-primary bg-primary/5' : 'border-border'
+                            }`}
+                            onDragEnter={handleDrag}
+                            onDragLeave={handleDrag}
+                            onDragOver={handleDrag}
+                            onDrop={handleDrop}
+                          >
+                            <div className="flex flex-col items-center gap-3 w-full">
+                              <div className="p-2 bg-primary/10 rounded-full">
+                                <Upload className="h-8 w-8 text-primary" />
+                              </div>
+                              <div>
+                                <p className="text-sm font-medium mb-1">Drag and drop your file here</p>
+                                <p className="text-xs text-muted-foreground mb-2">or</p>
+                                <Button 
+                                  type="button"
+                                  variant="outline" 
+                                  className="cursor-pointer" 
+                                  size="sm"
+                                  onClick={() => document.getElementById('file-upload')?.click()}
+                                >
+                                  Browse Files
+                                </Button>
+                                <input
+                                  id="file-upload"
+                                  type="file"
+                                  className="hidden"
+                                  accept=".xlsx,.xls,.csv"
+                                  onChange={handleFileChange}
+                                />
+                              </div>
+                              {file && (
+                                <p className="text-xs text-primary font-medium mt-1">
+                                  ✓ {file.name}
+                                </p>
+                              )}
+                              <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
 
                       {/* Upload Schedule */}
-                      <div>
-                        <div className="flex items-center gap-2 mb-3">
-                          <CalendarIcon className="h-5 w-5 text-primary" />
-                          <h3 className="font-semibold text-base">Upload Schedule</h3>
-                        </div>
-                        <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                          <p className="text-xs font-medium mb-1">Expected Format:</p>
-                          <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
-                            <li>Schedule data</li>
-                            <li>Dispatch dates</li>
-                            <li>Time slots</li>
-                          </ul>
-                        </div>
-                        <div
-                          className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                            scheduleDragActive ? 'border-primary bg-primary/5' : 'border-border'
-                          }`}
-                          onDragEnter={handleScheduleDrag}
-                          onDragLeave={handleScheduleDrag}
-                          onDragOver={handleScheduleDrag}
-                          onDrop={handleScheduleDrop}
-                        >
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="p-2 bg-primary/10 rounded-full">
-                              <CalendarIcon className="h-8 w-8 text-primary" />
+                      <Card className="h-full flex flex-col">
+                        <CardHeader className="pb-4">
+                          <div className="flex items-center gap-2">
+                            <div className="p-2 bg-primary/10 rounded-lg">
+                              <CalendarIcon className="h-5 w-5 text-primary" />
                             </div>
-                            <div>
-                              <p className="text-sm font-medium mb-1">Drag and drop your schedule file here</p>
-                              <p className="text-xs text-muted-foreground mb-2">or</p>
-                              <Button 
-                                type="button"
-                                variant="outline" 
-                                className="cursor-pointer" 
-                                size="sm"
-                                onClick={() => document.getElementById('schedule-file-upload')?.click()}
-                              >
-                                Browse Files
-                              </Button>
-                              <input
-                                id="schedule-file-upload"
-                                type="file"
-                                className="hidden"
-                                accept=".xlsx,.xls,.csv"
-                                onChange={handleScheduleFileChange}
-                              />
-                            </div>
-                            {scheduleFile && (
-                              <p className="text-xs text-primary font-medium mt-1">
-                                ✓ {scheduleFile.name}
-                              </p>
-                            )}
-                            <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
+                            <CardTitle className="text-lg">Upload Schedule</CardTitle>
                           </div>
-                        </div>
-                      </div>
+                        </CardHeader>
+                        <CardContent className="flex-1 flex flex-col">
+                          <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                            <p className="text-xs font-medium mb-1">Expected Format:</p>
+                            <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                              <li>Schedule data</li>
+                              <li>Dispatch dates</li>
+                              <li>Time slots</li>
+                            </ul>
+                          </div>
+                          <div
+                            className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors flex-1 flex items-center justify-center min-h-[200px] ${
+                              scheduleDragActive ? 'border-primary bg-primary/5' : 'border-border'
+                            }`}
+                            onDragEnter={handleScheduleDrag}
+                            onDragLeave={handleScheduleDrag}
+                            onDragOver={handleScheduleDrag}
+                            onDrop={handleScheduleDrop}
+                          >
+                            <div className="flex flex-col items-center gap-3 w-full">
+                              <div className="p-2 bg-primary/10 rounded-full">
+                                <CalendarIcon className="h-8 w-8 text-primary" />
+                              </div>
+                              <div>
+                                <p className="text-sm font-medium mb-1">Drag and drop your schedule file here</p>
+                                <p className="text-xs text-muted-foreground mb-2">or</p>
+                                <Button 
+                                  type="button"
+                                  variant="outline" 
+                                  className="cursor-pointer" 
+                                  size="sm"
+                                  onClick={() => document.getElementById('schedule-file-upload')?.click()}
+                                >
+                                  Browse Files
+                                </Button>
+                                <input
+                                  id="schedule-file-upload"
+                                  type="file"
+                                  className="hidden"
+                                  accept=".xlsx,.xls,.csv"
+                                  onChange={handleScheduleFileChange}
+                                />
+                              </div>
+                              {scheduleFile && (
+                                <p className="text-xs text-primary font-medium mt-1">
+                                  ✓ {scheduleFile.name}
+                                </p>
+                              )}
+                              <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
                     </div>
                   </CardContent>
                 </Card>
