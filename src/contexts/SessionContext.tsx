@@ -244,15 +244,39 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       scannedBins: 0,
       binsLoaded: 0
     }));
-    setSharedInvoices(prev => [...prev, ...newInvoices]);
     
-    // Add log entry
-    addLog({
-      user: uploadedBy,
-      action: `Uploaded ${invoices.length} invoice(s)`,
-      details: `Invoices: ${invoices.map(inv => inv.id).join(', ')}`,
-      type: 'upload'
+    // Track which invoices were actually added (for logging)
+    let addedInvoiceIds: string[] = [];
+    
+    setSharedInvoices(prev => {
+      // Get existing invoice IDs to prevent duplicates
+      const existingIds = new Set(prev.map(inv => inv.id));
+      
+      // Filter out invoices that already exist (keep existing ones, skip duplicates)
+      const uniqueNewInvoices = newInvoices.filter(inv => {
+        const isNew = !existingIds.has(inv.id);
+        if (isNew) {
+          addedInvoiceIds.push(inv.id);
+        }
+        return isNew;
+      });
+      
+      // Return combined array: existing invoices + only new unique invoices
+      return [...prev, ...uniqueNewInvoices];
     });
+    
+    // Add log entry (log only the invoices that were actually added)
+    if (addedInvoiceIds.length > 0) {
+      addLog({
+        user: uploadedBy,
+        action: `Uploaded ${addedInvoiceIds.length} invoice(s)`,
+        details: `Invoices: ${addedInvoiceIds.join(', ')}`,
+        type: 'upload'
+      });
+    }
+    
+    // Note: Duplicate invoices are silently skipped to preserve existing data
+    // (e.g., if an invoice was already audited, we don't want to overwrite it)
   };
 
   const updateInvoiceAudit = (invoiceId: string, auditData: Partial<InvoiceData>, auditedBy: string) => {

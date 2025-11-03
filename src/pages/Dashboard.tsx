@@ -1019,11 +1019,50 @@ const Dashboard = () => {
     const barcodesMatch = customerScan.rawValue.trim() === autolivScan.rawValue.trim();
     
     if (barcodesMatch) {
+      // Parse quantity properly - handle NaN, null, undefined, empty strings, whitespace
+      let parsedQuantity: number;
+      const quantityStr = customerScan.quantity?.trim();
+      
+      if (quantityStr && quantityStr.length > 0) {
+        parsedQuantity = parseInt(quantityStr, 10);
+        // Check if parsing resulted in NaN or invalid number
+        if (isNaN(parsedQuantity) || parsedQuantity < 0) {
+          toast.error("⚠️ Invalid quantity in barcode!", {
+            description: `Could not parse quantity "${quantityStr}". Please scan again.`,
+            duration: 4000,
+          });
+          // Clear the input fields
+          setCustomerScan(null);
+          setAutolivScan(null);
+          return;
+        }
+        // Also check if it's a valid integer (not a float that got truncated)
+        if (parseFloat(quantityStr) !== parsedQuantity) {
+          toast.error("⚠️ Invalid quantity format!", {
+            description: `Quantity must be a whole number. Found: "${quantityStr}". Please scan again.`,
+            duration: 4000,
+          });
+          // Clear the input fields
+          setCustomerScan(null);
+          setAutolivScan(null);
+          return;
+        }
+      } else {
+        toast.error("⚠️ Missing quantity in barcode!", {
+          description: "The scanned barcode does not contain quantity information. Please scan again.",
+          duration: 4000,
+        });
+        // Clear the input fields
+        setCustomerScan(null);
+        setAutolivScan(null);
+        return;
+      }
+      
       // Create new validated bin entry using extracted barcode data
       const newBin = {
-        binNo: customerScan.binNumber, // Use actual bin number from barcode
-        partCode: customerScan.partCode, // Use actual part code from barcode
-        qty: parseInt(customerScan.quantity) || 1, // Use actual quantity from barcode
+        binNo: customerScan.binNumber || "N/A", // Use actual bin number from barcode
+        partCode: customerScan.partCode || "N/A", // Use actual part code from barcode
+        qty: parsedQuantity, // Use properly parsed quantity from barcode
         status: 'matched',
         scannedBy: currentUser,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1031,14 +1070,88 @@ const Dashboard = () => {
         autolivBarcode: autolivScan.rawValue
       };
       
-      // Add to validated bins list
-      setValidatedBins(prev => [...prev, newBin]);
+      // Check for duplicate scan - check both local validatedBins and invoice's validatedBarcodes
+      let isDuplicate = false;
       
-      // Update the current invoice's scanned bins count in shared session
-      if (currentInvoice) {
-        const newScannedCount = currentInvoice.scannedBins + 1;
-        const isComplete = newScannedCount >= currentInvoice.expectedBins;
+      // Check in current invoice's validated barcodes
+      if (currentInvoice?.validatedBarcodes) {
+        const existingInInvoice = currentInvoice.validatedBarcodes.find(
+          pair => pair.customerBarcode === customerScan.rawValue.trim() || 
+                  pair.autolivBarcode === autolivScan.rawValue.trim()
+        );
+        if (existingInInvoice) {
+          isDuplicate = true;
+        }
+      }
+      
+      // Update the current invoice's scanned bins count and check if this is the last bin
+      const newScannedCount = currentInvoice ? currentInvoice.scannedBins + 1 : 0;
+      const isComplete = currentInvoice ? newScannedCount >= currentInvoice.expectedBins : false;
+      const expectedTotal = currentInvoice?.totalQty || 0;
+      
+      // Calculate what the total would be after adding this bin
+      const currentTotalBeforeNewBin = validatedBins.reduce((sum, bin) => sum + bin.qty, 0);
+      const totalAfterNewBin = currentTotalBeforeNewBin + parsedQuantity;
+      
+      // If this is the last bin and totals don't match, adjust the quantity
+      let finalQuantity = parsedQuantity;
+      if (isComplete && expectedTotal > 0 && totalAfterNewBin !== expectedTotal) {
+        finalQuantity = expectedTotal - currentTotalBeforeNewBin;
+        if (finalQuantity < 0) {
+          toast.error("⚠️ Error: Scanned quantities exceed invoice total!", {
+            description: `Current total: ${totalAfterNewBin}, Expected: ${expectedTotal}. Please verify previous scans.`,
+            duration: 6000,
+          });
+          setCustomerScan(null);
+          setAutolivScan(null);
+          return;
+        }
         
+        // Update newBin with corrected quantity
+        newBin.qty = finalQuantity;
+        
+        if (finalQuantity !== parsedQuantity) {
+          toast.warning("⚠️ Quantity adjusted to match invoice total!", {
+            description: `Last bin quantity adjusted from ${parsedQuantity} to ${finalQuantity} to match invoice total of ${expectedTotal}.`,
+            duration: 5000,
+          });
+        }
+      }
+      
+      // Check in local validatedBins state using functional update
+      if (!isDuplicate) {
+        setValidatedBins(prev => {
+          // Check for duplicate scan - prevent scanning the same barcode twice
+          const existingBarcode = prev.find(
+            bin => bin.customerBarcode === customerScan.rawValue.trim() || 
+                   bin.autolivBarcode === autolivScan.rawValue.trim()
+          );
+          
+          if (existingBarcode) {
+            isDuplicate = true;
+            // Return previous state without adding duplicate
+            return prev;
+          }
+          
+          // Add new bin with potentially adjusted quantity
+          return [...prev, { ...newBin, qty: finalQuantity }];
+        });
+      }
+      
+      // If duplicate detected, show error and clear inputs without updating invoice
+      if (isDuplicate) {
+        toast.error("⚠️ Barcode already scanned!", {
+          description: `This barcode (${customerScan.binNumber || customerScan.partCode}) has already been scanned.`,
+          duration: 4000,
+        });
+        // Clear the input fields
+        setCustomerScan(null);
+        setAutolivScan(null);
+        return;
+      }
+      
+      // Update the current invoice's scanned bins count in shared session (only if not duplicate)
+      if (currentInvoice) {
         updateInvoiceAudit(currentInvoice.id, {
                 scannedBins: newScannedCount,
                 auditComplete: isComplete,
@@ -1050,14 +1163,15 @@ const Dashboard = () => {
               }, currentUser);
         
         if (isComplete) {
+          const finalTotal = currentTotalBeforeNewBin + finalQuantity;
           toast.success(`🎉 Invoice audit completed by ${currentUser}!`, {
-            description: `All ${currentInvoice.expectedBins} items have been scanned and validated. Available for dispatch.`
+            description: `All ${currentInvoice.expectedBins} items scanned. Total: ${finalTotal}/${expectedTotal}`
           });
         }
       }
       
       toast.success("✅ Barcodes matched! Item added to list.", {
-        description: `${newBin.partCode} - Qty: ${newBin.qty} - ${newBin.binNo}`
+        description: `${newBin.partCode} - Qty: ${finalQuantity} - ${newBin.binNo}`
       });
       
       // Clear the input fields
