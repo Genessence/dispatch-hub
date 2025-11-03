@@ -2122,19 +2122,10 @@ const Dashboard = () => {
                   </div>
                 ) : (
                   <>
-                    <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg flex items-center justify-between gap-2">
+                    <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
                         📅 Showing {invoices.length} invoice(s) scheduled for {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                       </p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowCalendar(true)}
-                        className="h-7 px-2 text-xs flex items-center gap-1 bg-white dark:bg-gray-800"
-                      >
-                        <CalendarIcon className="h-3 w-3" />
-                        View Schedule
-                      </Button>
                     </div>
                 <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
                   <SelectTrigger className="h-12 text-base">
