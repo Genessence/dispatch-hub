@@ -39,6 +39,7 @@ import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { LogEntry } from "@/contexts/SessionContext";
 import { QRCodeSVG } from "qrcode.react";
+import jsPDF from "jspdf";
 
 type ViewType = 'dashboard' | 'upload' | 'doc-audit' | 'dispatch';
 
@@ -1390,6 +1391,354 @@ const Dashboard = () => {
     };
     
     return JSON.stringify(qrData, null, 2);
+  };
+
+  // Print gatepass functionality
+  const handlePrintGatepass = () => {
+    // Create a printable content element
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      toast.error("Please allow popups to print the gatepass");
+      return;
+    }
+
+    const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
+    const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
+    const customerName = customers.join(", ");
+    const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+    const currentDate = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    
+    // Get QR code data
+    const qrData = generateGatepassQRData();
+    // Encode QR data for URL
+    const encodedQRData = encodeURIComponent(qrData);
+    // Use QR code API to generate QR code image
+    const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodedQRData}`;
+
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Gatepass ${gatepassNumber}</title>
+          <style>
+            @media print {
+              @page { margin: 1cm; }
+            }
+            body {
+              font-family: Arial, sans-serif;
+              padding: 20px;
+              max-width: 800px;
+              margin: 0 auto;
+            }
+            .header {
+              text-align: center;
+              border-bottom: 3px solid #000;
+              padding-bottom: 20px;
+              margin-bottom: 20px;
+            }
+            .header h1 {
+              margin: 0;
+              font-size: 24px;
+              font-weight: bold;
+            }
+            .header p {
+              margin: 5px 0;
+              color: #666;
+            }
+            .info-grid {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 15px;
+              margin-bottom: 20px;
+            }
+            .info-item {
+              padding: 10px;
+              border-bottom: 1px solid #ddd;
+            }
+            .info-label {
+              font-weight: bold;
+              color: #666;
+              font-size: 12px;
+              margin-bottom: 5px;
+            }
+            .info-value {
+              font-size: 14px;
+            }
+            .invoices-section {
+              margin: 20px 0;
+            }
+            .items-table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 15px;
+            }
+            .items-table th,
+            .items-table td {
+              border: 1px solid #ddd;
+              padding: 8px;
+              text-align: left;
+              font-size: 12px;
+            }
+            .items-table th {
+              background-color: #f5f5f5;
+              font-weight: bold;
+            }
+            .qr-section {
+              text-align: center;
+              margin-top: 30px;
+              padding-top: 20px;
+              border-top: 2px solid #000;
+            }
+            .footer {
+              margin-top: 30px;
+              padding-top: 20px;
+              border-top: 1px solid #ddd;
+              text-align: center;
+              font-size: 11px;
+              color: #666;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>MANUFACTURING DISPATCH</h1>
+            <p>Vehicle Exit Authorization</p>
+            <p><strong>Gatepass #${gatepassNumber}</strong></p>
+          </div>
+
+          <div class="info-grid">
+            <div class="info-item">
+              <div class="info-label">Vehicle Number</div>
+              <div class="info-value">${vehicleNumber}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Date & Time</div>
+              <div class="info-value">${currentDate} at ${currentTime}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Customer</div>
+              <div class="info-value">${customerName}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Authorized By</div>
+              <div class="info-value">${currentUser}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Total Quantity</div>
+              <div class="info-value">${totalQuantity}</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">Total Items</div>
+              <div class="info-value">${loadedBarcodes.length}</div>
+            </div>
+          </div>
+
+          <div class="invoices-section">
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Invoice Numbers:</h3>
+            <p style="margin: 0;">${selectedInvoices.join(", ")}</p>
+          </div>
+
+          <div class="invoices-section">
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Items Loaded:</h3>
+            <table class="items-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Part Code</th>
+                  <th>Bin Number</th>
+                  <th>Quantity</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${loadedBarcodes.map((item, index) => `
+                  <tr>
+                    <td>${index + 1}</td>
+                    <td>${item.partCode || "N/A"}</td>
+                    <td>${item.binNumber || "N/A"}</td>
+                    <td>${item.quantity || "0"}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="qr-section">
+            <h3 style="margin-bottom: 15px; font-size: 16px; text-align: center;">QR Code:</h3>
+            <div style="text-align: center; padding: 20px;">
+              <div style="display: inline-block; padding: 20px; background: white; border: 2px solid #ddd; border-radius: 8px;">
+                <img src="${qrCodeImageUrl}" alt="Gatepass QR Code" style="width: 200px; height: 200px; display: block;" />
+              </div>
+            </div>
+            <p style="margin-top: 10px; font-size: 11px; color: #666; text-align: center;">Scan QR code to verify gatepass details</p>
+          </div>
+
+          <div class="footer">
+            <p>This gatepass is authorized for vehicle exit. Please verify all items before dispatch.</p>
+            <p>Generated on ${currentDate} at ${currentTime}</p>
+          </div>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(printContent);
+    printWindow.document.close();
+    
+    // Wait for QR code image to load, then print
+    printWindow.onload = () => {
+      const img = printWindow.document.querySelector('img[alt="Gatepass QR Code"]') as HTMLImageElement;
+      if (img) {
+        if (img.complete) {
+          setTimeout(() => {
+            printWindow.print();
+            printWindow.onafterprint = () => printWindow.close();
+          }, 100);
+        } else {
+          img.onload = () => {
+            setTimeout(() => {
+              printWindow.print();
+              printWindow.onafterprint = () => printWindow.close();
+            }, 100);
+          };
+          img.onerror = () => {
+            // If QR code fails to load, still allow printing
+            setTimeout(() => {
+              printWindow.print();
+              printWindow.onafterprint = () => printWindow.close();
+            }, 100);
+          };
+        }
+      } else {
+        // Fallback if image element not found
+        setTimeout(() => {
+          printWindow.print();
+          printWindow.onafterprint = () => printWindow.close();
+        }, 500);
+      }
+    };
+    
+    toast.success("Print dialog opened");
+  };
+
+  // Download PDF functionality
+  const handleDownloadPDF = () => {
+    try {
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      let yPos = margin;
+
+      const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
+      const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
+      const customerName = customers.join(", ");
+      const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+      const currentDate = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+      // Header
+      pdf.setFontSize(20);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('MANUFACTURING DISPATCH', pageWidth / 2, yPos, { align: 'center' });
+      yPos += 8;
+
+      pdf.setFontSize(12);
+      pdf.setFont(undefined, 'normal');
+      pdf.text('Vehicle Exit Authorization', pageWidth / 2, yPos, { align: 'center' });
+      yPos += 8;
+
+      pdf.setFontSize(14);
+      pdf.setFont(undefined, 'bold');
+      pdf.text(`Gatepass #${gatepassNumber}`, pageWidth / 2, yPos, { align: 'center' });
+      yPos += 15;
+
+      // Gatepass Information
+      pdf.setFontSize(10);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Gatepass Information:', margin, yPos);
+      yPos += 7;
+
+      pdf.setFont(undefined, 'normal');
+      pdf.setFontSize(9);
+      pdf.text(`Vehicle Number: ${vehicleNumber}`, margin, yPos);
+      yPos += 6;
+      pdf.text(`Date & Time: ${currentDate} at ${currentTime}`, margin, yPos);
+      yPos += 6;
+      pdf.text(`Customer: ${customerName}`, margin, yPos);
+      yPos += 6;
+      pdf.text(`Authorized By: ${currentUser}`, margin, yPos);
+      yPos += 6;
+      pdf.text(`Total Quantity: ${totalQuantity}`, margin, yPos);
+      yPos += 6;
+      pdf.text(`Total Items: ${loadedBarcodes.length}`, margin, yPos);
+      yPos += 10;
+
+      // Invoice Numbers
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Invoice Numbers:', margin, yPos);
+      yPos += 6;
+      pdf.setFont(undefined, 'normal');
+      const invoiceText = selectedInvoices.join(", ");
+      const splitInvoices = pdf.splitTextToSize(invoiceText, pageWidth - 2 * margin);
+      pdf.text(splitInvoices, margin, yPos);
+      yPos += splitInvoices.length * 5 + 5;
+
+      // Items Table
+      if (yPos > pageHeight - 60) {
+        pdf.addPage();
+        yPos = margin;
+      }
+
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Items Loaded:', margin, yPos);
+      yPos += 7;
+
+      // Table headers
+      const tableStartY = yPos;
+      pdf.setFontSize(8);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('#', margin, yPos);
+      pdf.text('Part Code', margin + 20, yPos);
+      pdf.text('Bin Number', margin + 70, yPos);
+      pdf.text('Quantity', margin + 120, yPos);
+      yPos += 5;
+
+      // Draw line under header
+      pdf.setDrawColor(200, 200, 200);
+      pdf.line(margin, yPos, pageWidth - margin, yPos);
+      yPos += 3;
+
+      // Table rows
+      pdf.setFont(undefined, 'normal');
+      loadedBarcodes.forEach((item, index) => {
+        if (yPos > pageHeight - 20) {
+          pdf.addPage();
+          yPos = margin;
+        }
+        pdf.text(String(index + 1), margin, yPos);
+        pdf.text(item.partCode || "N/A", margin + 20, yPos);
+        pdf.text(item.binNumber || "N/A", margin + 70, yPos);
+        pdf.text(item.quantity || "0", margin + 120, yPos);
+        yPos += 6;
+      });
+
+      // Footer
+      yPos = pageHeight - 20;
+      pdf.setFontSize(8);
+      pdf.setFont(undefined, 'italic');
+      pdf.text('This gatepass is authorized for vehicle exit. Please verify all items before dispatch.', pageWidth / 2, yPos, { align: 'center' });
+      yPos += 5;
+      pdf.text(`Generated on ${currentDate} at ${currentTime}`, pageWidth / 2, yPos, { align: 'center' });
+
+      // Download PDF
+      const fileName = `Gatepass_${gatepassNumber}_${vehicleNumber}_${new Date().toISOString().split('T')[0]}.pdf`;
+      pdf.save(fileName);
+      
+      toast.success("PDF downloaded successfully!");
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      toast.error("Failed to generate PDF. Please try again.");
+    }
   };
 
   const toggleInvoice = (invoiceId: string) => {
@@ -3196,11 +3545,19 @@ const Dashboard = () => {
 
                   {/* Actions */}
                   <div className="grid grid-cols-2 gap-3">
-                    <Button variant="outline" className="h-12">
+                    <Button 
+                      variant="outline" 
+                      className="h-12"
+                      onClick={handlePrintGatepass}
+                    >
                       <Printer className="h-5 w-5 mr-2" />
                       Print Gatepass
                     </Button>
-                    <Button variant="outline" className="h-12">
+                    <Button 
+                      variant="outline" 
+                      className="h-12"
+                      onClick={handleDownloadPDF}
+                    >
                       <Download className="h-5 w-5 mr-2" />
                       Download PDF
                     </Button>
