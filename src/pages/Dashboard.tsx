@@ -123,7 +123,6 @@ const Dashboard = () => {
   const [scannerConnected, setScannerConnected] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
-  const [selectedShift, setSelectedShift] = useState<'A' | 'B' | 'all'>('all');
   
   // Shift helper functions
   const getCurrentShift = (): 'A' | 'B' => {
@@ -136,6 +135,10 @@ const Dashboard = () => {
   
   const getShiftLabel = (shift: 'A' | 'B'): string => {
     return shift === 'A' ? 'Shift A (8 AM - 8 PM)' : 'Shift B (8 PM - 8 AM)';
+  };
+  
+  const getNextShift = (): 'A' | 'B' => {
+    return getCurrentShift() === 'A' ? 'B' : 'A';
   };
   
   const currentShift = getCurrentShift();
@@ -219,43 +222,92 @@ const Dashboard = () => {
     }
   ];
 
-  // Calculate status with initial demo values
-  const totalInvoices = sharedInvoices.length;
-  const pendingAudits = sharedInvoices.filter(inv => !inv.auditComplete && !inv.dispatchedBy).length;
-  const completedDispatches = sharedInvoices.filter(inv => inv.dispatchedBy).length;
-  const readyToDispatch = sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length;
+  // Calculate shift-based metrics
+  const nextShift = getNextShift();
   
-  // Show initial demo numbers if no real data exists
+  // Get invoices with schedule
+  const invoicesWithSchedule = getInvoicesWithSchedule();
+  
+  // Current shift metrics
+  // Doc Audit Scheduled: invoices with schedule, current shift, not dispatched, not audited
+  const currentShiftDocAuditScheduled = invoicesWithSchedule.filter(inv => 
+    inv.shift === currentShift && !inv.dispatchedBy && !inv.auditComplete
+  ).length;
+  
+  // Dispatch Scheduled: invoices with schedule, current shift, not dispatched, audited (ready to dispatch)
+  const currentShiftDispatchScheduled = invoicesWithSchedule.filter(inv => 
+    inv.shift === currentShift && !inv.dispatchedBy && inv.auditComplete
+  ).length;
+  
+  // Count all audits completed in current shift, regardless of dispatch status
+  const currentShiftCompletedAudits = sharedInvoices.filter(inv => 
+    inv.shift === currentShift && inv.auditComplete
+  ).length;
+  
+  const currentShiftCompletedDispatches = sharedInvoices.filter(inv => 
+    inv.shift === currentShift && inv.dispatchedBy !== undefined
+  ).length;
+  
+  // Next shift metrics
+  // Doc Audit Scheduled for next shift
+  const nextShiftDocAuditScheduled = invoicesWithSchedule.filter(inv => 
+    inv.shift === nextShift && !inv.dispatchedBy && !inv.auditComplete
+  ).length;
+  
+  // Dispatch Scheduled for next shift
+  const nextShiftDispatchScheduled = invoicesWithSchedule.filter(inv => 
+    inv.shift === nextShift && !inv.dispatchedBy && inv.auditComplete
+  ).length;
+  
   const hasRealData = sharedInvoices.length > 0;
 
-  const kpis = [
+  // Current Shift KPIs
+  const currentShiftKPIs = [
     {
-      title: "Total Invoices",
-      value: hasRealData ? totalInvoices.toString() : "7",
-      subtitle: "In system",
-      icon: Package,
-      trend: hasRealData ? (totalInvoices > 0 ? "Active" : "Empty") : "Active"
+      title: `Doc Audit Scheduled (${getShiftLabel(currentShift)})`,
+      value: hasRealData ? currentShiftDocAuditScheduled.toString() : "0",
+      subtitle: "Pending audit",
+      icon: ScanBarcode,
+      trend: currentShiftDocAuditScheduled > 0 ? "Active" : "Empty"
     },
     {
-      title: "Pending Audits",
-      value: hasRealData ? pendingAudits.toString() : "3",
-      subtitle: "Awaiting scan",
-      icon: Clock,
-      trend: hasRealData ? (pendingAudits > 0 ? "Pending" : "Clear") : "Pending"
-    },
-    {
-      title: "Completed Dispatches",
-      value: hasRealData ? completedDispatches.toString() : "2",
-      subtitle: "Dispatched",
-      icon: CheckCircle2,
-      trend: hasRealData ? (completedDispatches > 0 ? "Active" : "None") : "Active"
-    },
-    {
-      title: "Ready to Dispatch",
-      value: hasRealData ? readyToDispatch.toString() : "2",
-      subtitle: "Audited & Ready",
+      title: `Dispatch Scheduled (${getShiftLabel(currentShift)})`,
+      value: hasRealData ? currentShiftDispatchScheduled.toString() : "0",
+      subtitle: "Ready to dispatch",
       icon: Truck,
-      trend: hasRealData ? (readyToDispatch > 0 ? "Available" : "None") : "Available"
+      trend: currentShiftDispatchScheduled > 0 ? "Active" : "Empty"
+    },
+    {
+      title: `Doc Audits Done (${getShiftLabel(currentShift)})`,
+      value: hasRealData ? currentShiftCompletedAudits.toString() : "0",
+      subtitle: "Completed this shift",
+      icon: CheckCircle2,
+      trend: currentShiftCompletedAudits > 0 ? "Active" : "None"
+    },
+    {
+      title: `Dispatches Done (${getShiftLabel(currentShift)})`,
+      value: hasRealData ? currentShiftCompletedDispatches.toString() : "0",
+      subtitle: "Completed this shift",
+      icon: CheckCircle2,
+      trend: currentShiftCompletedDispatches > 0 ? "Active" : "None"
+    }
+  ];
+  
+  // Next Shift KPIs
+  const nextShiftKPIs = [
+    {
+      title: `Doc Audit Scheduled (${getShiftLabel(nextShift)})`,
+      value: hasRealData ? nextShiftDocAuditScheduled.toString() : "0",
+      subtitle: "Upcoming shift",
+      icon: ScanBarcode,
+      trend: nextShiftDocAuditScheduled > 0 ? "Scheduled" : "None"
+    },
+    {
+      title: `Dispatch Scheduled (${getShiftLabel(nextShift)})`,
+      value: hasRealData ? nextShiftDispatchScheduled.toString() : "0",
+      subtitle: "Upcoming shift",
+      icon: Truck,
+      trend: nextShiftDispatchScheduled > 0 ? "Scheduled" : "None"
     }
   ];
 
@@ -1126,13 +1178,13 @@ const Dashboard = () => {
            date.getFullYear() === today.getFullYear();
   };
 
-  // Get invoices with schedule for Doc Audit - show only scheduled non-dispatched invoices
-  const invoicesWithSchedule = getInvoicesWithSchedule();
+  // Get invoices with schedule for Doc Audit - show only scheduled non-dispatched invoices for current shift
+  // Reuse invoicesWithSchedule declared above for KPIs
   const invoices = invoicesWithSchedule.filter(inv => {
     // Hide dispatched invoices
     if (inv.dispatchedBy) return false;
-    // Filter by selected shift
-    if (selectedShift !== 'all' && inv.shift !== selectedShift) return false;
+    // Auto-filter by current shift only
+    if (inv.shift !== currentShift) return false;
     return true;
   });
   
@@ -2057,38 +2109,78 @@ const Dashboard = () => {
         {/* Dashboard View */}
         {activeView === 'dashboard' && (
           <>
-            {/* KPIs */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-              {kpis.map((kpi, index) => (
-                <Card key={index} className="hover:shadow-md transition-shadow">
-                  <CardContent className="pt-6">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="text-sm text-muted-foreground mb-1">{kpi.title}</p>
-                        <h3 className="text-3xl font-bold text-foreground mb-1">{kpi.value}</h3>
-                        <p className="text-xs text-muted-foreground">{kpi.subtitle}</p>
+            {/* Current Shift KPIs */}
+            <div className="mb-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Badge variant="default" className="text-sm px-3 py-1">
+                  {currentShift === 'A' ? '🌅' : '🌙'} {getShiftLabel(currentShift)}
+                </Badge>
+                <h2 className="text-lg font-semibold">Current Shift Metrics</h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                {currentShiftKPIs.map((kpi, index) => (
+                  <Card key={index} className="hover:shadow-md transition-shadow">
+                    <CardContent className="pt-6">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground mb-1">{kpi.title}</p>
+                          <h3 className="text-3xl font-bold text-foreground mb-1">{kpi.value}</h3>
+                          <p className="text-xs text-muted-foreground">{kpi.subtitle}</p>
+                        </div>
+                        <div className="p-2 bg-primary/10 rounded-lg">
+                          <kpi.icon className="h-5 w-5 text-primary" />
+                        </div>
                       </div>
-                      <div className="p-2 bg-primary/10 rounded-lg">
-                        <kpi.icon className="h-5 w-5 text-primary" />
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <span className={`text-xs font-semibold ${
+                          kpi.trend === 'Active' || kpi.trend === 'Scheduled' ? 'text-primary' : 
+                          kpi.trend === 'None' || kpi.trend === 'Empty' ? 'text-muted-foreground' : 
+                          'text-success'
+                        }`}>
+                          {kpi.trend}
+                        </span>
                       </div>
-                    </div>
-                    <div className="mt-3 pt-3 border-t border-border">
-                      <span className={`text-xs font-semibold ${
-                        kpi.trend === 'Active' || kpi.trend === 'Available' || kpi.trend === 'Pending' ? 'text-primary' : 
-                        kpi.trend === 'Clear' || kpi.trend === 'None' || kpi.trend === 'Empty' ? 'text-muted-foreground' : 
-                        kpi.trend.includes('+') ? 'text-success' : 
-                        kpi.trend.includes('-') ? 'text-muted-foreground' : 
-                        'text-destructive'
-                      }`}>
-                        {kpi.trend}
-                      </span>
-                      <span className="text-xs text-muted-foreground ml-1">
-                        {kpi.trend === 'Active' || kpi.trend === 'Available' || kpi.trend === 'Pending' || kpi.trend === 'Clear' || kpi.trend === 'None' || kpi.trend === 'Empty' ? 'status' : 'vs last period'}
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            {/* Next Shift KPIs */}
+            <div className="mb-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Badge variant="outline" className="text-sm px-3 py-1">
+                  {nextShift === 'A' ? '🌅' : '🌙'} {getShiftLabel(nextShift)}
+                </Badge>
+                <h2 className="text-lg font-semibold">Next Shift Schedule</h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                {nextShiftKPIs.map((kpi, index) => (
+                  <Card key={index} className="hover:shadow-md transition-shadow">
+                    <CardContent className="pt-6">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground mb-1">{kpi.title}</p>
+                          <h3 className="text-3xl font-bold text-foreground mb-1">{kpi.value}</h3>
+                          <p className="text-xs text-muted-foreground">{kpi.subtitle}</p>
+                        </div>
+                        <div className="p-2 bg-primary/10 rounded-lg">
+                          <kpi.icon className="h-5 w-5 text-primary" />
+                        </div>
+                      </div>
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <span className={`text-xs font-semibold ${
+                          kpi.trend === 'Scheduled' ? 'text-primary' : 
+                          kpi.trend === 'None' ? 'text-muted-foreground' : 
+                          'text-success'
+                        }`}>
+                          {kpi.trend}
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
             </div>
 
             {/* Other System Modules */}
@@ -2720,46 +2812,15 @@ const Dashboard = () => {
                 <CardDescription>Choose an invoice to begin document audit (Showing scheduled invoices only)</CardDescription>
               </CardHeader>
               <CardContent>
-                {/* Shift Filter */}
-                <div className="mb-4">
-                  <p className="text-xs font-medium text-muted-foreground mb-2">Filter by Shift:</p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant={selectedShift === 'all' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => setSelectedShift('all')}
-                      className="text-xs"
-                    >
-                      All Shifts
-                    </Button>
-                    <Button
-                      variant={selectedShift === 'A' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => setSelectedShift('A')}
-                      className="text-xs"
-                    >
-                      🌅 Shift A (8 AM - 8 PM)
-                    </Button>
-                    <Button
-                      variant={selectedShift === 'B' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => setSelectedShift('B')}
-                      className="text-xs"
-                    >
-                      🌙 Shift B (8 PM - 8 AM)
-                    </Button>
-                  </div>
-                </div>
-                
                 {invoices.length === 0 ? (
                   <div className="p-4 bg-muted rounded-lg text-center">
-                    <p className="text-sm text-muted-foreground">No invoices with matching schedule found</p>
+                    <p className="text-sm text-muted-foreground">No invoices scheduled for {getShiftLabel(currentShift)}</p>
                   </div>
                 ) : (
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.length} invoice(s) for {selectedShift === 'all' ? 'all shifts' : getShiftLabel(selectedShift)}. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
+                        📅 Showing {invoices.length} invoice(s) for {getShiftLabel(currentShift)}. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
                       </p>
                     </div>
                 <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
