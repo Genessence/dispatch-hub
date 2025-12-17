@@ -1,5 +1,24 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 
+// Schedule data from the schedule file (each row from each sheet)
+export interface ScheduleItem {
+  customerCode: string;
+  customerPart: string;
+  qadPart: string;
+  description: string;
+  snp: number;
+  plan: number;
+  bin: number;
+  sheetName: string;
+}
+
+export interface ScheduleData {
+  items: ScheduleItem[];
+  uploadedAt: Date;
+  scheduledDate: Date; // The upload date becomes the scheduled dispatch date
+  uploadedBy: string;
+}
+
 export interface InvoiceData {
   id: string;
   customer: string;
@@ -22,6 +41,9 @@ export interface InvoiceData {
   uploadedAt?: Date;
   auditedAt?: Date;
   dispatchedAt?: Date;
+  // New fields for schedule matching
+  billTo?: string; // Customer code from invoice for matching with schedule
+  scheduledDate?: Date; // When this invoice is scheduled for dispatch
 }
 
 export interface LogEntry {
@@ -75,12 +97,22 @@ interface SessionContextType {
   addMismatchAlert: (alert: Omit<MismatchAlert, 'id' | 'timestamp' | 'status'>) => void;
   updateMismatchStatus: (alertId: string, status: 'approved' | 'rejected', reviewedBy: string) => void;
   getPendingMismatches: () => MismatchAlert[];
+  // Schedule-related
+  scheduleData: ScheduleData | null;
+  addScheduleData: (items: ScheduleItem[], uploadedBy: string) => void;
+  clearScheduleData: () => void;
+  getScheduleForCustomer: (customerCode: string) => ScheduleItem[];
+  getInvoicesWithSchedule: () => InvoiceData[];
+  getScheduledDispatchableInvoices: () => InvoiceData[];
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
 export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [currentUser, setCurrentUser] = useState("User 1");
+  
+  // Schedule data state
+  const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
   
   // Initialize with minimal default invoices (only Oct 13 and 14)
   const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>(() => {
@@ -100,7 +132,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         auditComplete: false,
         items: [],
         uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000)
+        uploadedAt: new Date(Date.now() - 1800000),
+        billTo: '1223' // BSL Manesar customer code
       },
       {
         id: '2510706712',
@@ -114,7 +147,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         auditComplete: false,
         items: [],
         uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000)
+        uploadedAt: new Date(Date.now() - 1800000),
+        billTo: '1222' // BSL Gurgaon customer code
       },
       // Oct 14 - 2 invoices
       {
@@ -129,7 +163,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         auditComplete: false,
         items: [],
         uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000)
+        uploadedAt: new Date(Date.now() - 1800000),
+        billTo: '1228' // KML Manesar customer code
       },
       {
         id: '2510706715',
@@ -143,7 +178,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         auditComplete: false,
         items: [],
         uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000)
+        uploadedAt: new Date(Date.now() - 1800000),
+        billTo: '1227' // KML Narshinghpur customer code
       }
     ];
   });
@@ -376,6 +412,52 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     return mismatchAlerts.filter(alert => alert.status === 'pending');
   };
 
+  // Schedule-related methods
+  const addScheduleData = (items: ScheduleItem[], uploadedBy: string) => {
+    const now = new Date();
+    setScheduleData({
+      items,
+      uploadedAt: now,
+      scheduledDate: now, // Upload date becomes scheduled date
+      uploadedBy
+    });
+    
+    addLog({
+      user: uploadedBy,
+      action: `Uploaded schedule with ${items.length} item(s)`,
+      details: `Customer codes: ${[...new Set(items.map(i => i.customerCode))].join(', ')}`,
+      type: 'upload'
+    });
+  };
+
+  const clearScheduleData = () => {
+    setScheduleData(null);
+  };
+
+  const getScheduleForCustomer = (customerCode: string): ScheduleItem[] => {
+    if (!scheduleData) return [];
+    return scheduleData.items.filter(item => String(item.customerCode) === String(customerCode));
+  };
+
+  // Get invoices that have matching schedule data
+  const getInvoicesWithSchedule = (): InvoiceData[] => {
+    if (!scheduleData) return [];
+    const scheduledCustomerCodes = new Set(scheduleData.items.map(item => String(item.customerCode)));
+    return sharedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)));
+  };
+
+  // Get invoices that are ready for dispatch (have schedule AND audit complete)
+  const getScheduledDispatchableInvoices = (): InvoiceData[] => {
+    if (!scheduleData) return [];
+    const scheduledCustomerCodes = new Set(scheduleData.items.map(item => String(item.customerCode)));
+    return sharedInvoices.filter(inv => 
+      inv.billTo && 
+      scheduledCustomerCodes.has(String(inv.billTo)) && 
+      inv.auditComplete && 
+      !inv.dispatchedBy
+    );
+  };
+
   return (
     <SessionContext.Provider
       value={{
@@ -395,7 +477,14 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         mismatchAlerts,
         addMismatchAlert,
         updateMismatchStatus,
-        getPendingMismatches
+        getPendingMismatches,
+        // Schedule-related
+        scheduleData,
+        addScheduleData,
+        clearScheduleData,
+        getScheduleForCustomer,
+        getInvoicesWithSchedule,
+        getScheduledDispatchableInvoices
       }}
     >
       {children}

@@ -37,7 +37,7 @@ import {
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
-import type { LogEntry } from "@/contexts/SessionContext";
+import type { LogEntry, ScheduleItem } from "@/contexts/SessionContext";
 import { QRCodeSVG } from "qrcode.react";
 import jsPDF from "jspdf";
 
@@ -73,10 +73,31 @@ interface InvoiceData {
   auditDate?: Date;
   items: UploadedRow[];
   validatedBarcodes?: ValidatedBarcodePair[];
+  billTo?: string; // Customer code for matching with schedule
+  scheduledDate?: Date; // When this invoice is scheduled for dispatch
 }
 
 const Dashboard = () => {
-  const { currentUser, sharedInvoices, addInvoices, updateInvoiceAudit, updateInvoiceDispatch, getAuditedInvoices, getDispatchableInvoices, getUploadLogs, getAuditLogs, getDispatchLogs, addMismatchAlert, getPendingMismatches } = useSession();
+  const { 
+    currentUser, 
+    sharedInvoices, 
+    addInvoices, 
+    updateInvoiceAudit, 
+    updateInvoiceDispatch, 
+    getAuditedInvoices, 
+    getDispatchableInvoices, 
+    getUploadLogs, 
+    getAuditLogs, 
+    getDispatchLogs, 
+    addMismatchAlert, 
+    getPendingMismatches,
+    // Schedule-related
+    scheduleData,
+    addScheduleData,
+    getScheduleForCustomer,
+    getInvoicesWithSchedule,
+    getScheduledDispatchableInvoices
+  } = useSession();
   const [activeView, setActiveView] = useState<ViewType>('dashboard');
   
   // Logs states
@@ -92,6 +113,7 @@ const Dashboard = () => {
   const [scheduleDragActive, setScheduleDragActive] = useState(false);
   const [uploadedData, setUploadedData] = useState<UploadedRow[]>([]);
   const [processedInvoices, setProcessedInvoices] = useState<InvoiceData[]>([]);
+  const [parsedScheduleItems, setParsedScheduleItems] = useState<ScheduleItem[]>([]);
   
   // Doc Audit states
   const [selectedInvoice, setSelectedInvoice] = useState("");
@@ -567,6 +589,8 @@ const Dashboard = () => {
             const customer = rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || 'Unknown Customer';
             const invoiceDateSerial = rowObj['Invoice Date'] || rowObj['invoice date'] || rowObj['Date'];
             const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || '0');
+            // Extract Bill To for customer code matching with schedule
+            const billTo = rowObj['Bill To'] || rowObj['BillTo'] || rowObj['bill to'] || rowObj['Bill-To'] || '';
             
             // Always use today's date for uploaded invoices so they show in Doc Audit
             const invoiceDate = new Date();
@@ -585,7 +609,8 @@ const Dashboard = () => {
                 scannedBins: 0,
                 binsLoaded: 0,
                 auditComplete: false,
-                items: []
+                items: [],
+                billTo: billTo.toString() // Customer code for matching with schedule
               });
             }
             
@@ -637,6 +662,105 @@ const Dashboard = () => {
           console.log('File reading was aborted by user or browser');
           reject(new Error('File reading was cancelled. Please try again.'));
         };
+      
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  // Parse schedule file with multiple sheets - extract all customer schedules
+  const parseScheduleFile = async (file: File): Promise<ScheduleItem[]> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        try {
+          const data = e.target?.result;
+          if (!data) {
+            reject(new Error('Failed to read schedule file data'));
+            return;
+          }
+          
+          const workbook = XLSX.read(data, { 
+            type: 'array',
+            cellDates: false,
+            raw: false
+          });
+          
+          if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+            reject(new Error('No sheets found in the schedule file'));
+            return;
+          }
+          
+          console.log('Schedule file sheets:', workbook.SheetNames);
+          
+          const allScheduleItems: ScheduleItem[] = [];
+          
+          // Parse each sheet
+          workbook.SheetNames.forEach((sheetName) => {
+            // Skip sheets that don't seem like customer schedules (e.g., "Sheet1")
+            if (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2') {
+              console.log(`Skipping sheet: ${sheetName}`);
+              return;
+            }
+            
+            const sheet = workbook.Sheets[sheetName];
+            if (!sheet) return;
+            
+            try {
+              const jsonData = XLSX.utils.sheet_to_json(sheet, {
+                defval: '',
+                raw: false
+              });
+              
+              if (!jsonData || jsonData.length === 0) {
+                console.log(`Sheet ${sheetName} is empty, skipping`);
+                return;
+              }
+              
+              console.log(`Parsing sheet: ${sheetName}, rows: ${jsonData.length}`);
+              
+              // Parse each row in the sheet
+              jsonData.forEach((row: any) => {
+                const customerCode = row['Customer Code'] || row['CustomerCode'] || row['customer code'] || '';
+                const customerPart = row['Custmer Part'] || row['Customer Part'] || row['CustomerPart'] || '';
+                const qadPart = row['QAD part'] || row['QAD Part'] || row['QADPart'] || '';
+                const description = row['Description'] || row['description'] || '';
+                const snp = parseInt(row['SNP'] || row['snp'] || '0') || 0;
+                const plan = parseInt(row['PLAN'] || row['Plan'] || row['plan'] || '0') || 0;
+                const bin = parseInt(row['Bin'] || row['bin'] || '0') || 0;
+                
+                // Only add items with valid customer code
+                if (customerCode) {
+                  allScheduleItems.push({
+                    customerCode: customerCode.toString(),
+                    customerPart: customerPart.toString(),
+                    qadPart: qadPart.toString(),
+                    description: description.toString(),
+                    snp,
+                    plan,
+                    bin,
+                    sheetName
+                  });
+                }
+              });
+            } catch (sheetError) {
+              console.error(`Error parsing sheet ${sheetName}:`, sheetError);
+            }
+          });
+          
+          console.log(`Total schedule items parsed: ${allScheduleItems.length}`);
+          console.log('Unique customer codes:', [...new Set(allScheduleItems.map(i => i.customerCode))]);
+          
+          resolve(allScheduleItems);
+        } catch (error) {
+          console.error('Error parsing schedule file:', error);
+          reject(error);
+        }
+      };
+      
+      reader.onerror = () => {
+        reject(new Error('Failed to read schedule file'));
+      };
       
       reader.readAsArrayBuffer(file);
     });
@@ -694,8 +818,8 @@ const Dashboard = () => {
       return;
     }
 
-    // Parse the invoices file
-    const loadingToast = toast.loading("Parsing invoices file...", {
+    // Parse both files
+    const loadingToast = toast.loading("Parsing files...", {
       duration: 0
     });
     
@@ -705,16 +829,42 @@ const Dashboard = () => {
       
       const timeoutDuration = isMobile ? 10000 : 15000;
       
-      const parsePromise = parseFile(file);
+      // Parse both files in parallel
+      const parseInvoicesPromise = parseFile(file);
+      const parseSchedulePromise = parseScheduleFile(scheduleFile);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
       );
       
-      const { rows, invoices } = await Promise.race([parsePromise, timeoutPromise]) as { rows: UploadedRow[], invoices: InvoiceData[] };
+      const [invoiceResult, scheduleItems] = await Promise.race([
+        Promise.all([parseInvoicesPromise, parseSchedulePromise]),
+        timeoutPromise
+      ]) as [{ rows: UploadedRow[], invoices: InvoiceData[] }, ScheduleItem[]];
+      
+      const { rows, invoices } = invoiceResult;
       
       if (!rows || !invoices) {
-        throw new Error('Invalid file format - no data found');
+        throw new Error('Invalid invoice file format - no data found');
       }
+      
+      if (!scheduleItems || scheduleItems.length === 0) {
+        throw new Error('No schedule data found in the schedule file');
+      }
+      
+      // Get unique customer codes from schedule
+      const scheduledCustomerCodes = new Set(scheduleItems.map(item => String(item.customerCode)));
+      
+      // Calculate matching statistics
+      const matchedInvoices = invoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)));
+      const unmatchedInvoices = invoices.filter(inv => !inv.billTo || !scheduledCustomerCodes.has(String(inv.billTo)));
+      
+      console.log('Matching results:', {
+        totalInvoices: invoices.length,
+        matchedInvoices: matchedInvoices.length,
+        unmatchedInvoices: unmatchedInvoices.length,
+        scheduleItemCount: scheduleItems.length,
+        scheduledCustomerCodes: [...scheduledCustomerCodes]
+      });
       
       if (isMobile && rows.length > 100) {
         toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
@@ -722,10 +872,11 @@ const Dashboard = () => {
       
       setUploadedData(rows);
       setProcessedInvoices(invoices);
+      setParsedScheduleItems(scheduleItems);
       setUploadStage('validate');
       toast.dismiss(loadingToast);
       toast.dismiss('processing');
-      toast.success(`Both files uploaded! Found ${rows.length} records from ${invoices.length} invoices.`);
+      toast.success(`Files parsed! ${invoices.length} invoices, ${scheduleItems.length} schedule items. ${matchedInvoices.length} matched.`);
     } catch (error) {
       toast.dismiss(loadingToast);
       toast.dismiss('processing');
@@ -756,12 +907,19 @@ const Dashboard = () => {
       toast.error(errorMessage);
       
       setFile(null);
+      setScheduleFile(null);
       setUploadedData([]);
       setProcessedInvoices([]);
+      setParsedScheduleItems([]);
     }
   };
 
   const handleImport = () => {
+    // Add schedule data to shared session
+    if (parsedScheduleItems.length > 0) {
+      addScheduleData(parsedScheduleItems, currentUser);
+    }
+    
     // Add invoices to shared session
     addInvoices(processedInvoices, currentUser);
     
@@ -925,11 +1083,20 @@ const Dashboard = () => {
   };
 
   // Calculate validation results from actual uploaded data
+  const scheduledCustomerCodes = new Set(parsedScheduleItems.map(item => String(item.customerCode)));
+  const matchedInvoicesCount = processedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo))).length;
+  const unmatchedInvoicesCount = processedInvoices.length - matchedInvoicesCount;
+  
   const validationResults = {
     total: uploadedData.length,
     valid: uploadedData.filter(row => row.status === 'valid').length,
     errors: uploadedData.filter(row => row.status === 'error').length,
-    warnings: uploadedData.filter(row => row.status === 'warning').length
+    warnings: uploadedData.filter(row => row.status === 'warning').length,
+    // Schedule matching info
+    invoiceCount: processedInvoices.length,
+    scheduleItemCount: parsedScheduleItems.length,
+    matchedInvoices: matchedInvoicesCount,
+    unmatchedInvoices: unmatchedInvoicesCount
   };
 
   // Doc Audit data and handlers
@@ -941,11 +1108,23 @@ const Dashboard = () => {
            date.getFullYear() === today.getFullYear();
   };
 
-  // Use shared invoices from session - show only today's non-dispatched invoices
-  const invoices = sharedInvoices.filter(inv => 
-    !inv.dispatchedBy && // Hide dispatched invoices
-    isToday(inv.invoiceDate) // Only show invoices scheduled for today
+  // Get invoices with schedule for Doc Audit - show only scheduled non-dispatched invoices
+  const invoicesWithSchedule = getInvoicesWithSchedule();
+  const invoices = invoicesWithSchedule.filter(inv => 
+    !inv.dispatchedBy // Hide dispatched invoices
   );
+  
+  // Group invoices by scheduled date for display
+  const groupedByDate = invoices.reduce((acc, inv) => {
+    const dateKey = inv.scheduledDate 
+      ? inv.scheduledDate.toLocaleDateString() 
+      : (scheduleData?.scheduledDate?.toLocaleDateString() || 'No Schedule');
+    if (!acc[dateKey]) {
+      acc[dateKey] = [];
+    }
+    acc[dateKey].push(inv);
+    return acc;
+  }, {} as Record<string, typeof invoices>);
 
   const currentInvoice = invoices.find(inv => inv.id === selectedInvoice);
   const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
@@ -2265,7 +2444,7 @@ const Dashboard = () => {
                   <CardContent>
                     <div className="space-y-4">
                       {/* Validation Summary */}
-                      <div className="grid grid-cols-4 gap-4">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="bg-muted rounded-lg p-4">
                           <p className="text-2xl font-bold text-foreground">{validationResults.total}</p>
                           <p className="text-sm text-muted-foreground">Total Records</p>
@@ -2282,6 +2461,32 @@ const Dashboard = () => {
                           <p className="text-2xl font-bold text-warning">{validationResults.warnings}</p>
                           <p className="text-sm text-muted-foreground">Warnings</p>
                         </div>
+                      </div>
+                      
+                      {/* Schedule Matching Summary */}
+                      <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                        <h4 className="font-semibold text-blue-700 dark:text-blue-300 mb-3">Schedule Matching</h4>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div>
+                            <p className="text-xl font-bold text-foreground">{validationResults.invoiceCount}</p>
+                            <p className="text-xs text-muted-foreground">Total Invoices</p>
+                          </div>
+                          <div>
+                            <p className="text-xl font-bold text-foreground">{validationResults.scheduleItemCount}</p>
+                            <p className="text-xs text-muted-foreground">Schedule Items</p>
+                          </div>
+                          <div>
+                            <p className="text-xl font-bold text-green-600">{validationResults.matchedInvoices}</p>
+                            <p className="text-xs text-muted-foreground">Matched Invoices</p>
+                          </div>
+                          <div>
+                            <p className="text-xl font-bold text-orange-600">{validationResults.unmatchedInvoices}</p>
+                            <p className="text-xs text-muted-foreground">Unmatched Invoices</p>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          Matched invoices will be available in Doc Audit. Only audited invoices can be dispatched.
+                        </p>
                       </div>
 
                       {/* Actual Data Table */}
@@ -2446,22 +2651,31 @@ const Dashboard = () => {
               </Button>
             </div>
             
-            {sharedInvoices.length === 0 && (
+            {!scheduleData && (
               <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
                 <p className="text-sm font-medium">
-                  ⚠️ No data uploaded yet. Please go to <strong>Upload Sales Data</strong> to import invoice data first.
+                  ⚠️ No schedule uploaded yet. Please go to <strong>Upload Sales Data</strong> to import both schedule and invoice files first.
                 </p>
               </div>
             )}
             
-            {sharedInvoices.length > 0 && (
+            {scheduleData && invoices.length === 0 && (
+              <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
+                <p className="text-sm font-medium">
+                  ⚠️ No invoices match the uploaded schedule. Please ensure the "Bill To" codes in your invoices match the "Customer Code" in the schedule.
+                </p>
+              </div>
+            )}
+            
+            {scheduleData && invoices.length > 0 && (
               <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <p className="text-sm font-medium mb-2">
-                  📊 Multi-Session Management Active
+                  📊 Schedule-Based Doc Audit
                 </p>
                 <div className="text-xs text-muted-foreground space-y-1">
-                  <p>• Showing available invoices (dispatched invoices auto-removed)</p>
-                  <p>• Any user can audit any uploaded invoice</p>
+                  <p>• Showing invoices that match the uploaded schedule</p>
+                  <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
+                  <p>• Total scheduled items: {scheduleData.items.length}</p>
                   <p>• Current user: <strong>{currentUser}</strong></p>
                   {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 && (
                     <p>• ✅ <strong>{sharedInvoices.filter(inv => inv.dispatchedBy).length}</strong> invoice(s) already dispatched</p>
@@ -2474,18 +2688,18 @@ const Dashboard = () => {
             <Card className="mb-6">
               <CardHeader>
                 <CardTitle>Select Invoice</CardTitle>
-                <CardDescription>Choose an invoice to begin document audit (Showing today's invoices only)</CardDescription>
+                <CardDescription>Choose an invoice to begin document audit (Showing scheduled invoices only)</CardDescription>
               </CardHeader>
               <CardContent>
-                {invoices.length === 1 && invoices[0].id === "No Data" ? (
+                {invoices.length === 0 ? (
                   <div className="p-4 bg-muted rounded-lg text-center">
-                    <p className="text-sm text-muted-foreground">No invoices scheduled for today</p>
+                    <p className="text-sm text-muted-foreground">No invoices with matching schedule found</p>
                   </div>
                 ) : (
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.length} invoice(s) scheduled for {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                        📅 Showing {invoices.length} invoice(s) with matching schedule. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
                       </p>
                     </div>
                 <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
@@ -2495,16 +2709,20 @@ const Dashboard = () => {
                   <SelectContent>
                     {invoices.length === 0 ? (
                       <div className="p-4 text-center text-sm text-muted-foreground">
-                        No invoices scheduled for today
+                        No invoices with matching schedule
                       </div>
                     ) : (
-                      invoices.map(invoice => (
-                        <SelectItem key={invoice.id} value={invoice.id}>
-                          {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
-                            {invoice.uploadedBy && ` [Uploaded by: ${invoice.uploadedBy}]`}
-                            {invoice.auditedBy && ` [Audited by: ${invoice.auditedBy}]`}
-                        </SelectItem>
-                      ))
+                      invoices.map(invoice => {
+                        const scheduleItems = getScheduleForCustomer(invoice.billTo || '');
+                        const totalPlanQty = scheduleItems.reduce((sum, item) => sum + item.plan, 0);
+                        return (
+                          <SelectItem key={invoice.id} value={invoice.id}>
+                            {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
+                            {scheduleItems.length > 0 && ` [Plan: ${totalPlanQty}]`}
+                            {invoice.auditComplete && ' ✓ Audited'}
+                          </SelectItem>
+                        );
+                      })
                     )}
                   </SelectContent>
                 </Select>
@@ -2526,8 +2744,40 @@ const Dashboard = () => {
                         <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
                         <p className="font-semibold">{currentInvoice.totalQty}</p>
                       </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Customer Code</p>
+                        <p className="font-semibold">{currentInvoice.billTo || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Expected BINs</p>
+                        <p className="font-semibold">{currentInvoice.expectedBins}</p>
+                      </div>
                     </div>
-                    <div className="flex gap-2 flex-wrap pt-2 border-t border-border">
+                    
+                    {/* Schedule Info for this invoice */}
+                    {currentInvoice.billTo && getScheduleForCustomer(currentInvoice.billTo).length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <p className="text-xs font-semibold text-muted-foreground mb-2">Scheduled Parts:</p>
+                        <div className="max-h-32 overflow-y-auto">
+                          <div className="space-y-1">
+                            {getScheduleForCustomer(currentInvoice.billTo).slice(0, 5).map((item, idx) => (
+                              <div key={idx} className="flex justify-between text-xs bg-background p-2 rounded">
+                                <span className="font-mono">{item.qadPart}</span>
+                                <span className="text-muted-foreground truncate max-w-[150px]">{item.description}</span>
+                                <span className="font-semibold">Plan: {item.plan}</span>
+                              </div>
+                            ))}
+                            {getScheduleForCustomer(currentInvoice.billTo).length > 5 && (
+                              <p className="text-xs text-muted-foreground">
+                                ...and {getScheduleForCustomer(currentInvoice.billTo).length - 5} more items
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="flex gap-2 flex-wrap pt-2 border-t border-border mt-3">
                       {currentInvoice.uploadedBy && (
                         <Badge variant="outline" className="text-xs">
                           <Upload className="h-3 w-3 mr-1" />
@@ -2986,36 +3236,36 @@ const Dashboard = () => {
               </Button>
             </div>
             
-            {sharedInvoices.length === 0 && (
+            {!scheduleData && (
               <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
                 <p className="text-sm font-medium">
-                  ⚠️ No data uploaded yet. Please go to <strong>Upload Sales Data</strong> to import invoice data first.
+                  ⚠️ No schedule uploaded yet. Please go to <strong>Upload Sales Data</strong> to import both schedule and invoice files first.
                 </p>
               </div>
             )}
             
-            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length === 0 && (
+            {scheduleData && getScheduledDispatchableInvoices().length === 0 && (
               <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <p className="text-sm font-medium mb-2">
-                  📋 No audited invoices available for dispatch.
+                  📋 No scheduled invoices available for dispatch.
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 
-                    ? `✅ All invoices have been dispatched. Upload new data or complete pending audits.`
-                    : `Please complete document audit before dispatch.`
+                    ? `✅ All scheduled invoices have been dispatched. Upload new data or complete pending audits.`
+                    : `Please complete document audit for scheduled invoices before dispatch.`
                   }
                 </p>
               </div>
             )}
             
-            {sharedInvoices.length > 0 && sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy).length > 0 && (
+            {scheduleData && getScheduledDispatchableInvoices().length > 0 && (
               <div className="mb-4 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
                 <p className="text-sm font-medium mb-2">
-                  ✅ Multi-Session Dispatch Available
+                  ✅ Scheduled Dispatch Available
                 </p>
                 <div className="text-xs text-muted-foreground space-y-1">
-                  <p>• Showing audited invoices from all users (excluding dispatched)</p>
-                  <p>• Any user can dispatch any audited invoice</p>
+                  <p>• Showing {getScheduledDispatchableInvoices().length} audited invoice(s) with matching schedule</p>
+                  <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
                   <p>• Current user: <strong>{currentUser}</strong></p>
                 </div>
               </div>
@@ -3108,13 +3358,15 @@ const Dashboard = () => {
                               <SelectValue placeholder="Select an invoice to add" />
                             </SelectTrigger>
                             <SelectContent>
-                              {sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy && inv.id !== "No Data").length > 0 ? (
-                                sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy && inv.id !== "No Data").map(invoice => {
+                              {getScheduledDispatchableInvoices().filter(inv => inv.id !== "No Data").length > 0 ? (
+                                getScheduledDispatchableInvoices().filter(inv => inv.id !== "No Data").map(invoice => {
                                   const currentCustomer = selectedInvoices.length > 0 
                                     ? sharedInvoices.find(inv => inv.id === selectedInvoices[0])?.customer 
                                     : null;
                                   const isDifferentCustomer = currentCustomer && currentCustomer !== invoice.customer;
                                   const isAlreadySelected = selectedInvoices.includes(invoice.id);
+                                  const scheduleItems = getScheduleForCustomer(invoice.billTo || '');
+                                  const totalPlanQty = scheduleItems.reduce((sum, item) => sum + item.plan, 0);
 
                           return (
                                     <SelectItem 
@@ -3137,6 +3389,11 @@ const Dashboard = () => {
                                           <Badge variant="outline" className="text-xs">
                                             Qty: {invoice.totalQty}
                                           </Badge>
+                                          {totalPlanQty > 0 && (
+                                            <Badge variant="secondary" className="text-xs">
+                                              Plan: {totalPlanQty}
+                                            </Badge>
+                                          )}
                                           <Badge variant="default" className="text-xs">
                                       <CheckCircle2 className="h-3 w-3 mr-1" />
                                             Audited
@@ -3148,7 +3405,7 @@ const Dashboard = () => {
                                 })
                               ) : (
                                 <div className="p-4 text-center text-sm text-muted-foreground">
-                                  No audited invoices available
+                                  No scheduled audited invoices available for dispatch
                                 </div>
                               )}
                             </SelectContent>
