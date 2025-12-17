@@ -75,6 +75,7 @@ interface InvoiceData {
   validatedBarcodes?: ValidatedBarcodePair[];
   billTo?: string; // Customer code for matching with schedule
   scheduledDate?: Date; // When this invoice is scheduled for dispatch
+  shift?: 'A' | 'B'; // Shift A: 8 AM - 8 PM, Shift B: 8 PM - 8 AM
 }
 
 const Dashboard = () => {
@@ -122,6 +123,22 @@ const Dashboard = () => {
   const [scannerConnected, setScannerConnected] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
+  const [selectedShift, setSelectedShift] = useState<'A' | 'B' | 'all'>('all');
+  
+  // Shift helper functions
+  const getCurrentShift = (): 'A' | 'B' => {
+    const now = new Date();
+    const hours = now.getHours();
+    // Shift A: 8 AM (8) to 8 PM (20)
+    // Shift B: 8 PM (20) to 8 AM (8)
+    return (hours >= 8 && hours < 20) ? 'A' : 'B';
+  };
+  
+  const getShiftLabel = (shift: 'A' | 'B'): string => {
+    return shift === 'A' ? 'Shift A (8 AM - 8 PM)' : 'Shift B (8 PM - 8 AM)';
+  };
+  
+  const currentShift = getCurrentShift();
   
   
   const [validatedBins, setValidatedBins] = useState<Array<{
@@ -598,6 +615,8 @@ const Dashboard = () => {
             if (!invoiceMap.has(invoiceNum.toString())) {
               // Randomly assign bin capacity: 50 or 80
               const binCapacity = Math.random() < 0.5 ? 50 : 80;
+              // Alternate shift assignment: A, B, A, B...
+              const shiftAssignment: 'A' | 'B' = invoiceMap.size % 2 === 0 ? 'A' : 'B';
               
               invoiceMap.set(invoiceNum.toString(), {
                 id: invoiceNum.toString(),
@@ -610,7 +629,8 @@ const Dashboard = () => {
                 binsLoaded: 0,
                 auditComplete: false,
                 items: [],
-                billTo: billTo.toString() // Customer code for matching with schedule
+                billTo: billTo.toString(), // Customer code for matching with schedule
+                shift: shiftAssignment // Assign shift A or B alternately
               });
             }
             
@@ -726,7 +746,6 @@ const Dashboard = () => {
                 const qadPart = row['QAD part'] || row['QAD Part'] || row['QADPart'] || '';
                 const description = row['Description'] || row['description'] || '';
                 const snp = parseInt(row['SNP'] || row['snp'] || '0') || 0;
-                const plan = parseInt(row['PLAN'] || row['Plan'] || row['plan'] || '0') || 0;
                 const bin = parseInt(row['Bin'] || row['bin'] || '0') || 0;
                 
                 // Only add items with valid customer code
@@ -737,7 +756,6 @@ const Dashboard = () => {
                     qadPart: qadPart.toString(),
                     description: description.toString(),
                     snp,
-                    plan,
                     bin,
                     sheetName
                   });
@@ -1110,9 +1128,13 @@ const Dashboard = () => {
 
   // Get invoices with schedule for Doc Audit - show only scheduled non-dispatched invoices
   const invoicesWithSchedule = getInvoicesWithSchedule();
-  const invoices = invoicesWithSchedule.filter(inv => 
-    !inv.dispatchedBy // Hide dispatched invoices
-  );
+  const invoices = invoicesWithSchedule.filter(inv => {
+    // Hide dispatched invoices
+    if (inv.dispatchedBy) return false;
+    // Filter by selected shift
+    if (selectedShift !== 'all' && inv.shift !== selectedShift) return false;
+    return true;
+  });
   
   // Group invoices by scheduled date for display
   const groupedByDate = invoices.reduce((acc, inv) => {
@@ -2669,13 +2691,20 @@ const Dashboard = () => {
             
             {scheduleData && invoices.length > 0 && (
               <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <p className="text-sm font-medium mb-2">
-                  📊 Schedule-Based Doc Audit
-                </p>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
+                  <p className="text-sm font-medium">
+                    📊 Schedule-Based Doc Audit
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Current Shift:</span>
+                    <Badge variant={currentShift === 'A' ? 'default' : 'secondary'} className="text-xs">
+                      {getShiftLabel(currentShift)}
+                    </Badge>
+                  </div>
+                </div>
                 <div className="text-xs text-muted-foreground space-y-1">
                   <p>• Showing invoices that match the uploaded schedule</p>
                   <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
-                  <p>• Total scheduled items: {scheduleData.items.length}</p>
                   <p>• Current user: <strong>{currentUser}</strong></p>
                   {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 && (
                     <p>• ✅ <strong>{sharedInvoices.filter(inv => inv.dispatchedBy).length}</strong> invoice(s) already dispatched</p>
@@ -2691,6 +2720,37 @@ const Dashboard = () => {
                 <CardDescription>Choose an invoice to begin document audit (Showing scheduled invoices only)</CardDescription>
               </CardHeader>
               <CardContent>
+                {/* Shift Filter */}
+                <div className="mb-4">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Filter by Shift:</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant={selectedShift === 'all' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setSelectedShift('all')}
+                      className="text-xs"
+                    >
+                      All Shifts
+                    </Button>
+                    <Button
+                      variant={selectedShift === 'A' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setSelectedShift('A')}
+                      className="text-xs"
+                    >
+                      🌅 Shift A (8 AM - 8 PM)
+                    </Button>
+                    <Button
+                      variant={selectedShift === 'B' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setSelectedShift('B')}
+                      className="text-xs"
+                    >
+                      🌙 Shift B (8 PM - 8 AM)
+                    </Button>
+                  </div>
+                </div>
+                
                 {invoices.length === 0 ? (
                   <div className="p-4 bg-muted rounded-lg text-center">
                     <p className="text-sm text-muted-foreground">No invoices with matching schedule found</p>
@@ -2699,7 +2759,7 @@ const Dashboard = () => {
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.length} invoice(s) with matching schedule. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
+                        📅 Showing {invoices.length} invoice(s) for {selectedShift === 'all' ? 'all shifts' : getShiftLabel(selectedShift)}. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
                       </p>
                     </div>
                 <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
@@ -2714,11 +2774,10 @@ const Dashboard = () => {
                     ) : (
                       invoices.map(invoice => {
                         const scheduleItems = getScheduleForCustomer(invoice.billTo || '');
-                        const totalPlanQty = scheduleItems.reduce((sum, item) => sum + item.plan, 0);
                         return (
                           <SelectItem key={invoice.id} value={invoice.id}>
-                            {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
-                            {scheduleItems.length > 0 && ` [Plan: ${totalPlanQty}]`}
+                            {invoice.shift === 'A' ? '🌅' : '🌙'} {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
+                            {invoice.shift && ` [Shift ${invoice.shift}]`}
                             {invoice.auditComplete && ' ✓ Audited'}
                           </SelectItem>
                         );
@@ -2752,30 +2811,13 @@ const Dashboard = () => {
                         <p className="text-xs text-muted-foreground mb-1">Expected BINs</p>
                         <p className="font-semibold">{currentInvoice.expectedBins}</p>
                       </div>
-                    </div>
-                    
-                    {/* Schedule Info for this invoice */}
-                    {currentInvoice.billTo && getScheduleForCustomer(currentInvoice.billTo).length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-border">
-                        <p className="text-xs font-semibold text-muted-foreground mb-2">Scheduled Parts:</p>
-                        <div className="max-h-32 overflow-y-auto">
-                          <div className="space-y-1">
-                            {getScheduleForCustomer(currentInvoice.billTo).slice(0, 5).map((item, idx) => (
-                              <div key={idx} className="flex justify-between text-xs bg-background p-2 rounded">
-                                <span className="font-mono">{item.qadPart}</span>
-                                <span className="text-muted-foreground truncate max-w-[150px]">{item.description}</span>
-                                <span className="font-semibold">Plan: {item.plan}</span>
-                              </div>
-                            ))}
-                            {getScheduleForCustomer(currentInvoice.billTo).length > 5 && (
-                              <p className="text-xs text-muted-foreground">
-                                ...and {getScheduleForCustomer(currentInvoice.billTo).length - 5} more items
-                              </p>
-                            )}
-                          </div>
-                        </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Shift</p>
+                        <p className="font-semibold">
+                          {currentInvoice.shift === 'A' ? '🌅 Shift A (8 AM - 8 PM)' : '🌙 Shift B (8 PM - 8 AM)'}
+                        </p>
                       </div>
-                    )}
+                    </div>
                     
                     <div className="flex gap-2 flex-wrap pt-2 border-t border-border mt-3">
                       {currentInvoice.uploadedBy && (
@@ -3366,7 +3408,6 @@ const Dashboard = () => {
                                   const isDifferentCustomer = currentCustomer && currentCustomer !== invoice.customer;
                                   const isAlreadySelected = selectedInvoices.includes(invoice.id);
                                   const scheduleItems = getScheduleForCustomer(invoice.billTo || '');
-                                  const totalPlanQty = scheduleItems.reduce((sum, item) => sum + item.plan, 0);
 
                           return (
                                     <SelectItem 
@@ -3389,9 +3430,9 @@ const Dashboard = () => {
                                           <Badge variant="outline" className="text-xs">
                                             Qty: {invoice.totalQty}
                                           </Badge>
-                                          {totalPlanQty > 0 && (
+                                          {scheduleItems.length > 0 && (
                                             <Badge variant="secondary" className="text-xs">
-                                              Plan: {totalPlanQty}
+                                              {scheduleItems.length} items
                                             </Badge>
                                           )}
                                           <Badge variant="default" className="text-xs">

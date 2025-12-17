@@ -7,7 +7,6 @@ export interface ScheduleItem {
   qadPart: string;
   description: string;
   snp: number;
-  plan: number;
   bin: number;
   sheetName: string;
 }
@@ -44,6 +43,7 @@ export interface InvoiceData {
   // New fields for schedule matching
   billTo?: string; // Customer code from invoice for matching with schedule
   scheduledDate?: Date; // When this invoice is scheduled for dispatch
+  shift?: 'A' | 'B'; // Shift A: 8 AM - 8 PM, Shift B: 8 PM - 8 AM
 }
 
 export interface LogEntry {
@@ -133,7 +133,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         items: [],
         uploadedBy: 'Admin',
         uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1223' // BSL Manesar customer code
+        billTo: '1223', // BSL Manesar customer code
+        shift: 'A' // Morning shift
       },
       {
         id: '2510706712',
@@ -148,7 +149,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         items: [],
         uploadedBy: 'Admin',
         uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1222' // BSL Gurgaon customer code
+        billTo: '1222', // BSL Gurgaon customer code
+        shift: 'B' // Night shift
       },
       // Oct 14 - 2 invoices
       {
@@ -164,7 +166,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         items: [],
         uploadedBy: 'Admin',
         uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1228' // KML Manesar customer code
+        billTo: '1228', // KML Manesar customer code
+        shift: 'A' // Morning shift
       },
       {
         id: '2510706715',
@@ -179,7 +182,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         items: [],
         uploadedBy: 'Admin',
         uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1227' // KML Narshinghpur customer code
+        billTo: '1227', // KML Narshinghpur customer code
+        shift: 'B' // Night shift
       }
     ];
   });
