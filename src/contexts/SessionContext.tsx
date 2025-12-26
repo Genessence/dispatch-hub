@@ -9,6 +9,9 @@ export interface ScheduleItem {
   snp: number;
   bin: number;
   sheetName: string;
+  deliveryDate?: Date; // Extracted from schedule file columns like "Delivery Date & Time" or "Supply Date"
+  deliveryTime?: string; // Extracted from schedule file (will be converted to shift A/B)
+  plant?: string; // Plant code/name from schedule (if available)
 }
 
 export interface ScheduleData {
@@ -44,6 +47,11 @@ export interface InvoiceData {
   billTo?: string; // Customer code from invoice for matching with schedule
   scheduledDate?: Date; // When this invoice is scheduled for dispatch
   shift?: 'A' | 'B'; // Shift A: 8 AM - 8 PM, Shift B: 8 PM - 8 AM
+  // Doc audit selection fields
+  selectedDeliveryShift?: 'A' | 'B'; // User-selected shift for this invoice during doc audit
+  selectedPlant?: string; // User-selected plant for this invoice during doc audit
+  deliveryDate?: Date; // Delivery date from schedule
+  plant?: string; // Plant from invoice data (extracted during upload)
 }
 
 export interface LogEntry {

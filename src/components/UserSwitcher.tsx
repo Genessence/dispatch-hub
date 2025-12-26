@@ -7,7 +7,7 @@ const UserSwitcher = () => {
   const { currentUser, setCurrentUser } = useSession();
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const users = ["User 1", "User 2", "User 3", "Admin"];
+  const users = ["User 1", "User 2", "User 3", "User 4","User 5", "Admin"];
 
   const handleUserSwitch = (user: string) => {
     setCurrentUser(user);

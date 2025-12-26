@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,12 +32,13 @@ import {
   Users,
   ArrowLeft,
   Calendar as CalendarIcon,
+  MapPin,
   X
 } from "lucide-react";
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
-import type { LogEntry, ScheduleItem } from "@/contexts/SessionContext";
+import type { LogEntry, ScheduleItem, InvoiceData } from "@/contexts/SessionContext";
 import { QRCodeSVG } from "qrcode.react";
 import jsPDF from "jspdf";
 
@@ -123,6 +124,14 @@ const Dashboard = () => {
   const [scannerConnected, setScannerConnected] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
+  
+  // Doc Audit selection states (customer code, delivery date, plant)
+  const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>("");
+  const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
+  const [selectedPlant, setSelectedPlant] = useState<string>("");
+  
+  // Cache generated dummy invoices per selection combination to keep IDs stable
+  const dummyInvoicesCache = useRef<Record<string, InvoiceData[]>>({});
   
   // Shift helper functions
   const getCurrentShift = (): 'A' | 'B' => {
@@ -660,6 +669,11 @@ const Dashboard = () => {
             const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || '0');
             // Extract Bill To for customer code matching with schedule
             const billTo = rowObj['Bill To'] || rowObj['BillTo'] || rowObj['bill to'] || rowObj['Bill-To'] || '';
+            // Extract Plant from invoice data (where invoice is being delivered to)
+            const plant = rowObj['Ship To'] || rowObj['ShipTo'] || rowObj['Ship-To'] || 
+                         rowObj['Plant'] || rowObj['plant'] || 
+                         rowObj['Delivery Location'] || rowObj['DeliveryLocation'] || 
+                         rowObj['Destination'] || rowObj['destination'] || '';
             
             // Always use today's date for uploaded invoices so they show in Doc Audit
             const invoiceDate = new Date();
@@ -682,7 +696,8 @@ const Dashboard = () => {
                 auditComplete: false,
                 items: [],
                 billTo: billTo.toString(), // Customer code for matching with schedule
-                shift: shiftAssignment // Assign shift A or B alternately
+                shift: shiftAssignment, // Assign shift A or B alternately
+                plant: plant ? plant.toString() : undefined // Plant where invoice is being delivered to
               });
             }
             
@@ -791,6 +806,41 @@ const Dashboard = () => {
               
               console.log(`Parsing sheet: ${sheetName}, rows: ${jsonData.length}`);
               
+              // Helper function to convert time to shift
+              const timeToShift = (timeStr: string): 'A' | 'B' | undefined => {
+                if (!timeStr) return undefined;
+                // Try to parse time string (could be "10:30 AM", "14:30", "8:00 PM", etc.)
+                const timeMatch = timeStr.toString().match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+                if (!timeMatch) return undefined;
+                
+                let hours = parseInt(timeMatch[1]);
+                const minutes = parseInt(timeMatch[2]);
+                const ampm = timeMatch[3]?.toUpperCase();
+                
+                // Convert to 24-hour format
+                if (ampm === 'PM' && hours !== 12) hours += 12;
+                if (ampm === 'AM' && hours === 12) hours = 0;
+                
+                // Shift A: 8 AM - 8 PM (08:00 - 20:00)
+                // Shift B: 8 PM - 8 AM (20:00 - 08:00)
+                if (hours >= 8 && hours < 20) return 'A';
+                return 'B';
+              };
+              
+              // Helper function to parse date from various formats
+              const parseDate = (dateStr: any): Date | undefined => {
+                if (!dateStr) return undefined;
+                // If it's already a Date object
+                if (dateStr instanceof Date) return dateStr;
+                // If it's an Excel serial date number
+                if (typeof dateStr === 'number') {
+                  return excelDateToJSDate(dateStr);
+                }
+                // Try parsing as string date
+                const parsed = new Date(dateStr);
+                return isNaN(parsed.getTime()) ? undefined : parsed;
+              };
+              
               // Parse each row in the sheet
               jsonData.forEach((row: any) => {
                 const customerCode = row['Customer Code'] || row['CustomerCode'] || row['customer code'] || '';
@@ -799,6 +849,25 @@ const Dashboard = () => {
                 const description = row['Description'] || row['description'] || '';
                 const snp = parseInt(row['SNP'] || row['snp'] || '0') || 0;
                 const bin = parseInt(row['Bin'] || row['bin'] || '0') || 0;
+                
+                // Extract delivery date/time from various column name variations
+                const deliveryDateTime = row['Delivery Date & Time'] || row['Delivery Date and Time'] || 
+                                       row['DeliveryDateTime'] || row['Delivery Date'] || 
+                                       row['Supply Date'] || row['SupplyDate'] || '';
+                const supplyTime = row['Supply Time'] || row['SupplyTime'] || row['Delivery Time'] || 
+                                 row['DeliveryTime'] || '';
+                
+                // Parse delivery date
+                const deliveryDate = parseDate(deliveryDateTime);
+                
+                // Extract delivery time (from combined datetime or separate time field)
+                const timeStr = supplyTime || deliveryDateTime;
+                const deliveryShift = timeToShift(timeStr);
+                
+                // Extract plant if available in schedule
+                const plant = row['Plant'] || row['plant'] || row['Plant Code'] || 
+                            row['PlantCode'] || row['Delivery Location'] || 
+                            row['DeliveryLocation'] || '';
                 
                 // Only add items with valid customer code
                 if (customerCode) {
@@ -809,7 +878,10 @@ const Dashboard = () => {
                     description: description.toString(),
                     snp,
                     bin,
-                    sheetName
+                    sheetName,
+                    deliveryDate,
+                    deliveryTime: timeStr ? timeStr.toString() : undefined,
+                    plant: plant ? plant.toString() : undefined
                   });
                 }
               });
@@ -1178,15 +1250,295 @@ const Dashboard = () => {
            date.getFullYear() === today.getFullYear();
   };
 
-  // Get invoices with schedule for Doc Audit - show only scheduled non-dispatched invoices for current shift
+  // Get available customer codes from invoices with schedule
+  const availableCustomerCodes = useMemo(() => {
+    const codes = new Set<string>();
+    invoicesWithSchedule.forEach(inv => {
+      if (inv.billTo) codes.add(inv.billTo);
+    });
+    // If no codes found, generate dummy customer codes
+    if (codes.size === 0 && scheduleData) {
+      return Array.from({ length: 10 }, (_, i) => `CUST${String(i + 1).padStart(3, '0')}`);
+    }
+    return Array.from(codes).sort().slice(0, 10); // Limit to 10 codes
+  }, [invoicesWithSchedule, scheduleData]);
+
+  // Dummy data generator for delivery dates and plants
+  const generateDummyData = useMemo(() => {
+    // Generate base dates: Dec 27, 2025 to Jan 10, 2026 (15 days)
+    const baseDate = new Date(2025, 11, 27); // December 27, 2025 (month is 0-indexed)
+    const allDates: Date[] = [];
+    for (let i = 0; i < 15; i++) {
+      const date = new Date(baseDate);
+      date.setDate(baseDate.getDate() + i);
+      allDates.push(date);
+    }
+
+    // Dummy plant names
+    const allPlants = [
+      "Gurgaon Plant",
+      "Manesar Plant",
+      "Noida Plant",
+      "Faridabad Plant",
+      "Delhi Plant",
+      "Pune Plant",
+      "Mumbai Plant",
+      "Chennai Plant",
+      "Bangalore Plant",
+      "Hyderabad Plant"
+    ];
+
+    // Generate dummy data for up to 10 customer codes
+    const dummyDataMap: Record<string, { dates: Date[], plants: string[] }> = {};
+    
+    // Use available customer codes or create dummy ones
+    const customerCodes = availableCustomerCodes.length > 0 
+      ? availableCustomerCodes.slice(0, 10)
+      : Array.from({ length: 10 }, (_, i) => `CUST${String(i + 1).padStart(3, '0')}`);
+
+    customerCodes.forEach((code) => {
+      // Generate 2-5 random dates for each customer code
+      const numDates = 2 + Math.floor(Math.random() * 4); // 2-5 dates
+      const shuffledDates = [...allDates].sort(() => Math.random() - 0.5);
+      const selectedDates = shuffledDates.slice(0, numDates).sort((a, b) => a.getTime() - b.getTime());
+
+      // Generate 2-5 random plants for each customer code
+      const numPlants = 2 + Math.floor(Math.random() * 4); // 2-5 plants
+      const shuffledPlants = [...allPlants].sort(() => Math.random() - 0.5);
+      const selectedPlants = shuffledPlants.slice(0, numPlants);
+
+      dummyDataMap[code] = {
+        dates: selectedDates,
+        plants: selectedPlants
+      };
+    });
+
+    return dummyDataMap;
+  }, [availableCustomerCodes]);
+
+  // Get available delivery dates for selected customer code
+  const availableDeliveryDates = useMemo(() => {
+    if (!selectedCustomerCode) return [];
+    
+    const dates = new Set<string>();
+    
+    // First, try to get dates from schedule data
+    if (scheduleData) {
+      const scheduleItems = scheduleData.items.filter(
+        item => String(item.customerCode) === String(selectedCustomerCode)
+      );
+      scheduleItems.forEach(item => {
+        if (item.deliveryDate) {
+          dates.add(item.deliveryDate.toISOString().split('T')[0]); // Format as YYYY-MM-DD
+        }
+      });
+    }
+    
+    // Always add dummy data (2-5 dates per customer code)
+    if (generateDummyData[selectedCustomerCode]) {
+      generateDummyData[selectedCustomerCode].dates.forEach(date => {
+        dates.add(date.toISOString().split('T')[0]);
+      });
+    } else {
+      // Generate dummy data on the fly if not in map
+      const baseDate = new Date(2025, 11, 27); // December 27, 2025
+      const numDates = 2 + Math.floor(Math.random() * 4); // 2-5 dates
+      const allDates: Date[] = [];
+      for (let i = 0; i < 15; i++) {
+        const date = new Date(baseDate);
+        date.setDate(baseDate.getDate() + i);
+        allDates.push(date);
+      }
+      const shuffledDates = [...allDates].sort(() => Math.random() - 0.5);
+      shuffledDates.slice(0, numDates).forEach(date => {
+        dates.add(date.toISOString().split('T')[0]);
+      });
+    }
+    
+    return Array.from(dates).sort();
+  }, [selectedCustomerCode, scheduleData, generateDummyData]);
+
+  // Get available plants for selected customer code
+  const availablePlants = useMemo(() => {
+    if (!selectedCustomerCode) return [];
+    const plants = new Set<string>();
+    
+    // Get plants from invoices
+    invoicesWithSchedule.forEach(inv => {
+      if (inv.billTo === selectedCustomerCode && inv.plant) {
+        plants.add(inv.plant);
+      }
+    });
+    
+    // Get plants from schedule items
+    if (scheduleData) {
+      const scheduleItems = scheduleData.items.filter(
+        item => String(item.customerCode) === String(selectedCustomerCode)
+      );
+      scheduleItems.forEach(item => {
+        if (item.plant) plants.add(item.plant);
+      });
+    }
+    
+    // Always add dummy data (2-5 plants per customer code)
+    if (generateDummyData[selectedCustomerCode]) {
+      generateDummyData[selectedCustomerCode].plants.forEach(plant => {
+        plants.add(plant);
+      });
+    } else {
+      // Generate dummy data on the fly if not in map
+      const allPlants = [
+        "Gurgaon Plant",
+        "Manesar Plant",
+        "Noida Plant",
+        "Faridabad Plant",
+        "Delhi Plant",
+        "Pune Plant",
+        "Mumbai Plant",
+        "Chennai Plant",
+        "Bangalore Plant",
+        "Hyderabad Plant"
+      ];
+      const numPlants = 2 + Math.floor(Math.random() * 4); // 2-5 plants
+      const shuffledPlants = [...allPlants].sort(() => Math.random() - 0.5);
+      shuffledPlants.slice(0, numPlants).forEach(plant => {
+        plants.add(plant);
+      });
+    }
+    
+    return Array.from(plants).sort();
+  }, [selectedCustomerCode, invoicesWithSchedule, scheduleData, generateDummyData]);
+
+  // Generate dummy invoices based on selections - cached to keep IDs stable
+  const generateDummyInvoices = useMemo(() => {
+    if (!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant) return [];
+    
+    // Create a cache key from the selections (use date string without time to avoid timezone issues)
+    const selectionKey = `${selectedCustomerCode}-${selectedDeliveryDate.toISOString().split('T')[0]}-${selectedPlant}`;
+    
+    // Check if we already have cached invoices for this combination
+    if (dummyInvoicesCache.current[selectionKey]) {
+      return dummyInvoicesCache.current[selectionKey];
+    }
+    
+    // Generate deterministic number of invoices based on selections (not random)
+    // Use a simple hash of the selections to get consistent results
+    let hash = 0;
+    for (let i = 0; i < selectionKey.length; i++) {
+      hash = ((hash << 5) - hash) + selectionKey.charCodeAt(i);
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    // Use hash to generate consistent number between 2-5
+    const numInvoices = 2 + (Math.abs(hash) % 4); // 2-5 invoices, but consistent for same inputs
+    const dummyInvoices: InvoiceData[] = [];
+    
+    const customerNames: Record<string, string> = {
+      '1223': 'BHARAT SEATS LIMITED',
+      '1222': 'BHARAT SEATS LIMITED',
+      '1228': 'KRISHNA MARUTI LTD SEATING',
+      'CUST001': 'Customer 001',
+      'CUST002': 'Customer 002',
+      'CUST003': 'Customer 003',
+      'CUST004': 'Customer 004',
+      'CUST005': 'Customer 005',
+      'CUST006': 'Customer 006',
+      'CUST007': 'Customer 007',
+      'CUST008': 'Customer 008',
+      'CUST009': 'Customer 009',
+      'CUST010': 'Customer 010',
+    };
+    
+    const baseInvoiceId = parseInt(selectedCustomerCode.replace(/\D/g, '')) || 1000;
+    
+    // Also use hash for consistent quantity and bin capacity
+    for (let i = 0; i < numInvoices; i++) {
+      const invoiceHash = hash + i; // Different hash for each invoice
+      const invoiceId = `${baseInvoiceId}${String(i + 1).padStart(3, '0')}`;
+      const totalQty = 50 + (Math.abs(invoiceHash) % 200); // 50-250 quantity, consistent
+      const binCapacity = [50, 80, 100][Math.abs(invoiceHash) % 3]; // Consistent bin capacity
+      const expectedBins = Math.ceil(totalQty / binCapacity);
+      
+      dummyInvoices.push({
+        id: invoiceId,
+        customer: customerNames[selectedCustomerCode] || `Customer ${selectedCustomerCode}`,
+        invoiceDate: new Date(selectedDeliveryDate),
+        totalQty,
+        binCapacity,
+        expectedBins,
+        scannedBins: 0,
+        binsLoaded: 0,
+        auditComplete: false,
+        items: [],
+        billTo: selectedCustomerCode,
+        scheduledDate: selectedDeliveryDate,
+        shift: currentShift,
+        plant: selectedPlant,
+        deliveryDate: selectedDeliveryDate,
+        uploadedBy: 'System',
+        uploadedAt: new Date(),
+      });
+    }
+    
+    // Cache the generated invoices for this combination to keep IDs stable
+    dummyInvoicesCache.current[selectionKey] = dummyInvoices;
+    
+    return dummyInvoices;
+  }, [selectedCustomerCode, selectedDeliveryDate, selectedPlant, currentShift]);
+
+  // Get invoices with schedule for Doc Audit - filtered by selections
   // Reuse invoicesWithSchedule declared above for KPIs
-  const invoices = invoicesWithSchedule.filter(inv => {
-    // Hide dispatched invoices
-    if (inv.dispatchedBy) return false;
-    // Auto-filter by current shift only
-    if (inv.shift !== currentShift) return false;
-    return true;
-  });
+  const invoices = useMemo(() => {
+    // First, filter by customer code and delivery date (these don't change invoice list)
+    let filtered = invoicesWithSchedule.filter(inv => {
+      // Hide dispatched invoices
+      if (inv.dispatchedBy) return false;
+      // Auto-filter by current shift only
+      if (inv.shift !== currentShift) return false;
+      
+      // Filter by customer code if selected
+      if (selectedCustomerCode && inv.billTo !== selectedCustomerCode) return false;
+      
+      // Filter by delivery date if selected
+      if (selectedDeliveryDate && scheduleData) {
+        const scheduleItems = scheduleData.items.filter(
+          item => String(item.customerCode) === String(selectedCustomerCode || inv.billTo)
+        );
+        const hasMatchingDate = scheduleItems.some(item => {
+          if (!item.deliveryDate) return false;
+          const itemDate = item.deliveryDate.toISOString().split('T')[0];
+          const selectedDate = selectedDeliveryDate.toISOString().split('T')[0];
+          return itemDate === selectedDate;
+        });
+        if (!hasMatchingDate) return false;
+      }
+      
+      return true;
+    });
+    
+    // Store invoices before plant filtering to keep them stable
+    const invoicesBeforePlantFilter = filtered;
+    
+    // Now filter by plant if selected (but keep the same invoice IDs)
+    if (selectedPlant) {
+      filtered = filtered.filter(inv => inv.plant === selectedPlant);
+    }
+    
+    // Only add dummy invoices if we have NO real invoices matching customer code + delivery date
+    // This prevents invoice IDs from changing when plant is selected
+    if (selectedCustomerCode && selectedDeliveryDate && selectedPlant) {
+      if (invoicesBeforePlantFilter.length === 0) {
+        // No real invoices match customer code + delivery date - use dummy invoices
+        return generateDummyInvoices;
+      } else {
+        // We have real invoices matching customer code + delivery date
+        // Return filtered list (by plant if selected), but don't add dummy invoices
+        // This keeps invoice IDs stable even when plant filter changes
+        return filtered;
+      }
+    }
+    
+    return filtered;
+  }, [invoicesWithSchedule, currentShift, selectedCustomerCode, selectedPlant, selectedDeliveryDate, scheduleData, generateDummyInvoices]);
   
   // Group invoices by scheduled date for display
   const groupedByDate = invoices.reduce((acc, inv) => {
@@ -1201,7 +1553,26 @@ const Dashboard = () => {
   }, {} as Record<string, typeof invoices>);
 
   const currentInvoice = invoices.find(inv => inv.id === selectedInvoice);
-  const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
+  // Get invoice from sharedInvoices for accurate scannedBins count (most up-to-date)
+  const currentInvoiceFromShared = sharedInvoices.find(inv => inv.id === selectedInvoice);
+  // Use sharedInvoices version for accurate scanning progress - prefer sharedInvoices as it has latest scannedBins
+  const invoiceForProgress = currentInvoiceFromShared || currentInvoice;
+  const invoiceForDisplay = currentInvoiceFromShared || currentInvoice; // Use sharedInvoices version for display
+  const progress = invoiceForDisplay ? (invoiceForDisplay.scannedBins / invoiceForDisplay.expectedBins) * 100 : 0;
+
+  // Add dummy invoices to sharedInvoices so they can be updated during scanning
+  useEffect(() => {
+    if (generateDummyInvoices.length > 0) {
+      // Check which dummy invoices are not yet in sharedInvoices
+      const existingIds = new Set(sharedInvoices.map(inv => inv.id));
+      const newDummyInvoices = generateDummyInvoices.filter(inv => !existingIds.has(inv.id));
+      
+      if (newDummyInvoices.length > 0) {
+        // Add dummy invoices to sharedInvoices so updateInvoiceAudit can find them
+        addInvoices(newDummyInvoices, 'System');
+      }
+    }
+  }, [generateDummyInvoices, sharedInvoices, addInvoices]);
 
   // Clear validated bins when invoice selection changes
   useEffect(() => {
@@ -1324,12 +1695,16 @@ const Dashboard = () => {
         autolivBarcode: autolivScan.rawValue
       };
       
+      // Get invoice from sharedInvoices for accurate state (prefer sharedInvoices, fallback to invoices array)
+      const invoiceInSharedState = sharedInvoices.find(inv => inv.id === selectedInvoice);
+      const invoiceForScanning = invoiceInSharedState || currentInvoice;
+      
       // Check for duplicate scan - check both local validatedBins and invoice's validatedBarcodes
       let isDuplicate = false;
       
-      // Check in current invoice's validated barcodes
-      if (currentInvoice?.validatedBarcodes) {
-        const existingInInvoice = currentInvoice.validatedBarcodes.find(
+      // Check in current invoice's validated barcodes (use sharedInvoices version for accuracy)
+      if (invoiceForScanning?.validatedBarcodes) {
+        const existingInInvoice = invoiceForScanning.validatedBarcodes.find(
           pair => pair.customerBarcode === customerScan.rawValue.trim() || 
                   pair.autolivBarcode === autolivScan.rawValue.trim()
         );
@@ -1339,9 +1714,13 @@ const Dashboard = () => {
       }
       
       // Update the current invoice's scanned bins count and check if this is the last bin
-      const newScannedCount = currentInvoice ? currentInvoice.scannedBins + 1 : 0;
-      const isComplete = currentInvoice ? newScannedCount >= currentInvoice.expectedBins : false;
-      const expectedTotal = currentInvoice?.totalQty || 0;
+      // ALWAYS use invoiceInSharedState (from sharedInvoices) for accurate scannedBins count
+      // This ensures we're incrementing from the correct base value
+      const baseScannedBins = invoiceInSharedState?.scannedBins ?? invoiceForScanning?.scannedBins ?? 0;
+      const expectedBins = invoiceInSharedState?.expectedBins ?? invoiceForScanning?.expectedBins ?? 0;
+      const newScannedCount = baseScannedBins + 1;
+      const isComplete = newScannedCount >= expectedBins;
+      const expectedTotal = invoiceInSharedState?.totalQty ?? invoiceForScanning?.totalQty ?? 0;
       
       // Calculate what the total would be after adding this bin
       const currentTotalBeforeNewBin = validatedBins.reduce((sum, bin) => sum + bin.qty, 0);
@@ -1405,23 +1784,47 @@ const Dashboard = () => {
       }
       
       // Update the current invoice's scanned bins count in shared session (only if not duplicate)
-      if (currentInvoice) {
-        updateInvoiceAudit(currentInvoice.id, {
-                scannedBins: newScannedCount,
-                auditComplete: isComplete,
-                auditDate: isComplete ? new Date() : currentInvoice.auditDate,
-                validatedBarcodes: [
-                  ...(currentInvoice.validatedBarcodes || []), 
-                  { customerBarcode: customerScan.rawValue, autolivBarcode: autolivScan.rawValue }
-                ]
-              }, currentUser);
+      // Use invoiceForScanning which prefers sharedInvoices version
+      if (invoiceForScanning) {
+        // If invoice is not in sharedInvoices yet, add it first (for dummy invoices)
+        if (!invoiceInSharedState && currentInvoice) {
+          addInvoices([currentInvoice], 'System');
+          // After adding, use the currentInvoice directly since it will be in sharedInvoices after state update
+          updateInvoiceAudit(currentInvoice.id, {
+            scannedBins: newScannedCount,
+            auditComplete: isComplete,
+            auditDate: isComplete ? new Date() : currentInvoice.auditDate,
+            validatedBarcodes: [
+              ...(currentInvoice.validatedBarcodes || []), 
+              { customerBarcode: customerScan.rawValue, autolivBarcode: autolivScan.rawValue }
+            ]
+          }, currentUser);
+        } else {
+          // Invoice is already in sharedInvoices, use the one from sharedInvoices for accurate state
+          const invoiceToUpdate = invoiceInSharedState || invoiceForScanning;
+          updateInvoiceAudit(invoiceToUpdate.id, {
+            scannedBins: newScannedCount,
+            auditComplete: isComplete,
+            auditDate: isComplete ? new Date() : invoiceToUpdate.auditDate,
+            validatedBarcodes: [
+              ...(invoiceToUpdate.validatedBarcodes || []), 
+              { customerBarcode: customerScan.rawValue, autolivBarcode: autolivScan.rawValue }
+            ]
+          }, currentUser);
+        }
         
         if (isComplete) {
           const finalTotal = currentTotalBeforeNewBin + finalQuantity;
           toast.success(`🎉 Invoice audit completed by ${currentUser}!`, {
-            description: `All ${currentInvoice.expectedBins} items scanned. Total: ${finalTotal}/${expectedTotal}`
+            description: `All ${invoiceForScanning.expectedBins} items scanned. Total: ${finalTotal}/${expectedTotal}`
           });
         }
+      } else {
+        // If invoice not found, show error
+        toast.error("⚠️ Invoice not found!", {
+          description: "The selected invoice could not be found. Please select an invoice again.",
+          duration: 4000,
+        });
       }
       
       toast.success("✅ Barcodes matched! Item added to list.", {
@@ -2742,6 +3145,10 @@ const Dashboard = () => {
                   setCustomerScan(null);
                   setAutolivScan(null);
                   setValidatedBins([]);
+                  // Reset selection states
+                  setSelectedCustomerCode("");
+                  setSelectedDeliveryDate(undefined);
+                  setSelectedPlant("");
                 }}
                 className="flex items-center gap-2 justify-center sm:justify-start"
               >
@@ -2805,16 +3212,211 @@ const Dashboard = () => {
               </div>
             )}
             
+            {/* Selection Fields: Customer Code, Delivery Date, Plant */}
+            {scheduleData && (
+              <Card className="mb-6 border-2 border-primary">
+                <CardHeader>
+                  <CardTitle>Configure Dispatch Details</CardTitle>
+                  <CardDescription>Select customer code, delivery date, and plant before selecting an invoice</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid md:grid-cols-3 gap-4">
+                    {/* Customer Code Selection */}
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium flex items-center gap-2">
+                        <Package className="h-4 w-4" />
+                        Customer Code <span className="text-destructive">*</span>
+                      </Label>
+                      <Select 
+                        value={selectedCustomerCode} 
+                        onValueChange={(value) => {
+                          setSelectedCustomerCode(value);
+                          // Reset delivery date and plant when customer code changes
+                          setSelectedDeliveryDate(undefined);
+                          setSelectedPlant("");
+                          setSelectedInvoice(""); // Reset invoice selection
+                        }}
+                      >
+                        <SelectTrigger className={!selectedCustomerCode ? "border-destructive" : ""}>
+                          <SelectValue placeholder="Select customer code" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableCustomerCodes.length === 0 ? (
+                            <div className="p-4 text-center text-sm text-muted-foreground">
+                              No customer codes available
+                            </div>
+                          ) : (
+                            availableCustomerCodes.map(code => {
+                              const invoiceCount = invoicesWithSchedule.filter(inv => inv.billTo === code).length;
+                              return (
+                                <SelectItem key={code} value={code}>
+                                  {code} ({invoiceCount} invoice{invoiceCount !== 1 ? 's' : ''})
+                                </SelectItem>
+                              );
+                            })
+                          )}
+                        </SelectContent>
+                      </Select>
+                      {!selectedCustomerCode && (
+                        <p className="text-xs text-destructive">⚠️ Please select a customer code</p>
+                      )}
+                    </div>
+
+                    {/* Delivery Date Selection */}
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium flex items-center gap-2">
+                        <CalendarIcon className="h-4 w-4" />
+                        Delivery Date <span className="text-destructive">*</span>
+                      </Label>
+                      <Select 
+                        value={selectedDeliveryDate ? selectedDeliveryDate.toISOString().split('T')[0] : ""} 
+                        onValueChange={(value) => {
+                          // Parse date string (YYYY-MM-DD) to Date object
+                          // Use local date to avoid timezone issues
+                          const [year, month, day] = value.split('-').map(Number);
+                          const date = new Date(year, month - 1, day);
+                          setSelectedDeliveryDate(date);
+                          setSelectedInvoice(""); // Reset invoice selection
+                        }}
+                        disabled={!selectedCustomerCode}
+                      >
+                        <SelectTrigger className={!selectedDeliveryDate ? "border-destructive" : ""} disabled={!selectedCustomerCode}>
+                          <SelectValue placeholder={selectedCustomerCode ? "Select delivery date" : "Select customer code first"}>
+                            {selectedDeliveryDate 
+                              ? selectedDeliveryDate.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
+                              : undefined}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableDeliveryDates.length === 0 ? (
+                            <div className="p-4 text-center text-sm text-muted-foreground">
+                              {selectedCustomerCode ? "No delivery dates available" : "Select customer code first"}
+                            </div>
+                          ) : (
+                            availableDeliveryDates.map(dateStr => {
+                              const date = new Date(dateStr);
+                              return (
+                                <SelectItem key={dateStr} value={dateStr}>
+                                  {date.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
+                                </SelectItem>
+                              );
+                            })
+                          )}
+                        </SelectContent>
+                      </Select>
+                      {!selectedDeliveryDate && selectedCustomerCode && (
+                        <p className="text-xs text-destructive">⚠️ Please select a delivery date</p>
+                      )}
+                      {!selectedCustomerCode && (
+                        <p className="text-xs text-muted-foreground">Select customer code first</p>
+                      )}
+                    </div>
+
+                    {/* Plant Selection */}
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium flex items-center gap-2">
+                        <MapPin className="h-4 w-4" />
+                        Plant (Delivery Location) <span className="text-destructive">*</span>
+                      </Label>
+                      <Select 
+                        value={selectedPlant} 
+                        onValueChange={(value) => {
+                          setSelectedPlant(value);
+                          setSelectedInvoice(""); // Reset invoice selection
+                        }}
+                        disabled={!selectedCustomerCode}
+                      >
+                        <SelectTrigger className={!selectedPlant ? "border-destructive" : ""} disabled={!selectedCustomerCode}>
+                          <SelectValue placeholder={selectedCustomerCode ? "Select plant" : "Select customer code first"}>
+                            {selectedPlant || undefined}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availablePlants.length === 0 ? (
+                            <div className="p-4 text-center text-sm text-muted-foreground">
+                              {selectedCustomerCode ? "No plants available" : "Select customer code first"}
+                            </div>
+                          ) : (
+                            availablePlants.map(plant => (
+                              <SelectItem key={plant} value={plant}>
+                                {plant}
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                      {!selectedPlant && selectedCustomerCode && (
+                        <p className="text-xs text-destructive">⚠️ Please select a plant</p>
+                      )}
+                      {!selectedCustomerCode && (
+                        <p className="text-xs text-muted-foreground">Select customer code first</p>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Selection Status */}
+                  <div className="mt-4 p-3 bg-muted rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-semibold">Selection Status:</p>
+                      {(selectedCustomerCode || selectedDeliveryDate || selectedPlant) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setSelectedCustomerCode("");
+                            setSelectedDeliveryDate(undefined);
+                            setSelectedPlant("");
+                            setSelectedInvoice("");
+                          }}
+                          className="h-7 text-xs"
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          Clear All
+                        </Button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant={selectedCustomerCode ? "default" : "outline"}>
+                        Customer Code: {selectedCustomerCode || "Not selected"}
+                      </Badge>
+                      <Badge variant={selectedDeliveryDate ? "default" : "outline"}>
+                        Delivery Date: {selectedDeliveryDate ? selectedDeliveryDate.toLocaleDateString() : "Not selected"}
+                      </Badge>
+                      <Badge variant={selectedPlant ? "default" : "outline"}>
+                        Plant: {selectedPlant || "Not selected"}
+                      </Badge>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            
             {/* Invoice Selection */}
             <Card className="mb-6">
               <CardHeader>
                 <CardTitle>Select Invoice</CardTitle>
-                <CardDescription>Choose an invoice to begin document audit (Showing scheduled invoices only)</CardDescription>
+                <CardDescription>
+                  Choose an invoice to begin document audit
+                  {selectedCustomerCode && selectedDeliveryDate && selectedPlant && (
+                    <span className="block mt-1 text-success text-sm font-medium">
+                      ✅ All selections made - Invoice selection is now enabled
+                    </span>
+                  )}
+                  {(!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant) && (
+                    <span className="block mt-1 text-destructive text-sm font-medium">
+                      ⚠️ Please select customer code, delivery date, and plant first
+                    </span>
+                  )}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 {invoices.length === 0 ? (
                   <div className="p-4 bg-muted rounded-lg text-center">
-                    <p className="text-sm text-muted-foreground">No invoices scheduled for {getShiftLabel(currentShift)}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant
+                        ? "Please complete the selections above to see invoices"
+                        : `No invoices scheduled for ${getShiftLabel(currentShift)} matching your selections`}
+                    </p>
                   </div>
                 ) : (
                   <>
@@ -2823,9 +3425,24 @@ const Dashboard = () => {
                         📅 Showing {invoices.length} invoice(s) for {getShiftLabel(currentShift)}. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
                       </p>
                     </div>
-                <Select value={selectedInvoice} onValueChange={setSelectedInvoice}>
-                  <SelectTrigger className="h-12 text-base">
-                    <SelectValue placeholder={invoices.length === 0 ? "No invoices available" : "Select an invoice"} />
+                <Select 
+                  value={selectedInvoice} 
+                  onValueChange={setSelectedInvoice}
+                  disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant}
+                >
+                  <SelectTrigger 
+                    className={`h-12 text-base ${(!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant) ? "opacity-50 cursor-not-allowed" : ""}`}
+                    disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant}
+                  >
+                    <SelectValue 
+                      placeholder={
+                        !selectedCustomerCode || !selectedDeliveryDate || !selectedPlant
+                          ? "Complete selections above first"
+                          : invoices.length === 0 
+                          ? "No invoices available" 
+                          : "Select an invoice"
+                      } 
+                    />
                   </SelectTrigger>
                   <SelectContent>
                     {invoices.length === 0 ? (
@@ -2835,11 +3452,16 @@ const Dashboard = () => {
                     ) : (
                       invoices.map(invoice => {
                         const scheduleItems = getScheduleForCustomer(invoice.billTo || '');
+                        // Get updated scannedBins from sharedInvoices for accurate display
+                        const invoiceInShared = sharedInvoices.find(inv => inv.id === invoice.id);
+                        const scannedCount = invoiceInShared?.scannedBins ?? invoice.scannedBins;
+                        const expectedCount = invoiceInShared?.expectedBins ?? invoice.expectedBins;
+                        const isAudited = invoiceInShared?.auditComplete ?? invoice.auditComplete;
                         return (
                           <SelectItem key={invoice.id} value={invoice.id}>
-                            {invoice.shift === 'A' ? '🌅' : '🌙'} {invoice.id} - {invoice.customer} ({invoice.scannedBins}/{invoice.expectedBins} BINs)
+                            {invoice.shift === 'A' ? '🌅' : '🌙'} {invoice.id} - {invoice.customer} ({scannedCount}/{expectedCount} BINs)
                             {invoice.shift && ` [Shift ${invoice.shift}]`}
-                            {invoice.auditComplete && ' ✓ Audited'}
+                            {isAudited && ' ✓ Audited'}
                           </SelectItem>
                         );
                       })
@@ -2849,33 +3471,33 @@ const Dashboard = () => {
                   </>
                 )}
 
-                {currentInvoice && (
+                {invoiceForDisplay && (
                   <div className="mt-6 p-4 bg-muted rounded-lg">
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-3">
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Invoice No</p>
-                        <p className="font-semibold">{currentInvoice.id}</p>
+                        <p className="font-semibold">{invoiceForDisplay.id}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Customer</p>
-                        <p className="font-semibold">{currentInvoice.customer}</p>
+                        <p className="font-semibold">{invoiceForDisplay.customer}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
-                        <p className="font-semibold">{currentInvoice.totalQty}</p>
+                        <p className="font-semibold">{invoiceForDisplay.totalQty}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Customer Code</p>
-                        <p className="font-semibold">{currentInvoice.billTo || 'N/A'}</p>
+                        <p className="font-semibold">{invoiceForDisplay.billTo || 'N/A'}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-muted-foreground mb-1">Expected BINs</p>
-                        <p className="font-semibold">{currentInvoice.expectedBins}</p>
+                        <p className="text-xs text-muted-foreground mb-1">Scanned/Expected BINs</p>
+                        <p className="font-semibold">{invoiceForDisplay.scannedBins}/{invoiceForDisplay.expectedBins}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Shift</p>
                         <p className="font-semibold">
-                          {currentInvoice.shift === 'A' ? '🌅 Shift A (8 AM - 8 PM)' : '🌙 Shift B (8 PM - 8 AM)'}
+                          {invoiceForDisplay.shift === 'A' ? '🌅 Shift A (8 AM - 8 PM)' : '🌙 Shift B (8 PM - 8 AM)'}
                         </p>
                       </div>
                     </div>
@@ -2967,10 +3589,10 @@ const Dashboard = () => {
                           matchValue={autolivScan?.rawValue || undefined}
                           shouldMismatch={!!autolivScan}
                           matchData={autolivScan || undefined}
-                          totalQuantity={currentInvoice?.totalQty}
-                          binCapacity={currentInvoice?.binCapacity}
-                          expectedBins={currentInvoice?.expectedBins}
-                          currentBinIndex={currentInvoice?.scannedBins}
+                          totalQuantity={invoiceForDisplay?.totalQty}
+                          binCapacity={invoiceForDisplay?.binCapacity}
+                          expectedBins={invoiceForDisplay?.expectedBins}
+                          currentBinIndex={invoiceForDisplay?.scannedBins}
                         />
                       </div>
 
@@ -3009,10 +3631,10 @@ const Dashboard = () => {
                           matchValue={customerScan?.rawValue || undefined}
                           shouldMismatch={false}
                           matchData={customerScan || undefined}
-                          totalQuantity={currentInvoice?.totalQty}
-                          binCapacity={currentInvoice?.binCapacity}
-                          expectedBins={currentInvoice?.expectedBins}
-                          currentBinIndex={currentInvoice?.scannedBins}
+                          totalQuantity={invoiceForDisplay?.totalQty}
+                          binCapacity={invoiceForDisplay?.binCapacity}
+                          expectedBins={invoiceForDisplay?.expectedBins}
+                          currentBinIndex={invoiceForDisplay?.scannedBins}
                         />
                       </div>
                     </div>
@@ -3107,13 +3729,49 @@ const Dashboard = () => {
                         </span>
                       </div>
                       
-                      {/* New Audit Button - appears after items are scanned */}
-                      {currentInvoice?.auditComplete && (
+                      {/* Complete Audit Button - appears when all bins are scanned */}
+                      {invoiceForProgress && invoiceForProgress.scannedBins >= invoiceForProgress.expectedBins && !invoiceForProgress.auditComplete && (
+                        <div className="mt-6 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-green-700 dark:text-green-300 mb-1">
+                                ✅ All Bins Scanned: {invoiceForProgress.scannedBins}/{invoiceForProgress.expectedBins}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                All items scanned and validated. Click "Complete Audit" to finish.
+                              </p>
+                            </div>
+                            <Button
+                              onClick={() => {
+                                if (invoiceForProgress) {
+                                  updateInvoiceAudit(invoiceForProgress.id, {
+                                    auditComplete: true,
+                                    auditDate: new Date()
+                                  }, currentUser);
+                                  toast.success("🎉 Audit completed successfully!");
+                                  setSelectedInvoice("");
+                                  setCustomerScan(null);
+                                  setAutolivScan(null);
+                                  setValidatedBins([]);
+                                }
+                              }}
+                              className="flex items-center gap-2 h-10 w-full sm:w-auto"
+                              variant="default"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              Complete Audit
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Audit Complete Message - appears after audit is completed */}
+                      {invoiceForProgress?.auditComplete && (
                         <div className="mt-6 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
                           <div className="flex items-center justify-between">
                             <div>
                               <p className="text-sm font-medium text-green-700 dark:text-green-300 mb-1">
-                                ✅ Audit Complete for {currentInvoice.id}
+                                ✅ Audit Complete for {invoiceForProgress.id}
                               </p>
                               <p className="text-xs text-muted-foreground">
                                 All items scanned and validated. Ready for dispatch.
