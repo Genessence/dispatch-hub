@@ -121,6 +121,14 @@ const Dashboard = () => {
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
   const [selectedDeliveryTime, setSelectedDeliveryTime] = useState<string>("");
   
+  // Helper function to format date as YYYY-MM-DD in local timezone (not UTC)
+  // This avoids timezone issues where toISOString() converts to UTC
+  const formatDateAsLocalString = (date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
   
   const [validatedBins, setValidatedBins] = useState<Array<{
     customerItem: string;
@@ -783,39 +791,40 @@ const Dashboard = () => {
                   const trimmed = dateStr.trim();
                   if (!trimmed) return undefined;
                   
-                  // Try parsing as ISO date string
-                  let parsed = new Date(trimmed);
-                  if (!isNaN(parsed.getTime())) return parsed;
-                  
-                  // Try parsing common date formats (MM/DD/YYYY, DD-MM-YYYY, etc.)
-                  // Handle formats like "01/15/2024" or "15-01-2024"
+                  // Try parsing common date formats first (to avoid timezone issues with YYYY-MM-DD)
+                  // Handle formats like "01/15/2024" or "15-01-2024" or "2024-01-15"
                   const dateFormats = [
-                    /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,  // MM/DD/YYYY or DD/MM/YYYY
-                    /^(\d{1,2})-(\d{1,2})-(\d{4})/,    // DD-MM-YYYY or MM-DD-YYYY
-                    /^(\d{4})-(\d{1,2})-(\d{1,2})/,    // YYYY-MM-DD
-                    /^(\d{4})\/(\d{1,2})\/(\d{1,2})/,  // YYYY/MM/DD
+                    /^(\d{4})-(\d{1,2})-(\d{1,2})$/,    // YYYY-MM-DD (handle first to avoid UTC parsing)
+                    /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,  // YYYY/MM/DD
+                    /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,   // MM/DD/YYYY or DD/MM/YYYY
+                    /^(\d{1,2})-(\d{1,2})-(\d{4})/,     // DD-MM-YYYY or MM-DD-YYYY
                   ];
                   
                   for (const format of dateFormats) {
                     const match = trimmed.match(format);
                     if (match) {
                       if (format === dateFormats[0] || format === dateFormats[1]) {
+                        // YYYY-MM-DD or YYYY/MM/DD - parse as local date to avoid timezone issues
+                        const [_, year, month, day] = match;
+                        const parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+                        if (!isNaN(parsed.getTime())) return parsed;
+                      } else {
                         // MM/DD/YYYY or DD-MM-YYYY - try both interpretations
                         const [_, part1, part2, year] = match;
                         // Try MM/DD/YYYY first (US format)
-                        parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
+                        let parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
                         if (!isNaN(parsed.getTime())) return parsed;
                         // Try DD/MM/YYYY (European format)
                         parsed = new Date(parseInt(year), parseInt(part2) - 1, parseInt(part1));
                         if (!isNaN(parsed.getTime())) return parsed;
-                      } else {
-                        // YYYY-MM-DD or YYYY/MM/DD
-                        const [_, year, month, day] = match;
-                        parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                        if (!isNaN(parsed.getTime())) return parsed;
                       }
                     }
                   }
+                  
+                  // Try parsing as ISO date string (only if format patterns didn't match)
+                  // This handles full ISO datetime strings like "2024-01-15T10:30:00Z"
+                  const parsed = new Date(trimmed);
+                  if (!isNaN(parsed.getTime())) return parsed;
                 }
                 
                 return undefined;
@@ -844,6 +853,7 @@ const Dashboard = () => {
               jsonData.forEach((row: any) => {
                 const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
                 const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
+                const partNumber = getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'PART NUMBER', 'Part_Number']) || '';
                 const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
                 const description = getColumnValue(row, ['Description', 'description']) || '';
                 const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
@@ -896,6 +906,7 @@ const Dashboard = () => {
                   allScheduleItems.push({
                     customerCode: customerCode.toString(),
                     customerPart: customerPart.toString(),
+                    partNumber: partNumber ? partNumber.toString() : undefined,
                     qadPart: qadPart.toString(),
                     description: description.toString(),
                     snp,
@@ -917,7 +928,7 @@ const Dashboard = () => {
           const itemsWithDeliveryDate = allScheduleItems.filter(i => i.deliveryDate);
           console.log(`Items with delivery date: ${itemsWithDeliveryDate.length} out of ${allScheduleItems.length}`);
           if (itemsWithDeliveryDate.length > 0) {
-            const uniqueDates = [...new Set(itemsWithDeliveryDate.map(i => i.deliveryDate?.toISOString().split('T')[0]))];
+            const uniqueDates = [...new Set(itemsWithDeliveryDate.map(i => i.deliveryDate ? formatDateAsLocalString(i.deliveryDate) : undefined).filter(Boolean))];
             console.log('Unique delivery dates found:', uniqueDates);
           }
           
@@ -1024,15 +1035,18 @@ const Dashboard = () => {
       // Get unique customer codes from schedule
       const scheduledCustomerCodes = new Set(scheduleItems.map(item => String(item.customerCode)));
       
-      // Create schedule index: Map<customerCode, Set<customerPart>> for fast lookup
+      // Create schedule index: Map<customerCode, Set<partNumber>> for fast lookup
       const scheduleIndex = new Map<string, Set<string>>();
       scheduleItems.forEach(item => {
         const customerCode = String(item.customerCode);
-        const customerPart = String(item.customerPart);
-        if (!scheduleIndex.has(customerCode)) {
-          scheduleIndex.set(customerCode, new Set());
+        const partNumber = item.partNumber ? String(item.partNumber) : '';
+        // Only add items that have a partNumber
+        if (partNumber) {
+          if (!scheduleIndex.has(customerCode)) {
+            scheduleIndex.set(customerCode, new Set());
+          }
+          scheduleIndex.get(customerCode)!.add(partNumber);
         }
-        scheduleIndex.get(customerCode)!.add(customerPart);
       });
       
       // Group invoices by customer code (billTo)
@@ -1061,10 +1075,10 @@ const Dashboard = () => {
         }
         
         const invoiceCustomerCode = String(invoice.billTo);
-        const customerPartsSet = scheduleIndex.get(invoiceCustomerCode);
+        const partNumbersSet = scheduleIndex.get(invoiceCustomerCode);
         
         // If invoice customer code doesn't exist in schedule, keep as unmatched
-        if (!customerPartsSet) {
+        if (!partNumbersSet) {
           return { ...row, status: 'valid-unmatched' as const };
         }
         
@@ -1073,9 +1087,9 @@ const Dashboard = () => {
           return { ...row, status: 'valid-unmatched' as const };
         }
         
-        // Check if customerItem matches any customerPart in schedule for this customer code
+        // Check if customerItem matches any PART NUMBER in schedule for this customer code
         const customerItem = String(row.customerItem).trim();
-        if (customerPartsSet.has(customerItem)) {
+        if (partNumbersSet.has(customerItem)) {
           return { ...row, status: 'valid-matched' as const };
         } else {
           return { ...row, status: 'valid-unmatched' as const };
@@ -1207,108 +1221,136 @@ const Dashboard = () => {
     return Array.from(codes).sort();
   }, [invoicesWithSchedule, scheduleData]);
 
-  // Get available delivery dates for selected customer code (only from actual schedule data)
+  // Get available delivery dates for selected customer code (from schedule items that match invoice items)
   const availableDeliveryDates = useMemo(() => {
-    if (!selectedCustomerCode) return [];
+    if (!selectedCustomerCode || !scheduleData) return [];
     
     const dates = new Set<string>();
     
-    // Only get dates from schedule data - no dummy data
-    if (scheduleData) {
-      const scheduleItems = scheduleData.items.filter(
-        item => String(item.customerCode) === String(selectedCustomerCode)
-      );
-      scheduleItems.forEach(item => {
-        if (item.deliveryDate) {
-          dates.add(item.deliveryDate.toISOString().split('T')[0]); // Format as YYYY-MM-DD
+    // Get invoices for the selected customer code
+    const invoicesForCustomer = invoicesWithSchedule.filter(inv => inv.billTo === selectedCustomerCode);
+    if (invoicesForCustomer.length === 0) return [];
+    
+    // Get all customer items from invoices for this customer
+    const customerItemsSet = new Set<string>();
+    invoicesForCustomer.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        if (item.customerItem && item.status === 'valid-matched') {
+          customerItemsSet.add(String(item.customerItem).trim());
         }
       });
-    }
+    });
+    
+    // Find schedule items that match these customer items (via partNumber)
+    const scheduleItems = scheduleData.items.filter(
+      item => String(item.customerCode) === String(selectedCustomerCode)
+    );
+    scheduleItems.forEach(item => {
+      if (item.deliveryDate && item.partNumber && customerItemsSet.has(String(item.partNumber).trim())) {
+        dates.add(formatDateAsLocalString(item.deliveryDate)); // Format as YYYY-MM-DD in local timezone
+      }
+    });
     
     return Array.from(dates).sort();
-  }, [selectedCustomerCode, scheduleData]);
+  }, [selectedCustomerCode, scheduleData, invoicesWithSchedule]);
 
-  // Get available delivery times for selected customer code and delivery date (only from schedule data)
+  // Get available delivery times for selected customer code and delivery date (from schedule items that match invoice items)
   const availableDeliveryTimes = useMemo(() => {
-    if (!selectedCustomerCode || !selectedDeliveryDate) return [];
+    if (!selectedCustomerCode || !selectedDeliveryDate || !scheduleData) return [];
     const times = new Set<string>();
     
-    // Get delivery times from schedule items matching customer code and delivery date
-    if (scheduleData) {
-      const scheduleItems = scheduleData.items.filter(
-        item => {
-          if (String(item.customerCode) !== String(selectedCustomerCode)) return false;
-          if (!item.deliveryDate) return false;
-          const itemDate = item.deliveryDate.toISOString().split('T')[0];
-          const selectedDate = selectedDeliveryDate.toISOString().split('T')[0];
-          return itemDate === selectedDate;
-        }
-      );
-      scheduleItems.forEach(item => {
-        if (item.deliveryTime) {
-          times.add(item.deliveryTime);
+    // Get invoices for the selected customer code
+    const invoicesForCustomer = invoicesWithSchedule.filter(inv => inv.billTo === selectedCustomerCode);
+    if (invoicesForCustomer.length === 0) return [];
+    
+    // Get all customer items from invoices for this customer
+    const customerItemsSet = new Set<string>();
+    invoicesForCustomer.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        if (item.customerItem && item.status === 'valid-matched') {
+          customerItemsSet.add(String(item.customerItem).trim());
         }
       });
-    }
+    });
+    
+    // Find schedule items that match customer code, delivery date, and customer items (via partNumber)
+    const scheduleItems = scheduleData.items.filter(
+      item => {
+        if (String(item.customerCode) !== String(selectedCustomerCode)) return false;
+        if (!item.deliveryDate) return false;
+        const itemDate = formatDateAsLocalString(item.deliveryDate);
+        const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
+        return itemDate === selectedDate;
+      }
+    );
+    scheduleItems.forEach(item => {
+      if (item.deliveryTime && item.partNumber && customerItemsSet.has(String(item.partNumber).trim())) {
+        times.add(item.deliveryTime);
+      }
+    });
     
     return Array.from(times).sort();
-  }, [selectedCustomerCode, selectedDeliveryDate, scheduleData]);
+  }, [selectedCustomerCode, selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
 
   // Get invoices with schedule for Doc Audit - filtered by selections
   // Reuse invoicesWithSchedule declared above for KPIs
   const invoices = useMemo(() => {
-    // First, filter by customer code and delivery date (these don't change invoice list)
+    if (!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime || !scheduleData) {
+      // If not all selections are made, return empty array
+      return [];
+    }
+    
+    // First, filter by customer code
     let filtered = invoicesWithSchedule.filter(inv => {
       // Hide dispatched invoices
       if (inv.dispatchedBy) return false;
       
-      // Filter by customer code if selected
-      if (selectedCustomerCode && inv.billTo !== selectedCustomerCode) return false;
-      
-      // Filter by delivery date if selected
-      if (selectedDeliveryDate && scheduleData) {
-        const scheduleItems = scheduleData.items.filter(
-          item => String(item.customerCode) === String(selectedCustomerCode || inv.billTo)
-        );
-        const hasMatchingDate = scheduleItems.some(item => {
-          if (!item.deliveryDate) return false;
-          const itemDate = item.deliveryDate.toISOString().split('T')[0];
-          const selectedDate = selectedDeliveryDate.toISOString().split('T')[0];
-          return itemDate === selectedDate;
-        });
-        if (!hasMatchingDate) return false;
-      }
+      // Filter by customer code
+      if (inv.billTo !== selectedCustomerCode) return false;
       
       return true;
     });
     
-    // Store invoices before delivery time filtering to keep them stable
-    const invoicesBeforeTimeFilter = filtered;
-    
-    // Now filter by delivery time if selected (match invoices with schedule items that have the selected delivery time)
-    if (selectedDeliveryTime && scheduleData) {
-      filtered = filtered.filter(inv => {
-        const customerCode = selectedCustomerCode || inv.billTo;
-        if (!customerCode) return false;
-        
-        const scheduleItems = scheduleData.items.filter(
-          item => {
-            if (String(item.customerCode) !== String(customerCode)) return false;
-            if (!item.deliveryDate || !selectedDeliveryDate) return false;
-            const itemDate = item.deliveryDate.toISOString().split('T')[0];
-            const selectedDate = selectedDeliveryDate.toISOString().split('T')[0];
-            if (itemDate !== selectedDate) return false;
-            return item.deliveryTime === selectedDeliveryTime;
-          }
-        );
-        
-        // Invoice matches if there are schedule items with the selected delivery time for this customer
-        return scheduleItems.length > 0;
+    // Get all customer items from invoices for this customer
+    const customerItemsSet = new Set<string>();
+    filtered.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        if (item.customerItem && item.status === 'valid-matched') {
+          customerItemsSet.add(String(item.customerItem).trim());
+        }
       });
-    }
+    });
     
-    // Only return actual invoices - no dummy data
-    return filtered;
+    // Find schedule items that match the criteria (customer code, delivery date, delivery time, and partNumber)
+    const matchingScheduleItems = scheduleData.items.filter(item => {
+      if (String(item.customerCode) !== String(selectedCustomerCode)) return false;
+      if (!item.deliveryDate || !item.deliveryTime || !item.partNumber) return false;
+      const itemDate = formatDateAsLocalString(item.deliveryDate);
+      const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
+      return itemDate === selectedDate 
+        && item.deliveryTime === selectedDeliveryTime
+        && customerItemsSet.has(String(item.partNumber).trim());
+    });
+    
+    // Get part numbers from matching schedule items
+    const matchingPartNumbers = new Set(matchingScheduleItems.map(item => String(item.partNumber).trim()));
+    
+    // Filter invoices that have items matching these part numbers
+    filtered = filtered.filter(invoice => {
+      return invoice.items?.some((item: any) => {
+        return item.customerItem && item.status === 'valid-matched' 
+          && matchingPartNumbers.has(String(item.customerItem).trim());
+      });
+    });
+    
+    // Sort invoices: customer code → delivery date → delivery time → invoice ID
+    return filtered.sort((a, b) => {
+      // Customer code (already filtered, so same)
+      // Delivery date (already filtered, so same)
+      // Delivery time (already filtered, so same)
+      // Invoice ID
+      return a.id.localeCompare(b.id);
+    });
   }, [invoicesWithSchedule, selectedCustomerCode, selectedDeliveryTime, selectedDeliveryDate, scheduleData]);
   
   // Group invoices by scheduled date for display
@@ -3132,10 +3174,9 @@ const Dashboard = () => {
                             </div>
                           ) : (
                             availableCustomerCodes.map(code => {
-                              const invoiceCount = invoicesWithSchedule.filter(inv => inv.billTo === code).length;
                               return (
                                 <SelectItem key={code} value={code}>
-                                  {code} ({invoiceCount} invoice{invoiceCount !== 1 ? 's' : ''})
+                                  {code}
                                 </SelectItem>
                               );
                             })
@@ -3154,7 +3195,7 @@ const Dashboard = () => {
                         Delivery Date <span className="text-destructive">*</span>
                       </Label>
                       <Select 
-                        value={selectedDeliveryDate ? selectedDeliveryDate.toISOString().split('T')[0] : ""} 
+                        value={selectedDeliveryDate ? formatDateAsLocalString(selectedDeliveryDate) : ""} 
                         onValueChange={(value) => {
                           // Parse date string (YYYY-MM-DD) to Date object
                           // Use local date to avoid timezone issues
@@ -3179,7 +3220,9 @@ const Dashboard = () => {
                             </div>
                           ) : (
                             availableDeliveryDates.map(dateStr => {
-                              const date = new Date(dateStr);
+                              // Parse date string (YYYY-MM-DD) to Date object in local timezone to avoid timezone issues
+                              const [year, month, day] = dateStr.split('-').map(Number);
+                              const date = new Date(year, month - 1, day);
                               return (
                                 <SelectItem key={dateStr} value={dateStr}>
                                   {date.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
@@ -3310,7 +3353,7 @@ const Dashboard = () => {
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.length} invoice(s). Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
+                        📅 Showing {invoices.length} invoice(s). Scheduled for {selectedDeliveryDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'} and {selectedDeliveryTime || 'N/A'}
                       </p>
                     </div>
                 <Select 

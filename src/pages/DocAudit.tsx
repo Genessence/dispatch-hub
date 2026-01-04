@@ -21,12 +21,19 @@ const DocAudit = () => {
     addMismatchAlert
   } = useSession();
   
-  // Selection states
+  // Selection states - cascading selection
   const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>("");
+  const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<string>("");
+  const [selectedDeliveryTime, setSelectedDeliveryTime] = useState<string>("");
   const [selectedInvoice, setSelectedInvoice] = useState<string>("");
-  const [invoiceSelections, setInvoiceSelections] = useState<Record<string, {
-    deliveryTime?: string;
-  }>>({});
+  
+  // Helper function to format date as YYYY-MM-DD in local timezone
+  const formatDateAsLocalString = (date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
   
   // Audit states
   const [customerScan, setCustomerScan] = useState<BarcodeData | null>(null);
@@ -89,7 +96,7 @@ const DocAudit = () => {
     return invoicesWithSchedule.filter(inv => inv.billTo === selectedCustomerCode);
   }, [selectedCustomerCode, invoicesWithSchedule]);
 
-  // Get schedule items for selected customer to extract default shift and delivery date
+  // Get schedule items for selected customer
   const scheduleItemsForCustomer = useMemo(() => {
     if (!selectedCustomerCode || !scheduleData) return [];
     const items = scheduleData.items.filter(
@@ -105,25 +112,112 @@ const DocAudit = () => {
     return items;
   }, [selectedCustomerCode, scheduleData]);
 
-  // Get unique delivery times from schedule items for the selected customer
-  const availableDeliveryTimes = useMemo(() => {
-    const times = new Set<string>();
-    // Get delivery times from schedule items
+  // Get unique delivery dates from schedule items for the selected customer
+  // These are dates from schedule items that match invoice items for invoices in this customer code
+  const availableDeliveryDates = useMemo(() => {
+    if (!selectedCustomerCode || !scheduleData || !invoicesForCustomer.length) return [];
+    
+    const dates = new Set<string>();
+    
+    // Get all customer items from invoices for this customer
+    const customerItemsSet = new Set<string>();
+    invoicesForCustomer.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        if (item.customerItem && item.status === 'valid-matched') {
+          customerItemsSet.add(String(item.customerItem).trim());
+        }
+      });
+    });
+    
+    // Find schedule items that match these customer items (via partNumber)
     scheduleItemsForCustomer.forEach(item => {
-      if (item.deliveryTime) {
-        times.add(item.deliveryTime);
+      if (item.deliveryDate && item.partNumber && customerItemsSet.has(String(item.partNumber).trim())) {
+        dates.add(formatDateAsLocalString(item.deliveryDate));
       }
     });
-    return Array.from(times).sort();
-  }, [scheduleItemsForCustomer]);
+    
+    return Array.from(dates).sort();
+  }, [selectedCustomerCode, scheduleItemsForCustomer, invoicesForCustomer, scheduleData]);
 
+  // Get unique delivery times from schedule items for the selected customer and delivery date
+  const availableDeliveryTimes = useMemo(() => {
+    if (!selectedCustomerCode || !selectedDeliveryDate || !scheduleData || !invoicesForCustomer.length) return [];
+    
+    const times = new Set<string>();
+    
+    // Get all customer items from invoices for this customer
+    const customerItemsSet = new Set<string>();
+    invoicesForCustomer.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        if (item.customerItem && item.status === 'valid-matched') {
+          customerItemsSet.add(String(item.customerItem).trim());
+        }
+      });
+    });
+    
+    // Find schedule items that match customer code, delivery date, and customer items (via partNumber)
+    scheduleItemsForCustomer.forEach(item => {
+      if (item.deliveryDate && item.deliveryTime && item.partNumber) {
+        const itemDate = formatDateAsLocalString(item.deliveryDate);
+        if (itemDate === selectedDeliveryDate && customerItemsSet.has(String(item.partNumber).trim())) {
+          times.add(item.deliveryTime);
+        }
+      }
+    });
+    
+    return Array.from(times).sort();
+  }, [selectedCustomerCode, selectedDeliveryDate, scheduleItemsForCustomer, invoicesForCustomer, scheduleData]);
+
+
+  // Get filtered invoices based on customer code, delivery date, and delivery time
+  const filteredInvoices = useMemo(() => {
+    if (!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime || !scheduleData) return [];
+    
+    // Get all customer items from invoices for this customer
+    const customerItemsSet = new Set<string>();
+    invoicesForCustomer.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        if (item.customerItem && item.status === 'valid-matched') {
+          customerItemsSet.add(String(item.customerItem).trim());
+        }
+      });
+    });
+    
+    // Find schedule items that match the criteria
+    const matchingScheduleItems = scheduleItemsForCustomer.filter(item => {
+      if (!item.deliveryDate || !item.deliveryTime || !item.partNumber) return false;
+      const itemDate = formatDateAsLocalString(item.deliveryDate);
+      return itemDate === selectedDeliveryDate 
+        && item.deliveryTime === selectedDeliveryTime
+        && customerItemsSet.has(String(item.partNumber).trim());
+    });
+    
+    // Get part numbers from matching schedule items
+    const matchingPartNumbers = new Set(matchingScheduleItems.map(item => String(item.partNumber).trim()));
+    
+    // Filter invoices that have items matching these part numbers
+    const filtered = invoicesForCustomer.filter(invoice => {
+      return invoice.items?.some((item: any) => {
+        return item.customerItem && item.status === 'valid-matched' 
+          && matchingPartNumbers.has(String(item.customerItem).trim());
+      });
+    });
+    
+    // Sort invoices: customer code → delivery date → delivery time → invoice ID
+    return filtered.sort((a, b) => {
+      // Customer code (already filtered, so same)
+      // Delivery date (already filtered, so same)
+      // Delivery time (already filtered, so same)
+      // Invoice ID
+      return a.id.localeCompare(b.id);
+    });
+  }, [selectedCustomerCode, selectedDeliveryDate, selectedDeliveryTime, invoicesForCustomer, scheduleItemsForCustomer, scheduleData]);
 
   // Get current invoice from sharedInvoices to ensure we have the latest state
   const currentInvoice = useMemo(() => {
     if (!selectedInvoice) return undefined;
     return sharedInvoices.find(inv => inv.id === selectedInvoice);
   }, [sharedInvoices, selectedInvoice]);
-  const currentSelections = invoiceSelections[selectedInvoice] || {};
   const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
 
   // Debug logging on mount and when data changes
@@ -133,46 +227,34 @@ const DocAudit = () => {
       scheduleDataExists: !!scheduleData,
       scheduleItemsCount: scheduleData?.items.length || 0,
       selectedCustomerCode,
+      selectedDeliveryDate,
+      selectedDeliveryTime,
       selectedInvoice,
       availableCustomerCodesCount: availableCustomerCodes.length,
-      invoicesWithScheduleCount: invoicesWithSchedule.length
+      invoicesWithScheduleCount: invoicesWithSchedule.length,
+      filteredInvoicesCount: filteredInvoices.length
     });
-  }, [sharedInvoices.length, scheduleData, selectedCustomerCode, selectedInvoice, availableCustomerCodes.length, invoicesWithSchedule.length]);
-
-  // Initialize default selections when customer code is selected
-  useEffect(() => {
-    if (selectedCustomerCode && invoicesForCustomer.length > 0 && availableDeliveryTimes.length > 0) {
-      const newSelections: Record<string, { deliveryTime?: string }> = {};
-      const defaultDeliveryTime = availableDeliveryTimes[0];
-      if (defaultDeliveryTime) {
-        invoicesForCustomer.forEach(invoice => {
-          newSelections[invoice.id] = {
-            deliveryTime: defaultDeliveryTime
-          };
-        });
-        if (Object.keys(newSelections).length > 0) {
-          setInvoiceSelections(prev => ({ ...prev, ...newSelections }));
-        }
-      }
-    }
-  }, [selectedCustomerCode, invoicesForCustomer, availableDeliveryTimes]);
+  }, [sharedInvoices.length, scheduleData, selectedCustomerCode, selectedDeliveryDate, selectedDeliveryTime, selectedInvoice, availableCustomerCodes.length, invoicesWithSchedule.length, filteredInvoices.length]);
 
   // Handle customer code selection
   const handleCustomerCodeSelect = (customerCode: string) => {
     setSelectedCustomerCode(customerCode);
+    setSelectedDeliveryDate(""); // Reset delivery date
+    setSelectedDeliveryTime(""); // Reset delivery time
     setSelectedInvoice(""); // Reset invoice selection
-    setInvoiceSelections({}); // Reset all selections
   };
 
-  // Handle delivery time selection for an invoice
-  const handleDeliveryTimeSelect = (invoiceId: string, deliveryTime: string) => {
-    setInvoiceSelections(prev => ({
-      ...prev,
-      [invoiceId]: {
-        ...prev[invoiceId],
-        deliveryTime
-      }
-    }));
+  // Handle delivery date selection
+  const handleDeliveryDateSelect = (deliveryDate: string) => {
+    setSelectedDeliveryDate(deliveryDate);
+    setSelectedDeliveryTime(""); // Reset delivery time when date changes
+    setSelectedInvoice(""); // Reset invoice selection
+  };
+
+  // Handle delivery time selection
+  const handleDeliveryTimeSelect = (deliveryTime: string) => {
+    setSelectedDeliveryTime(deliveryTime);
+    setSelectedInvoice(""); // Reset invoice selection when time changes
   };
 
 
@@ -405,23 +487,22 @@ const DocAudit = () => {
           </>
         )}
 
-        {/* Step 2: Invoice Selection with Shift & Plant - Show when customer code is selected but invoice is not */}
-        {!selectedInvoice && selectedCustomerCode && availableCustomerCodes.length > 0 && (
+        {/* Step 2: Delivery Date Selection - Show when customer code is selected but delivery date is not */}
+        {!selectedInvoice && selectedCustomerCode && !selectedDeliveryDate && availableCustomerCodes.length > 0 && (
           <Card className="mb-6">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-2xl text-blue-600">✅ Step 2: Select Invoice & Configure Dispatch</CardTitle>
+                  <CardTitle className="text-2xl text-blue-600">✅ Step 2: Select Delivery Date</CardTitle>
                   <CardDescription>
-                    Customer Code: <span className="font-semibold">{selectedCustomerCode}</span> • {invoicesForCustomer.length} invoice{invoicesForCustomer.length !== 1 ? 's' : ''} available
+                    Customer Code: <span className="font-semibold">{selectedCustomerCode}</span> • {availableDeliveryDates.length} date{availableDeliveryDates.length !== 1 ? 's' : ''} available
                   </CardDescription>
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setSelectedCustomerCode("");
-                    setInvoiceSelections({});
+                    handleCustomerCodeSelect("");
                   }}
                 >
                   <ArrowLeft className="h-4 w-4 mr-2" />
@@ -430,22 +511,123 @@ const DocAudit = () => {
               </div>
             </CardHeader>
             <CardContent>
-              {invoicesForCustomer.length === 0 ? (
+              {availableDeliveryDates.length === 0 ? (
                 <div className="text-center py-8">
-                  <p className="text-muted-foreground">No invoices found for this customer code</p>
+                  <p className="text-muted-foreground">No delivery dates found for this customer code</p>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {invoicesForCustomer.map((invoice) => {
-                    const selections = invoiceSelections[invoice.id] || {};
-                    const defaultDeliveryTime = availableDeliveryTimes[0] || "";
-                    
-                    // Use defaults for display, but require explicit selection for audit
-                    const displayDeliveryTime = selections.deliveryTime || defaultDeliveryTime || "";
+                  <Label className="text-sm font-medium">Delivery Date</Label>
+                  <Select value={selectedDeliveryDate} onValueChange={handleDeliveryDateSelect}>
+                    <SelectTrigger className="h-12 text-base">
+                      <SelectValue placeholder="Select a delivery date" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableDeliveryDates.map(date => (
+                        <SelectItem key={date} value={date}>
+                          {new Date(date + 'T00:00:00').toLocaleDateString('en-US', { 
+                            year: 'numeric', 
+                            month: 'short', 
+                            day: 'numeric' 
+                          })}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
-                    // Can only start audit if delivery time is explicitly selected
-                    const canStartAudit = !!selections.deliveryTime;
+        {/* Step 3: Delivery Time Selection - Show when delivery date is selected but delivery time is not */}
+        {!selectedInvoice && selectedCustomerCode && selectedDeliveryDate && !selectedDeliveryTime && (
+          <Card className="mb-6">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-2xl text-blue-600">✅ Step 3: Select Delivery Time</CardTitle>
+                  <CardDescription>
+                    Customer Code: <span className="font-semibold">{selectedCustomerCode}</span> • 
+                    Delivery Date: <span className="font-semibold">{new Date(selectedDeliveryDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span> • 
+                    {availableDeliveryTimes.length} time{availableDeliveryTimes.length !== 1 ? 's' : ''} available
+                  </CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    handleDeliveryDateSelect("");
+                  }}
+                >
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  Change Date
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {availableDeliveryTimes.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">No delivery times found for this date</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <Label className="text-sm font-medium flex items-center gap-2">
+                    <Clock className="h-4 w-4" />
+                    Delivery Time
+                  </Label>
+                  <Select value={selectedDeliveryTime} onValueChange={handleDeliveryTimeSelect}>
+                    <SelectTrigger className="h-12 text-base">
+                      <SelectValue placeholder="Select a delivery time" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableDeliveryTimes.map(time => (
+                        <SelectItem key={time} value={time}>
+                          {time}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
+        {/* Step 4: Invoice Selection - Show when delivery time is selected */}
+        {!selectedInvoice && selectedCustomerCode && selectedDeliveryDate && selectedDeliveryTime && (
+          <Card className="mb-6">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-2xl text-blue-600">✅ Step 4: Select Invoice</CardTitle>
+                  <CardDescription>
+                    Customer Code: <span className="font-semibold">{selectedCustomerCode}</span> • 
+                    Delivery Date: <span className="font-semibold">{new Date(selectedDeliveryDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</span> • 
+                    Delivery Time: <span className="font-semibold">{selectedDeliveryTime}</span> • 
+                    {filteredInvoices.length} invoice{filteredInvoices.length !== 1 ? 's' : ''} available
+                  </CardDescription>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    handleDeliveryTimeSelect("");
+                  }}
+                >
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  Change Time
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {filteredInvoices.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">No invoices found for the selected criteria</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredInvoices.map((invoice) => {
                     return (
                       <Card key={invoice.id} className="border-2">
                         <CardContent className="pt-6">
@@ -486,50 +668,6 @@ const DocAudit = () => {
                               </div>
                             </div>
 
-                            {/* Delivery Date from Schedule */}
-                            {scheduleItemsForCustomer[0]?.deliveryDate && (
-                              <div className="p-3 bg-muted rounded-lg">
-                                <p className="text-xs text-muted-foreground mb-1">Scheduled Delivery Date</p>
-                                <p className="font-semibold">
-                                  {scheduleItemsForCustomer[0].deliveryDate.toLocaleDateString()}
-                                </p>
-                              </div>
-                            )}
-
-                            {/* Delivery Time Selection */}
-                            <div className="gap-4">
-                              <div className="space-y-2">
-                                <Label className="text-sm font-medium flex items-center gap-2">
-                                  <Clock className="h-4 w-4" />
-                                  Delivery Time
-                                </Label>
-                                <Select
-                                  value={displayDeliveryTime}
-                                  onValueChange={(value) => handleDeliveryTimeSelect(invoice.id, value)}
-                                >
-                                  <SelectTrigger className={!selections.deliveryTime ? "border-destructive" : ""}>
-                                    <SelectValue placeholder={defaultDeliveryTime ? `Default: ${defaultDeliveryTime}` : "Select delivery time (Required)"} />
-              </SelectTrigger>
-              <SelectContent>
-                                    {availableDeliveryTimes.length > 0 ? (
-                                      availableDeliveryTimes.map(time => (
-                                        <SelectItem key={time} value={time}>
-                                          {time}
-                                        </SelectItem>
-                                      ))
-                                    ) : (
-                                      <SelectItem value="N/A">
-                                        No delivery time available
-                  </SelectItem>
-                                    )}
-              </SelectContent>
-            </Select>
-                                {!selections.deliveryTime && (
-                                  <p className="text-xs text-destructive mt-1">⚠️ Please select a delivery time</p>
-                                )}
-                              </div>
-                            </div>
-
                             {/* Blocked Status Badge */}
                             {invoice.blocked && (
                               <div className="p-3 bg-red-50 dark:bg-red-950 border-2 border-red-200 dark:border-red-800 rounded-lg mb-4">
@@ -545,7 +683,7 @@ const DocAudit = () => {
                               </div>
                             )}
 
-                            {/* Start Audit Button - Only enabled when delivery time is selected and not blocked */}
+                            {/* Start Audit Button */}
                             <div className="pt-2">
                               <Button
                                 onClick={() => {
@@ -556,21 +694,21 @@ const DocAudit = () => {
                                     });
                                     return;
                                   }
-                                  if (selections.deliveryTime) {
-                                    // Store selections in invoice data
-                                    updateInvoiceAudit(invoice.id, {
-                                      deliveryTime: selections.deliveryTime,
-                                      deliveryDate: scheduleItemsForCustomer[0]?.deliveryDate
-                                    }, currentUser);
+                                  // Parse delivery date string to Date object
+                                  const [year, month, day] = selectedDeliveryDate.split('-').map(Number);
+                                  const deliveryDateObj = new Date(year, month - 1, day);
+                                  
+                                  // Store selections in invoice data
+                                  updateInvoiceAudit(invoice.id, {
+                                    deliveryTime: selectedDeliveryTime,
+                                    deliveryDate: deliveryDateObj
+                                  }, currentUser);
 
-                                    // Set selected invoice to start audit
-                                    setSelectedInvoice(invoice.id);
-                                    toast.success(`Audit started for invoice ${invoice.id}`);
-                                  } else {
-                                    toast.error("Please select delivery time before starting audit");
-                                  }
+                                  // Set selected invoice to start audit
+                                  setSelectedInvoice(invoice.id);
+                                  toast.success(`Audit started for invoice ${invoice.id}`);
                                 }}
-                                disabled={!canStartAudit || invoice.blocked}
+                                disabled={invoice.blocked}
                                 className="w-full"
                                 size="lg"
                                 variant={invoice.blocked ? "destructive" : "default"}
@@ -578,15 +716,8 @@ const DocAudit = () => {
                                 <ScanBarcode className="h-4 w-4 mr-2" />
                                 {invoice.blocked 
                                   ? "Invoice Blocked - Cannot Start Audit"
-                                  : canStartAudit 
-                                  ? "Start Document Audit" 
-                                  : "Select Delivery Time to Continue"}
+                                  : "Start Document Audit"}
                               </Button>
-                              {!canStartAudit && !invoice.blocked && (
-                                <p className="text-xs text-muted-foreground mt-2 text-center">
-                                  ⚠️ You must select delivery time before starting the audit
-                                </p>
-                              )}
                             </div>
                           </div>
                         </CardContent>
@@ -599,7 +730,7 @@ const DocAudit = () => {
           </Card>
         )}
 
-        {/* Step 3: Document Audit Process */}
+        {/* Step 5: Document Audit Process */}
         {selectedInvoice && currentInvoice && (
           <>
             {/* Back Button */}

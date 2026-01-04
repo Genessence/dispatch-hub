@@ -4,6 +4,7 @@ import { createContext, useContext, useState, ReactNode } from "react";
 export interface ScheduleItem {
   customerCode: string;
   customerPart: string;
+  partNumber?: string; // PART NUMBER field for matching with invoice Customer Item
   qadPart: string;
   description: string;
   snp: number;
