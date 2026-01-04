@@ -49,8 +49,10 @@ interface UploadedRow {
   customer: string;
   part: string;
   qty: number;
-  status: 'valid' | 'error' | 'warning';
+  status: 'valid-matched' | 'valid-unmatched' | 'error' | 'warning';
   errorMessage?: string;
+  customerItem?: string; // Customer Item from invoice file for matching with schedule
+  partDescription?: string; // Part Description from invoice file
 }
 
 interface ValidatedBarcodePair {
@@ -59,25 +61,13 @@ interface ValidatedBarcodePair {
   binNumber?: string;
   quantity?: string;
   partCode?: string;
+  // Dispatch-specific fields from invoice data
+  customerItem?: string;
+  itemNumber?: string;
+  actualQuantity?: number; // Quantity from invoice, not barcode
 }
 
-interface InvoiceData {
-  id: string;
-  customer: string;
-  invoiceDate: Date;
-  totalQty: number;
-  binCapacity: number; // Maximum quantity per bin
-  expectedBins: number;
-  scannedBins: number;
-  binsLoaded: number;
-  auditComplete: boolean;
-  auditDate?: Date;
-  items: UploadedRow[];
-  validatedBarcodes?: ValidatedBarcodePair[];
-  billTo?: string; // Customer code for matching with schedule
-  scheduledDate?: Date; // When this invoice is scheduled for dispatch
-  shift?: 'A' | 'B'; // Shift A: 8 AM - 8 PM, Shift B: 8 PM - 8 AM
-}
+// InvoiceData is imported from SessionContext
 
 const Dashboard = () => {
   const { 
@@ -122,41 +112,21 @@ const Dashboard = () => {
   const [customerScan, setCustomerScan] = useState<BarcodeData | null>(null);
   const [autolivScan, setAutolivScan] = useState<BarcodeData | null>(null);
   const [scannerConnected, setScannerConnected] = useState(true);
+  const [firstScanType, setFirstScanType] = useState<'customer' | 'autoliv' | null>(null);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
   
-  // Doc Audit selection states (customer code, delivery date, plant)
+  // Doc Audit selection states (customer code, delivery date, delivery time)
   const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>("");
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
-  const [selectedPlant, setSelectedPlant] = useState<string>("");
-  
-  // Cache generated dummy invoices per selection combination to keep IDs stable
-  const dummyInvoicesCache = useRef<Record<string, InvoiceData[]>>({});
-  
-  // Shift helper functions
-  const getCurrentShift = (): 'A' | 'B' => {
-    const now = new Date();
-    const hours = now.getHours();
-    // Shift A: 8 AM (8) to 8 PM (20)
-    // Shift B: 8 PM (20) to 8 AM (8)
-    return (hours >= 8 && hours < 20) ? 'A' : 'B';
-  };
-  
-  const getShiftLabel = (shift: 'A' | 'B'): string => {
-    return shift === 'A' ? 'Shift A (8 AM - 8 PM)' : 'Shift B (8 PM - 8 AM)';
-  };
-  
-  const getNextShift = (): 'A' | 'B' => {
-    return getCurrentShift() === 'A' ? 'B' : 'A';
-  };
-  
-  const currentShift = getCurrentShift();
+  const [selectedDeliveryTime, setSelectedDeliveryTime] = useState<string>("");
   
   
   const [validatedBins, setValidatedBins] = useState<Array<{
-    binNo: string;
-    partCode: string;
-    qty: number;
+    customerItem: string;
+    itemNumber: string;
+    partDescription: string;
+    quantity: number; // from invoice, not barcode
     status: string;
     scannedBy: string;
     time: string;
@@ -231,92 +201,79 @@ const Dashboard = () => {
     }
   ];
 
-  // Calculate shift-based metrics
-  const nextShift = getNextShift();
-  
   // Get invoices with schedule
   const invoicesWithSchedule = getInvoicesWithSchedule();
   
-  // Current shift metrics
-  // Doc Audit Scheduled: invoices with schedule, current shift, not dispatched, not audited
-  const currentShiftDocAuditScheduled = invoicesWithSchedule.filter(inv => 
-    inv.shift === currentShift && !inv.dispatchedBy && !inv.auditComplete
+  // Helper to check if date is today
+  const isDateToday = (date: Date | undefined): boolean => {
+    if (!date) return false;
+    const today = new Date();
+    return date.getDate() === today.getDate() &&
+           date.getMonth() === today.getMonth() &&
+           date.getFullYear() === today.getFullYear();
+  };
+  
+  // Overall System Metrics
+  // Pending Doc Audits: all invoices with schedule, not dispatched, not audited
+  const pendingDocAudits = invoicesWithSchedule.filter(inv => 
+    !inv.dispatchedBy && !inv.auditComplete
   ).length;
   
-  // Dispatch Scheduled: invoices with schedule, current shift, not dispatched, audited (ready to dispatch)
-  const currentShiftDispatchScheduled = invoicesWithSchedule.filter(inv => 
-    inv.shift === currentShift && !inv.dispatchedBy && inv.auditComplete
+  // Ready for Dispatch: all invoices with schedule, audited but not dispatched
+  const readyForDispatch = invoicesWithSchedule.filter(inv => 
+    !inv.dispatchedBy && inv.auditComplete
   ).length;
   
-  // Count all audits completed in current shift, regardless of dispatch status
-  const currentShiftCompletedAudits = sharedInvoices.filter(inv => 
-    inv.shift === currentShift && inv.auditComplete
+  // Completed Today: all audits and dispatches completed today
+  const completedTodayAudits = sharedInvoices.filter(inv => 
+    inv.auditComplete && inv.auditedAt && isDateToday(inv.auditedAt)
   ).length;
   
-  const currentShiftCompletedDispatches = sharedInvoices.filter(inv => 
-    inv.shift === currentShift && inv.dispatchedBy !== undefined
+  const completedTodayDispatches = sharedInvoices.filter(inv => 
+    inv.dispatchedBy !== undefined && inv.dispatchedAt && isDateToday(inv.dispatchedAt)
   ).length;
   
-  // Next shift metrics
-  // Doc Audit Scheduled for next shift
-  const nextShiftDocAuditScheduled = invoicesWithSchedule.filter(inv => 
-    inv.shift === nextShift && !inv.dispatchedBy && !inv.auditComplete
-  ).length;
-  
-  // Dispatch Scheduled for next shift
-  const nextShiftDispatchScheduled = invoicesWithSchedule.filter(inv => 
-    inv.shift === nextShift && !inv.dispatchedBy && inv.auditComplete
-  ).length;
+  // Upcoming Schedule: invoices scheduled for future dates
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const upcomingScheduled = invoicesWithSchedule.filter(inv => {
+    if (!inv.scheduledDate) return false;
+    const scheduledDate = new Date(inv.scheduledDate);
+    scheduledDate.setHours(0, 0, 0, 0);
+    return scheduledDate > today;
+  }).length;
   
   const hasRealData = sharedInvoices.length > 0;
 
-  // Current Shift KPIs
-  const currentShiftKPIs = [
+  // Overall System KPIs
+  const overallSystemKPIs = [
     {
-      title: `Doc Audit Scheduled (${getShiftLabel(currentShift)})`,
-      value: hasRealData ? currentShiftDocAuditScheduled.toString() : "0",
-      subtitle: "Pending audit",
+      title: "Pending Doc Audits",
+      value: hasRealData ? pendingDocAudits.toString() : "0",
+      subtitle: "Requires audit",
       icon: ScanBarcode,
-      trend: currentShiftDocAuditScheduled > 0 ? "Active" : "Empty"
+      trend: pendingDocAudits > 0 ? "Active" : "Empty"
     },
     {
-      title: `Dispatch Scheduled (${getShiftLabel(currentShift)})`,
-      value: hasRealData ? currentShiftDispatchScheduled.toString() : "0",
-      subtitle: "Ready to dispatch",
+      title: "Ready for Dispatch",
+      value: hasRealData ? readyForDispatch.toString() : "0",
+      subtitle: "Audited & ready",
       icon: Truck,
-      trend: currentShiftDispatchScheduled > 0 ? "Active" : "Empty"
+      trend: readyForDispatch > 0 ? "Active" : "Empty"
     },
     {
-      title: `Doc Audits Done (${getShiftLabel(currentShift)})`,
-      value: hasRealData ? currentShiftCompletedAudits.toString() : "0",
-      subtitle: "Completed this shift",
+      title: "Completed Today",
+      value: hasRealData ? (completedTodayAudits + completedTodayDispatches).toString() : "0",
+      subtitle: `${completedTodayAudits} audits, ${completedTodayDispatches} dispatches`,
       icon: CheckCircle2,
-      trend: currentShiftCompletedAudits > 0 ? "Active" : "None"
+      trend: (completedTodayAudits + completedTodayDispatches) > 0 ? "Active" : "None"
     },
     {
-      title: `Dispatches Done (${getShiftLabel(currentShift)})`,
-      value: hasRealData ? currentShiftCompletedDispatches.toString() : "0",
-      subtitle: "Completed this shift",
-      icon: CheckCircle2,
-      trend: currentShiftCompletedDispatches > 0 ? "Active" : "None"
-    }
-  ];
-  
-  // Next Shift KPIs
-  const nextShiftKPIs = [
-    {
-      title: `Doc Audit Scheduled (${getShiftLabel(nextShift)})`,
-      value: hasRealData ? nextShiftDocAuditScheduled.toString() : "0",
-      subtitle: "Upcoming shift",
-      icon: ScanBarcode,
-      trend: nextShiftDocAuditScheduled > 0 ? "Scheduled" : "None"
-    },
-    {
-      title: `Dispatch Scheduled (${getShiftLabel(nextShift)})`,
-      value: hasRealData ? nextShiftDispatchScheduled.toString() : "0",
-      subtitle: "Upcoming shift",
-      icon: Truck,
-      trend: nextShiftDispatchScheduled > 0 ? "Scheduled" : "None"
+      title: "Upcoming Schedule",
+      value: hasRealData ? upcomingScheduled.toString() : "0",
+      subtitle: "Future scheduled",
+      icon: CalendarIcon,
+      trend: upcomingScheduled > 0 ? "Scheduled" : "None"
     }
   ];
 
@@ -405,9 +362,7 @@ const Dashboard = () => {
               bookSheets: false,
               bookProps: false,
               bookFiles: false,
-              WTF: false,
-              codepage: false, // Disable codepage detection
-              dense: false // Use sparse mode for better compatibility
+              WTF: false
             });
             console.log('Universal parsing successful');
           } catch (parseError) {
@@ -615,9 +570,13 @@ const Dashboard = () => {
             const customer = rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || rowObj['Customer Name'] || rowObj['CustomerName'] || 'Unknown Customer';
             const part = rowObj['Item Number'] || rowObj['Part'] || rowObj['part'] || rowObj['Part Code'] || rowObj['PartCode'] || rowObj['Part Number'] || 'Unknown Part';
             const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || rowObj['quantity'] || '0');
+            // Extract Customer Item for matching with schedule
+            const customerItem = rowObj['Customer Item'] || rowObj['CustomerItem'] || rowObj['customer item'] || rowObj['Customer-Item'] || rowObj['Cust Item'] || rowObj['CustItem'] || rowObj['Customer Part'] || rowObj['CustomerPart'] || '';
+            // Extract Part Description from invoice
+            const partDescription = rowObj['Part Description'] || rowObj['PartDescription'] || rowObj['part description'] || rowObj['Part-Description'] || rowObj['Description'] || rowObj['description'] || rowObj['Part Desc'] || rowObj['PartDesc'] || '';
             
             // Validation logic
-            let status: 'valid' | 'error' | 'warning' = 'valid';
+            let status: 'valid-matched' | 'valid-unmatched' | 'error' | 'warning' = 'valid-unmatched'; // Default to unmatched, will be updated during matching if match found
             let errorMessage = '';
             
             if (!invoice || invoice.toString().trim() === '') {
@@ -649,7 +608,9 @@ const Dashboard = () => {
               part: part.toString(),
               qty: qty,
               status,
-              errorMessage
+              errorMessage,
+              customerItem: customerItem ? customerItem.toString() : undefined,
+              partDescription: partDescription ? partDescription.toString() : undefined
             };
           });
           
@@ -681,9 +642,6 @@ const Dashboard = () => {
             if (!invoiceMap.has(invoiceNum.toString())) {
               // Randomly assign bin capacity: 50 or 80
               const binCapacity = Math.random() < 0.5 ? 50 : 80;
-              // Alternate shift assignment: A, B, A, B...
-              const shiftAssignment: 'A' | 'B' = invoiceMap.size % 2 === 0 ? 'A' : 'B';
-              
               invoiceMap.set(invoiceNum.toString(), {
                 id: invoiceNum.toString(),
                 customer: customer.toString(),
@@ -696,7 +654,6 @@ const Dashboard = () => {
                 auditComplete: false,
                 items: [],
                 billTo: billTo.toString(), // Customer code for matching with schedule
-                shift: shiftAssignment, // Assign shift A or B alternately
                 plant: plant ? plant.toString() : undefined // Plant where invoice is being delivered to
               });
             }
@@ -706,10 +663,16 @@ const Dashboard = () => {
             invoice.items.push(parsedData[index]);
           });
           
-          // Calculate expected bins based on total quantity and bin capacity
+          // Calculate expected Customer Items count (number of unique Customer Items)
           invoiceMap.forEach((invoice) => {
-            // Calculate minimum bins needed to hold total quantity given bin capacity
-            invoice.expectedBins = Math.ceil(invoice.totalQty / invoice.binCapacity);
+            // Count unique Customer Items
+            const uniqueCustomerItems = new Set<string>();
+            invoice.items.forEach((item: UploadedRow) => {
+              if (item.customerItem && item.customerItem.trim() !== '') {
+                uniqueCustomerItems.add(item.customerItem.trim());
+              }
+            });
+            invoice.expectedBins = uniqueCustomerItems.size; // Use expectedBins to store Customer Items count
           });
           
           const invoices = Array.from(invoiceMap.values());
@@ -806,27 +769,6 @@ const Dashboard = () => {
               
               console.log(`Parsing sheet: ${sheetName}, rows: ${jsonData.length}`);
               
-              // Helper function to convert time to shift
-              const timeToShift = (timeStr: string): 'A' | 'B' | undefined => {
-                if (!timeStr) return undefined;
-                // Try to parse time string (could be "10:30 AM", "14:30", "8:00 PM", etc.)
-                const timeMatch = timeStr.toString().match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-                if (!timeMatch) return undefined;
-                
-                let hours = parseInt(timeMatch[1]);
-                const minutes = parseInt(timeMatch[2]);
-                const ampm = timeMatch[3]?.toUpperCase();
-                
-                // Convert to 24-hour format
-                if (ampm === 'PM' && hours !== 12) hours += 12;
-                if (ampm === 'AM' && hours === 12) hours = 0;
-                
-                // Shift A: 8 AM - 8 PM (08:00 - 20:00)
-                // Shift B: 8 PM - 8 AM (20:00 - 08:00)
-                if (hours >= 8 && hours < 20) return 'A';
-                return 'B';
-              };
-              
               // Helper function to parse date from various formats
               const parseDate = (dateStr: any): Date | undefined => {
                 if (!dateStr) return undefined;
@@ -836,38 +778,118 @@ const Dashboard = () => {
                 if (typeof dateStr === 'number') {
                   return excelDateToJSDate(dateStr);
                 }
-                // Try parsing as string date
-                const parsed = new Date(dateStr);
-                return isNaN(parsed.getTime()) ? undefined : parsed;
+                // If it's a string, try multiple parsing strategies
+                if (typeof dateStr === 'string') {
+                  const trimmed = dateStr.trim();
+                  if (!trimmed) return undefined;
+                  
+                  // Try parsing as ISO date string
+                  let parsed = new Date(trimmed);
+                  if (!isNaN(parsed.getTime())) return parsed;
+                  
+                  // Try parsing common date formats (MM/DD/YYYY, DD-MM-YYYY, etc.)
+                  // Handle formats like "01/15/2024" or "15-01-2024"
+                  const dateFormats = [
+                    /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,  // MM/DD/YYYY or DD/MM/YYYY
+                    /^(\d{1,2})-(\d{1,2})-(\d{4})/,    // DD-MM-YYYY or MM-DD-YYYY
+                    /^(\d{4})-(\d{1,2})-(\d{1,2})/,    // YYYY-MM-DD
+                    /^(\d{4})\/(\d{1,2})\/(\d{1,2})/,  // YYYY/MM/DD
+                  ];
+                  
+                  for (const format of dateFormats) {
+                    const match = trimmed.match(format);
+                    if (match) {
+                      if (format === dateFormats[0] || format === dateFormats[1]) {
+                        // MM/DD/YYYY or DD-MM-YYYY - try both interpretations
+                        const [_, part1, part2, year] = match;
+                        // Try MM/DD/YYYY first (US format)
+                        parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
+                        if (!isNaN(parsed.getTime())) return parsed;
+                        // Try DD/MM/YYYY (European format)
+                        parsed = new Date(parseInt(year), parseInt(part2) - 1, parseInt(part1));
+                        if (!isNaN(parsed.getTime())) return parsed;
+                      } else {
+                        // YYYY-MM-DD or YYYY/MM/DD
+                        const [_, year, month, day] = match;
+                        parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+                        if (!isNaN(parsed.getTime())) return parsed;
+                      }
+                    }
+                  }
+                }
+                
+                return undefined;
+              };
+              
+              // Helper function for case-insensitive column lookup
+              const getColumnValue = (row: any, variations: string[]): string => {
+                for (const variation of variations) {
+                  // Try exact match first
+                  if (row[variation] !== undefined && row[variation] !== '') {
+                    return row[variation];
+                  }
+                  // Try case-insensitive match
+                  const rowKeys = Object.keys(row);
+                  const matchedKey = rowKeys.find(key => 
+                    key.toLowerCase().trim() === variation.toLowerCase().trim()
+                  );
+                  if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') {
+                    return row[matchedKey];
+                  }
+                }
+                return '';
               };
               
               // Parse each row in the sheet
               jsonData.forEach((row: any) => {
-                const customerCode = row['Customer Code'] || row['CustomerCode'] || row['customer code'] || '';
-                const customerPart = row['Custmer Part'] || row['Customer Part'] || row['CustomerPart'] || '';
-                const qadPart = row['QAD part'] || row['QAD Part'] || row['QADPart'] || '';
-                const description = row['Description'] || row['description'] || '';
-                const snp = parseInt(row['SNP'] || row['snp'] || '0') || 0;
-                const bin = parseInt(row['Bin'] || row['bin'] || '0') || 0;
+                const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
+                const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
+                const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
+                const description = getColumnValue(row, ['Description', 'description']) || '';
+                const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
+                const bin = parseInt(getColumnValue(row, ['Bin', 'bin']) || '0') || 0;
                 
-                // Extract delivery date/time from various column name variations
-                const deliveryDateTime = row['Delivery Date & Time'] || row['Delivery Date and Time'] || 
-                                       row['DeliveryDateTime'] || row['Delivery Date'] || 
-                                       row['Supply Date'] || row['SupplyDate'] || '';
-                const supplyTime = row['Supply Time'] || row['SupplyTime'] || row['Delivery Time'] || 
-                                 row['DeliveryTime'] || '';
+                // Extract delivery date/time from various column name variations (case-insensitive)
+                // Including "SUPPLY DATE" (all uppercase) as specified
+                const deliveryDateTime = getColumnValue(row, [
+                  'SUPPLY DATE',  // Exact match for the user's file
+                  'Supply Date',
+                  'SupplyDate',
+                  'supply date',
+                  'Delivery Date & Time', 
+                  'Delivery Date and Time', 
+                  'DeliveryDateTime', 
+                  'Delivery Date',
+                  'delivery date'
+                ]);
+                
+                const supplyTime = getColumnValue(row, [
+                  'Supply Time',
+                  'SupplyTime',
+                  'SUPPLY TIME',
+                  'supply time',
+                  'Delivery Time',
+                  'DeliveryTime',
+                  'delivery time'
+                ]);
                 
                 // Parse delivery date
                 const deliveryDate = parseDate(deliveryDateTime);
                 
                 // Extract delivery time (from combined datetime or separate time field)
                 const timeStr = supplyTime || deliveryDateTime;
-                const deliveryShift = timeToShift(timeStr);
                 
                 // Extract plant if available in schedule
-                const plant = row['Plant'] || row['plant'] || row['Plant Code'] || 
-                            row['PlantCode'] || row['Delivery Location'] || 
-                            row['DeliveryLocation'] || '';
+                const plant = getColumnValue(row, [
+                  'Plant',
+                  'plant',
+                  'PLANT',
+                  'Plant Code',
+                  'PlantCode',
+                  'Delivery Location',
+                  'DeliveryLocation',
+                  'delivery location'
+                ]);
                 
                 // Only add items with valid customer code
                 if (customerCode) {
@@ -892,6 +914,12 @@ const Dashboard = () => {
           
           console.log(`Total schedule items parsed: ${allScheduleItems.length}`);
           console.log('Unique customer codes:', [...new Set(allScheduleItems.map(i => i.customerCode))]);
+          const itemsWithDeliveryDate = allScheduleItems.filter(i => i.deliveryDate);
+          console.log(`Items with delivery date: ${itemsWithDeliveryDate.length} out of ${allScheduleItems.length}`);
+          if (itemsWithDeliveryDate.length > 0) {
+            const uniqueDates = [...new Set(itemsWithDeliveryDate.map(i => i.deliveryDate?.toISOString().split('T')[0]))];
+            console.log('Unique delivery dates found:', uniqueDates);
+          }
           
           resolve(allScheduleItems);
         } catch (error) {
@@ -996,23 +1024,92 @@ const Dashboard = () => {
       // Get unique customer codes from schedule
       const scheduledCustomerCodes = new Set(scheduleItems.map(item => String(item.customerCode)));
       
+      // Create schedule index: Map<customerCode, Set<customerPart>> for fast lookup
+      const scheduleIndex = new Map<string, Set<string>>();
+      scheduleItems.forEach(item => {
+        const customerCode = String(item.customerCode);
+        const customerPart = String(item.customerPart);
+        if (!scheduleIndex.has(customerCode)) {
+          scheduleIndex.set(customerCode, new Set());
+        }
+        scheduleIndex.get(customerCode)!.add(customerPart);
+      });
+      
+      // Group invoices by customer code (billTo)
+      const invoicesByCustomerCode = new Map<string, InvoiceData[]>();
+      invoices.forEach(inv => {
+        const customerCode = inv.billTo ? String(inv.billTo) : 'UNKNOWN';
+        if (!invoicesByCustomerCode.has(customerCode)) {
+          invoicesByCustomerCode.set(customerCode, []);
+        }
+        invoicesByCustomerCode.get(customerCode)!.push(inv);
+      });
+      
+      // Match invoice items with schedule items
+      // For each row (invoice item), check if it matches schedule
+      const matchedRows = rows.map(row => {
+        // Only match items that are not in error/warning state
+        if (row.status === 'error' || row.status === 'warning') {
+          return row;
+        }
+        
+        // Find the invoice this row belongs to
+        const invoice = invoices.find(inv => inv.id === row.invoice);
+        if (!invoice || !invoice.billTo) {
+          // Invoice has no customer code, keep as unmatched
+          return { ...row, status: 'valid-unmatched' as const };
+        }
+        
+        const invoiceCustomerCode = String(invoice.billTo);
+        const customerPartsSet = scheduleIndex.get(invoiceCustomerCode);
+        
+        // If invoice customer code doesn't exist in schedule, keep as unmatched
+        if (!customerPartsSet) {
+          return { ...row, status: 'valid-unmatched' as const };
+        }
+        
+        // If row doesn't have customerItem, keep as unmatched
+        if (!row.customerItem || row.customerItem.trim() === '') {
+          return { ...row, status: 'valid-unmatched' as const };
+        }
+        
+        // Check if customerItem matches any customerPart in schedule for this customer code
+        const customerItem = String(row.customerItem).trim();
+        if (customerPartsSet.has(customerItem)) {
+          return { ...row, status: 'valid-matched' as const };
+        } else {
+          return { ...row, status: 'valid-unmatched' as const };
+        }
+      });
+      
+      // Update invoice items with matched rows
+      invoices.forEach(invoice => {
+        invoice.items = matchedRows.filter(row => row.invoice === invoice.id);
+      });
+      
       // Calculate matching statistics
       const matchedInvoices = invoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)));
       const unmatchedInvoices = invoices.filter(inv => !inv.billTo || !scheduledCustomerCodes.has(String(inv.billTo)));
+      
+      const matchedItemsCount = matchedRows.filter(row => row.status === 'valid-matched').length;
+      const unmatchedItemsCount = matchedRows.filter(row => row.status === 'valid-unmatched').length;
       
       console.log('Matching results:', {
         totalInvoices: invoices.length,
         matchedInvoices: matchedInvoices.length,
         unmatchedInvoices: unmatchedInvoices.length,
         scheduleItemCount: scheduleItems.length,
-        scheduledCustomerCodes: [...scheduledCustomerCodes]
+        scheduledCustomerCodes: [...scheduledCustomerCodes],
+        invoicesByCustomerCode: Object.fromEntries(Array.from(invoicesByCustomerCode.entries()).map(([code, invs]) => [code, invs.length])),
+        matchedItems: matchedItemsCount,
+        unmatchedItems: unmatchedItemsCount
       });
       
-      if (isMobile && rows.length > 100) {
-        toast.loading(`Processing ${rows.length} records...`, { id: 'processing' });
+      if (isMobile && matchedRows.length > 100) {
+        toast.loading(`Processing ${matchedRows.length} records...`, { id: 'processing' });
       }
       
-      setUploadedData(rows);
+      setUploadedData(matchedRows);
       setProcessedInvoices(invoices);
       setParsedScheduleItems(scheduleItems);
       setUploadStage('validate');
@@ -1065,159 +1162,6 @@ const Dashboard = () => {
     // Add invoices to shared session
     addInvoices(processedInvoices, currentUser);
     
-    // Add additional dummy invoices across multiple dates after upload
-    const today = new Date();
-    const additionalInvoices: InvoiceData[] = [
-      // Oct 13 - Additional invoices
-      {
-        id: '2510706713',
-        customer: 'BHARAT SEATS LIMITED',
-        invoiceDate: new Date(today),
-        totalQty: 160,
-        binCapacity: 80,
-        expectedBins: 2,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      {
-        id: '2510706727',
-        customer: 'HONDA CARS INDIA LTD',
-        invoiceDate: new Date(today),
-        totalQty: 240,
-        binCapacity: 80,
-        expectedBins: 3,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      // Oct 14 - Additional invoices
-      {
-        id: '2510706716',
-        customer: 'KRISHNA MARUTI LTD SEATING',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
-        totalQty: 80,
-        binCapacity: 80,
-        expectedBins: 1,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      {
-        id: '2510706728',
-        customer: 'MARUTI SUZUKI INDIA Ltd-II',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
-        totalQty: 150,
-        binCapacity: 50,
-        expectedBins: 3,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      // Oct 15 - New invoices
-      {
-        id: '2510706717',
-        customer: 'HONDA CARS INDIA LTD',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2),
-        totalQty: 160,
-        binCapacity: 80,
-        expectedBins: 2,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      {
-        id: '2510706718',
-        customer: 'SUZUKI MOTORS GUJARAT PVT LT',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2),
-        totalQty: 200,
-        binCapacity: 50,
-        expectedBins: 4,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      // Oct 16 - New invoices
-      {
-        id: '2510706720',
-        customer: 'SUZUKI MOTORS GUJARAT PVT LT',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3),
-        totalQty: 100,
-        binCapacity: 50,
-        expectedBins: 2,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      {
-        id: '2510706721',
-        customer: 'VENDOR CODE: 703160',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3),
-        totalQty: 240,
-        binCapacity: 80,
-        expectedBins: 3,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      // Oct 17 - New invoices
-      {
-        id: '2510706723',
-        customer: 'VENDOR CODE: 703160',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 4),
-        totalQty: 80,
-        binCapacity: 80,
-        expectedBins: 1,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      },
-      {
-        id: '2510706724',
-        customer: 'MARUTI SUZUKI INDIA Ltd-II',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 4),
-        totalQty: 150,
-        binCapacity: 50,
-        expectedBins: 3,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: currentUser,
-        uploadedAt: new Date()
-      }
-    ];
-    
-    // Add additional dummy invoices to the session
-    addInvoices(additionalInvoices, currentUser);
-    
     setUploadStage('complete');
     toast.success(`Data imported successfully by ${currentUser}!`, {
       description: "Invoices are now available for all users to audit"
@@ -1229,26 +1173,29 @@ const Dashboard = () => {
   const matchedInvoicesCount = processedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo))).length;
   const unmatchedInvoicesCount = processedInvoices.length - matchedInvoicesCount;
   
+  // Group invoices by customer code for statistics
+  const invoicesByCustomerCode = new Map<string, number>();
+  processedInvoices.forEach(inv => {
+    const customerCode = inv.billTo ? String(inv.billTo) : 'UNKNOWN';
+    invoicesByCustomerCode.set(customerCode, (invoicesByCustomerCode.get(customerCode) || 0) + 1);
+  });
+  
   const validationResults = {
     total: uploadedData.length,
-    valid: uploadedData.filter(row => row.status === 'valid').length,
+    valid: uploadedData.filter(row => row.status === 'valid-matched' || row.status === 'valid-unmatched').length,
+    matchedItems: uploadedData.filter(row => row.status === 'valid-matched').length,
+    unmatchedItems: uploadedData.filter(row => row.status === 'valid-unmatched').length,
     errors: uploadedData.filter(row => row.status === 'error').length,
     warnings: uploadedData.filter(row => row.status === 'warning').length,
     // Schedule matching info
     invoiceCount: processedInvoices.length,
     scheduleItemCount: parsedScheduleItems.length,
     matchedInvoices: matchedInvoicesCount,
-    unmatchedInvoices: unmatchedInvoicesCount
+    unmatchedInvoices: unmatchedInvoicesCount,
+    invoicesByCustomerCode: Object.fromEntries(invoicesByCustomerCode)
   };
 
   // Doc Audit data and handlers
-  // Helper function to check if a date is today
-  const isToday = (date: Date): boolean => {
-  const today = new Date();
-    return date.getDate() === today.getDate() &&
-           date.getMonth() === today.getMonth() &&
-           date.getFullYear() === today.getFullYear();
-  };
 
   // Get available customer codes from invoices with schedule
   const availableCustomerCodes = useMemo(() => {
@@ -1256,73 +1203,17 @@ const Dashboard = () => {
     invoicesWithSchedule.forEach(inv => {
       if (inv.billTo) codes.add(inv.billTo);
     });
-    // If no codes found, generate dummy customer codes
-    if (codes.size === 0 && scheduleData) {
-      return Array.from({ length: 10 }, (_, i) => `CUST${String(i + 1).padStart(3, '0')}`);
-    }
-    return Array.from(codes).sort().slice(0, 10); // Limit to 10 codes
+    // Only return actual customer codes from data - no dummy codes
+    return Array.from(codes).sort();
   }, [invoicesWithSchedule, scheduleData]);
 
-  // Dummy data generator for delivery dates and plants
-  const generateDummyData = useMemo(() => {
-    // Generate base dates: Dec 27, 2025 to Jan 10, 2026 (15 days)
-    const baseDate = new Date(2025, 11, 27); // December 27, 2025 (month is 0-indexed)
-    const allDates: Date[] = [];
-    for (let i = 0; i < 15; i++) {
-      const date = new Date(baseDate);
-      date.setDate(baseDate.getDate() + i);
-      allDates.push(date);
-    }
-
-    // Dummy plant names
-    const allPlants = [
-      "Gurgaon Plant",
-      "Manesar Plant",
-      "Noida Plant",
-      "Faridabad Plant",
-      "Delhi Plant",
-      "Pune Plant",
-      "Mumbai Plant",
-      "Chennai Plant",
-      "Bangalore Plant",
-      "Hyderabad Plant"
-    ];
-
-    // Generate dummy data for up to 10 customer codes
-    const dummyDataMap: Record<string, { dates: Date[], plants: string[] }> = {};
-    
-    // Use available customer codes or create dummy ones
-    const customerCodes = availableCustomerCodes.length > 0 
-      ? availableCustomerCodes.slice(0, 10)
-      : Array.from({ length: 10 }, (_, i) => `CUST${String(i + 1).padStart(3, '0')}`);
-
-    customerCodes.forEach((code) => {
-      // Generate 2-5 random dates for each customer code
-      const numDates = 2 + Math.floor(Math.random() * 4); // 2-5 dates
-      const shuffledDates = [...allDates].sort(() => Math.random() - 0.5);
-      const selectedDates = shuffledDates.slice(0, numDates).sort((a, b) => a.getTime() - b.getTime());
-
-      // Generate 2-5 random plants for each customer code
-      const numPlants = 2 + Math.floor(Math.random() * 4); // 2-5 plants
-      const shuffledPlants = [...allPlants].sort(() => Math.random() - 0.5);
-      const selectedPlants = shuffledPlants.slice(0, numPlants);
-
-      dummyDataMap[code] = {
-        dates: selectedDates,
-        plants: selectedPlants
-      };
-    });
-
-    return dummyDataMap;
-  }, [availableCustomerCodes]);
-
-  // Get available delivery dates for selected customer code
+  // Get available delivery dates for selected customer code (only from actual schedule data)
   const availableDeliveryDates = useMemo(() => {
     if (!selectedCustomerCode) return [];
     
     const dates = new Set<string>();
     
-    // First, try to get dates from schedule data
+    // Only get dates from schedule data - no dummy data
     if (scheduleData) {
       const scheduleItems = scheduleData.items.filter(
         item => String(item.customerCode) === String(selectedCustomerCode)
@@ -1334,156 +1225,34 @@ const Dashboard = () => {
       });
     }
     
-    // Always add dummy data (2-5 dates per customer code)
-    if (generateDummyData[selectedCustomerCode]) {
-      generateDummyData[selectedCustomerCode].dates.forEach(date => {
-        dates.add(date.toISOString().split('T')[0]);
-      });
-    } else {
-      // Generate dummy data on the fly if not in map
-      const baseDate = new Date(2025, 11, 27); // December 27, 2025
-      const numDates = 2 + Math.floor(Math.random() * 4); // 2-5 dates
-      const allDates: Date[] = [];
-      for (let i = 0; i < 15; i++) {
-        const date = new Date(baseDate);
-        date.setDate(baseDate.getDate() + i);
-        allDates.push(date);
-      }
-      const shuffledDates = [...allDates].sort(() => Math.random() - 0.5);
-      shuffledDates.slice(0, numDates).forEach(date => {
-        dates.add(date.toISOString().split('T')[0]);
-      });
-    }
-    
     return Array.from(dates).sort();
-  }, [selectedCustomerCode, scheduleData, generateDummyData]);
+  }, [selectedCustomerCode, scheduleData]);
 
-  // Get available plants for selected customer code
-  const availablePlants = useMemo(() => {
-    if (!selectedCustomerCode) return [];
-    const plants = new Set<string>();
+  // Get available delivery times for selected customer code and delivery date (only from schedule data)
+  const availableDeliveryTimes = useMemo(() => {
+    if (!selectedCustomerCode || !selectedDeliveryDate) return [];
+    const times = new Set<string>();
     
-    // Get plants from invoices
-    invoicesWithSchedule.forEach(inv => {
-      if (inv.billTo === selectedCustomerCode && inv.plant) {
-        plants.add(inv.plant);
-      }
-    });
-    
-    // Get plants from schedule items
+    // Get delivery times from schedule items matching customer code and delivery date
     if (scheduleData) {
       const scheduleItems = scheduleData.items.filter(
-        item => String(item.customerCode) === String(selectedCustomerCode)
+        item => {
+          if (String(item.customerCode) !== String(selectedCustomerCode)) return false;
+          if (!item.deliveryDate) return false;
+          const itemDate = item.deliveryDate.toISOString().split('T')[0];
+          const selectedDate = selectedDeliveryDate.toISOString().split('T')[0];
+          return itemDate === selectedDate;
+        }
       );
       scheduleItems.forEach(item => {
-        if (item.plant) plants.add(item.plant);
+        if (item.deliveryTime) {
+          times.add(item.deliveryTime);
+        }
       });
     }
     
-    // Always add dummy data (2-5 plants per customer code)
-    if (generateDummyData[selectedCustomerCode]) {
-      generateDummyData[selectedCustomerCode].plants.forEach(plant => {
-        plants.add(plant);
-      });
-    } else {
-      // Generate dummy data on the fly if not in map
-      const allPlants = [
-        "Gurgaon Plant",
-        "Manesar Plant",
-        "Noida Plant",
-        "Faridabad Plant",
-        "Delhi Plant",
-        "Pune Plant",
-        "Mumbai Plant",
-        "Chennai Plant",
-        "Bangalore Plant",
-        "Hyderabad Plant"
-      ];
-      const numPlants = 2 + Math.floor(Math.random() * 4); // 2-5 plants
-      const shuffledPlants = [...allPlants].sort(() => Math.random() - 0.5);
-      shuffledPlants.slice(0, numPlants).forEach(plant => {
-        plants.add(plant);
-      });
-    }
-    
-    return Array.from(plants).sort();
-  }, [selectedCustomerCode, invoicesWithSchedule, scheduleData, generateDummyData]);
-
-  // Generate dummy invoices based on selections - cached to keep IDs stable
-  const generateDummyInvoices = useMemo(() => {
-    if (!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant) return [];
-    
-    // Create a cache key from the selections (use date string without time to avoid timezone issues)
-    const selectionKey = `${selectedCustomerCode}-${selectedDeliveryDate.toISOString().split('T')[0]}-${selectedPlant}`;
-    
-    // Check if we already have cached invoices for this combination
-    if (dummyInvoicesCache.current[selectionKey]) {
-      return dummyInvoicesCache.current[selectionKey];
-    }
-    
-    // Generate deterministic number of invoices based on selections (not random)
-    // Use a simple hash of the selections to get consistent results
-    let hash = 0;
-    for (let i = 0; i < selectionKey.length; i++) {
-      hash = ((hash << 5) - hash) + selectionKey.charCodeAt(i);
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    // Use hash to generate consistent number between 2-5
-    const numInvoices = 2 + (Math.abs(hash) % 4); // 2-5 invoices, but consistent for same inputs
-    const dummyInvoices: InvoiceData[] = [];
-    
-    const customerNames: Record<string, string> = {
-      '1223': 'BHARAT SEATS LIMITED',
-      '1222': 'BHARAT SEATS LIMITED',
-      '1228': 'KRISHNA MARUTI LTD SEATING',
-      'CUST001': 'Customer 001',
-      'CUST002': 'Customer 002',
-      'CUST003': 'Customer 003',
-      'CUST004': 'Customer 004',
-      'CUST005': 'Customer 005',
-      'CUST006': 'Customer 006',
-      'CUST007': 'Customer 007',
-      'CUST008': 'Customer 008',
-      'CUST009': 'Customer 009',
-      'CUST010': 'Customer 010',
-    };
-    
-    const baseInvoiceId = parseInt(selectedCustomerCode.replace(/\D/g, '')) || 1000;
-    
-    // Also use hash for consistent quantity and bin capacity
-    for (let i = 0; i < numInvoices; i++) {
-      const invoiceHash = hash + i; // Different hash for each invoice
-      const invoiceId = `${baseInvoiceId}${String(i + 1).padStart(3, '0')}`;
-      const totalQty = 50 + (Math.abs(invoiceHash) % 200); // 50-250 quantity, consistent
-      const binCapacity = [50, 80, 100][Math.abs(invoiceHash) % 3]; // Consistent bin capacity
-      const expectedBins = Math.ceil(totalQty / binCapacity);
-      
-      dummyInvoices.push({
-        id: invoiceId,
-        customer: customerNames[selectedCustomerCode] || `Customer ${selectedCustomerCode}`,
-        invoiceDate: new Date(selectedDeliveryDate),
-        totalQty,
-        binCapacity,
-        expectedBins,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        billTo: selectedCustomerCode,
-        scheduledDate: selectedDeliveryDate,
-        shift: currentShift,
-        plant: selectedPlant,
-        deliveryDate: selectedDeliveryDate,
-        uploadedBy: 'System',
-        uploadedAt: new Date(),
-      });
-    }
-    
-    // Cache the generated invoices for this combination to keep IDs stable
-    dummyInvoicesCache.current[selectionKey] = dummyInvoices;
-    
-    return dummyInvoices;
-  }, [selectedCustomerCode, selectedDeliveryDate, selectedPlant, currentShift]);
+    return Array.from(times).sort();
+  }, [selectedCustomerCode, selectedDeliveryDate, scheduleData]);
 
   // Get invoices with schedule for Doc Audit - filtered by selections
   // Reuse invoicesWithSchedule declared above for KPIs
@@ -1492,8 +1261,6 @@ const Dashboard = () => {
     let filtered = invoicesWithSchedule.filter(inv => {
       // Hide dispatched invoices
       if (inv.dispatchedBy) return false;
-      // Auto-filter by current shift only
-      if (inv.shift !== currentShift) return false;
       
       // Filter by customer code if selected
       if (selectedCustomerCode && inv.billTo !== selectedCustomerCode) return false;
@@ -1515,30 +1282,34 @@ const Dashboard = () => {
       return true;
     });
     
-    // Store invoices before plant filtering to keep them stable
-    const invoicesBeforePlantFilter = filtered;
+    // Store invoices before delivery time filtering to keep them stable
+    const invoicesBeforeTimeFilter = filtered;
     
-    // Now filter by plant if selected (but keep the same invoice IDs)
-    if (selectedPlant) {
-      filtered = filtered.filter(inv => inv.plant === selectedPlant);
+    // Now filter by delivery time if selected (match invoices with schedule items that have the selected delivery time)
+    if (selectedDeliveryTime && scheduleData) {
+      filtered = filtered.filter(inv => {
+        const customerCode = selectedCustomerCode || inv.billTo;
+        if (!customerCode) return false;
+        
+        const scheduleItems = scheduleData.items.filter(
+          item => {
+            if (String(item.customerCode) !== String(customerCode)) return false;
+            if (!item.deliveryDate || !selectedDeliveryDate) return false;
+            const itemDate = item.deliveryDate.toISOString().split('T')[0];
+            const selectedDate = selectedDeliveryDate.toISOString().split('T')[0];
+            if (itemDate !== selectedDate) return false;
+            return item.deliveryTime === selectedDeliveryTime;
+          }
+        );
+        
+        // Invoice matches if there are schedule items with the selected delivery time for this customer
+        return scheduleItems.length > 0;
+      });
     }
     
-    // Only add dummy invoices if we have NO real invoices matching customer code + delivery date
-    // This prevents invoice IDs from changing when plant is selected
-    if (selectedCustomerCode && selectedDeliveryDate && selectedPlant) {
-      if (invoicesBeforePlantFilter.length === 0) {
-        // No real invoices match customer code + delivery date - use dummy invoices
-        return generateDummyInvoices;
-      } else {
-        // We have real invoices matching customer code + delivery date
-        // Return filtered list (by plant if selected), but don't add dummy invoices
-        // This keeps invoice IDs stable even when plant filter changes
-        return filtered;
-      }
-    }
-    
+    // Only return actual invoices - no dummy data
     return filtered;
-  }, [invoicesWithSchedule, currentShift, selectedCustomerCode, selectedPlant, selectedDeliveryDate, scheduleData, generateDummyInvoices]);
+  }, [invoicesWithSchedule, selectedCustomerCode, selectedDeliveryTime, selectedDeliveryDate, scheduleData]);
   
   // Group invoices by scheduled date for display
   const groupedByDate = invoices.reduce((acc, inv) => {
@@ -1558,27 +1329,53 @@ const Dashboard = () => {
   // Use sharedInvoices version for accurate scanning progress - prefer sharedInvoices as it has latest scannedBins
   const invoiceForProgress = currentInvoiceFromShared || currentInvoice;
   const invoiceForDisplay = currentInvoiceFromShared || currentInvoice; // Use sharedInvoices version for display
-  const progress = invoiceForDisplay ? (invoiceForDisplay.scannedBins / invoiceForDisplay.expectedBins) * 100 : 0;
-
-  // Add dummy invoices to sharedInvoices so they can be updated during scanning
-  useEffect(() => {
-    if (generateDummyInvoices.length > 0) {
-      // Check which dummy invoices are not yet in sharedInvoices
-      const existingIds = new Set(sharedInvoices.map(inv => inv.id));
-      const newDummyInvoices = generateDummyInvoices.filter(inv => !existingIds.has(inv.id));
-      
-      if (newDummyInvoices.length > 0) {
-        // Add dummy invoices to sharedInvoices so updateInvoiceAudit can find them
-        addInvoices(newDummyInvoices, 'System');
+  
+  // Helper function to extract unique Customer Items from invoice items
+  const getUniqueCustomerItems = (invoice: InvoiceData | undefined) => {
+    if (!invoice || !invoice.items || invoice.items.length === 0) return [];
+    
+    const customerItemMap = new Map<string, {
+      customerItem: string;
+      itemNumber: string;
+      partDescription: string;
+      quantity: number;
+    }>();
+    
+    invoice.items.forEach((item: UploadedRow) => {
+      const customerItem = item.customerItem || '';
+      if (customerItem) {
+        // If this Customer Item already exists, aggregate quantities
+        if (customerItemMap.has(customerItem)) {
+          const existing = customerItemMap.get(customerItem)!;
+          existing.quantity += item.qty;
+        } else {
+          customerItemMap.set(customerItem, {
+            customerItem: customerItem,
+            itemNumber: item.part || '',
+            partDescription: item.partDescription || '',
+            quantity: item.qty
+          });
+        }
       }
-    }
-  }, [generateDummyInvoices, sharedInvoices, addInvoices]);
+    });
+    
+    return Array.from(customerItemMap.values());
+  };
+  
+  const uniqueCustomerItems = getUniqueCustomerItems(invoiceForDisplay);
+  const scannedCustomerItemsCount = validatedBins.length;
+  const totalCustomerItemsCount = uniqueCustomerItems.length;
+  const progress = totalCustomerItemsCount > 0 ? (scannedCustomerItemsCount / totalCustomerItemsCount) * 100 : 0;
+
 
   // Clear validated bins when invoice selection changes
   useEffect(() => {
     setValidatedBins([]);
     setCustomerScan(null);
     setAutolivScan(null);
+    setFirstScanType(null);
+    // Note: scannedBins count is preserved in invoice data, so progress is maintained
+    // When invoice is selected again, user will see correct progress but needs to re-scan to see details
   }, [selectedInvoice]);
 
   // Clear selected invoice in Doc Audit if it gets dispatched
@@ -1626,6 +1423,21 @@ const Dashboard = () => {
     }
   }, [activeView]);
 
+  // Track which label was scanned first
+  useEffect(() => {
+    if (customerScan && !autolivScan) {
+      // Only set if not already set (customer scanned first)
+      if (!firstScanType) {
+        setFirstScanType('customer');
+      }
+    } else if (autolivScan && !customerScan) {
+      // Only set if not already set (autoliv scanned first)
+      if (!firstScanType) {
+        setFirstScanType('autoliv');
+      }
+    }
+  }, [customerScan, autolivScan]); // Removed firstScanType from dependencies to avoid reset loops
+
   // Auto-validate when both barcodes are scanned
   useEffect(() => {
     if (customerScan && autolivScan) {
@@ -1635,59 +1447,166 @@ const Dashboard = () => {
   }, [customerScan, autolivScan]);
 
   const handleValidateBarcodes = () => {
+    // Check if invoice is blocked
+    const invoiceToCheck = invoiceForDisplay || currentInvoiceFromShared;
+    if (invoiceToCheck?.blocked) {
+      toast.error("⚠️ Invoice is Blocked", {
+        description: "This invoice has a mismatch. Please wait for admin to mark it as corrected.",
+        duration: 5000,
+      });
+      return;
+    }
+
     if (!customerScan || !autolivScan) {
       toast.error("Please scan both barcodes");
       return;
     }
     
+    // Determine scan order: Customer Label first = match, Autoliv Label first = mismatch
+    const customerScannedFirst = firstScanType === 'customer';
+    const autolivScannedFirst = firstScanType === 'autoliv';
+    
     // Check if barcodes match (comparing raw values)
     const barcodesMatch = customerScan.rawValue.trim() === autolivScan.rawValue.trim();
     
-    if (barcodesMatch) {
-      // Parse quantity properly - handle NaN, null, undefined, empty strings, whitespace
-      let parsedQuantity: number;
-      const quantityStr = customerScan.quantity?.trim();
+    // Enforce scan order rule:
+    // - Customer Label first + Autoliv Label second = should match
+    // - Autoliv Label first + Customer Label second = should mismatch (even if barcodes match)
+    let shouldMatch = false;
+    if (customerScannedFirst && barcodesMatch) {
+      shouldMatch = true;
+    } else if (autolivScannedFirst) {
+      // Always mismatch if Autoliv scanned first
+      shouldMatch = false;
+    } else if (customerScannedFirst && !barcodesMatch) {
+      // Customer scanned first but barcodes don't match = mismatch
+      shouldMatch = false;
+    }
+    
+    if (shouldMatch) {
+      // Get invoice from sharedInvoices for accurate state (prefer sharedInvoices, fallback to invoices array)
+      const invoiceInSharedState = sharedInvoices.find(inv => inv.id === selectedInvoice);
+      const invoiceForScanning = invoiceInSharedState || currentInvoice;
       
-      if (quantityStr && quantityStr.length > 0) {
-        parsedQuantity = parseInt(quantityStr, 10);
-        // Check if parsing resulted in NaN or invalid number
-        if (isNaN(parsedQuantity) || parsedQuantity < 0) {
-          toast.error("⚠️ Invalid quantity in barcode!", {
-            description: `Could not parse quantity "${quantityStr}". Please scan again.`,
-            duration: 4000,
-          });
-          // Clear the input fields
-          setCustomerScan(null);
-          setAutolivScan(null);
-          return;
-        }
-        // Also check if it's a valid integer (not a float that got truncated)
-        if (parseFloat(quantityStr) !== parsedQuantity) {
-          toast.error("⚠️ Invalid quantity format!", {
-            description: `Quantity must be a whole number. Found: "${quantityStr}". Please scan again.`,
-            duration: 4000,
-          });
-          // Clear the input fields
-          setCustomerScan(null);
-          setAutolivScan(null);
-          return;
-        }
-      } else {
-        toast.error("⚠️ Missing quantity in barcode!", {
-          description: "The scanned barcode does not contain quantity information. Please scan again.",
+      if (!invoiceForScanning || !invoiceForScanning.items || invoiceForScanning.items.length === 0) {
+        toast.error("⚠️ Invoice not found or has no items!", {
+          description: "The selected invoice could not be found or has no line items. Please select an invoice again.",
           duration: 4000,
         });
-        // Clear the input fields
         setCustomerScan(null);
         setAutolivScan(null);
+        setFirstScanType(null);
         return;
       }
       
-      // Create new validated bin entry using extracted barcode data
-      const newBin = {
-        binNo: customerScan.binNumber || "N/A", // Use actual bin number from barcode
-        partCode: customerScan.partCode || "N/A", // Use actual part code from barcode
-        qty: parsedQuantity, // Use properly parsed quantity from barcode
+      let matchedInvoiceItem: UploadedRow | undefined;
+      
+      // When Customer Label is scanned first, skip part code matching and use first unscaned Customer Item
+      if (customerScannedFirst) {
+        // Get unique Customer Items that haven't been scanned yet
+        const uniqueCustomerItems = getUniqueCustomerItems(invoiceForScanning);
+        const scannedCustomerItems = new Set(validatedBins.map(bin => bin.customerItem));
+        const unscanedCustomerItems = uniqueCustomerItems.filter(item => 
+          !scannedCustomerItems.has(item.customerItem)
+        );
+        
+        if (unscanedCustomerItems.length === 0) {
+          toast.error("⚠️ All Customer Items already scanned!", {
+            description: "All Customer Items for this invoice have already been scanned.",
+            duration: 4000,
+          });
+          setCustomerScan(null);
+          setAutolivScan(null);
+          setFirstScanType(null);
+          return;
+        }
+        
+        // Use the first unscaned Customer Item
+        const selectedCustomerItem = unscanedCustomerItems[0];
+        
+        // Find an invoice item with this Customer Item to get the full details
+        matchedInvoiceItem = invoiceForScanning.items.find((item: UploadedRow) => 
+          item.customerItem && item.customerItem.trim() === selectedCustomerItem.customerItem
+        );
+        
+        if (!matchedInvoiceItem) {
+          // Fallback: create a dummy item from the unique customer item data
+          matchedInvoiceItem = {
+            invoice: invoiceForScanning.id,
+            customer: invoiceForScanning.customer,
+            part: selectedCustomerItem.itemNumber,
+            qty: selectedCustomerItem.quantity,
+            status: 'valid-matched',
+            customerItem: selectedCustomerItem.customerItem,
+            partDescription: selectedCustomerItem.partDescription
+          } as UploadedRow;
+        }
+      } else {
+        // Original logic: Match scanned barcode's part code with invoice items
+        const scannedPartCode = customerScan.partCode?.trim();
+        if (!scannedPartCode) {
+          toast.error("⚠️ Invalid barcode!", {
+            description: "Could not extract part code from scanned barcode. Please scan again.",
+            duration: 4000,
+          });
+          setCustomerScan(null);
+          setAutolivScan(null);
+          setFirstScanType(null);
+          return;
+        }
+        
+        // Find invoice item where Item Number (part) matches scanned part code
+        matchedInvoiceItem = invoiceForScanning.items.find((item: UploadedRow) => 
+          item.part && item.part.toString().trim() === scannedPartCode
+        );
+        
+        if (!matchedInvoiceItem) {
+          toast.error("⚠️ Part code mismatch!", {
+            description: `Scanned part code "${scannedPartCode}" does not match any Item Number in this invoice.`,
+            duration: 4000,
+          });
+          setCustomerScan(null);
+          setAutolivScan(null);
+          setFirstScanType(null);
+          return;
+        }
+      }
+      
+      const customerItem = matchedInvoiceItem.customerItem;
+      if (!customerItem || customerItem.trim() === '') {
+        toast.error("⚠️ Missing Customer Item!", {
+          description: "The matched invoice item does not have a Customer Item. Cannot proceed with scan.",
+          duration: 4000,
+        });
+        setCustomerScan(null);
+        setAutolivScan(null);
+        setFirstScanType(null);
+        return;
+      }
+      
+      // Check if this Customer Item has already been scanned
+      const alreadyScanned = validatedBins.some(bin => bin.customerItem === customerItem.trim());
+      
+      if (alreadyScanned) {
+        toast.error("⚠️ Customer Item already scanned!", {
+          description: `Customer Item "${customerItem}" has already been scanned for this invoice.`,
+          duration: 4000,
+        });
+        setCustomerScan(null);
+        setAutolivScan(null);
+        setFirstScanType(null);
+        return;
+      }
+      
+      // Get quantity from invoice data (not from barcode)
+      const invoiceQuantity = matchedInvoiceItem.qty || 0;
+      
+      // Create new validated entry using invoice data
+      const newScannedItem = {
+        customerItem: customerItem.trim(),
+        itemNumber: matchedInvoiceItem.part || '',
+        partDescription: matchedInvoiceItem.partDescription || '',
+        quantity: invoiceQuantity, // Use invoice quantity, not barcode quantity
         status: 'matched',
         scannedBy: currentUser,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1695,103 +1614,27 @@ const Dashboard = () => {
         autolivBarcode: autolivScan.rawValue
       };
       
-      // Get invoice from sharedInvoices for accurate state (prefer sharedInvoices, fallback to invoices array)
-      const invoiceInSharedState = sharedInvoices.find(inv => inv.id === selectedInvoice);
-      const invoiceForScanning = invoiceInSharedState || currentInvoice;
+      // Get unique Customer Items count
+      const uniqueCustomerItems = getUniqueCustomerItems(invoiceForScanning);
+      const totalCustomerItems = uniqueCustomerItems.length;
+      const newScannedCount = validatedBins.length + 1;
+      const isComplete = newScannedCount >= totalCustomerItems;
       
-      // Check for duplicate scan - check both local validatedBins and invoice's validatedBarcodes
-      let isDuplicate = false;
+      // Add to validated bins
+      setValidatedBins(prev => [...prev, newScannedItem]);
       
-      // Check in current invoice's validated barcodes (use sharedInvoices version for accuracy)
-      if (invoiceForScanning?.validatedBarcodes) {
-        const existingInInvoice = invoiceForScanning.validatedBarcodes.find(
-          pair => pair.customerBarcode === customerScan.rawValue.trim() || 
-                  pair.autolivBarcode === autolivScan.rawValue.trim()
-        );
-        if (existingInInvoice) {
-          isDuplicate = true;
-        }
-      }
-      
-      // Update the current invoice's scanned bins count and check if this is the last bin
-      // ALWAYS use invoiceInSharedState (from sharedInvoices) for accurate scannedBins count
-      // This ensures we're incrementing from the correct base value
-      const baseScannedBins = invoiceInSharedState?.scannedBins ?? invoiceForScanning?.scannedBins ?? 0;
-      const expectedBins = invoiceInSharedState?.expectedBins ?? invoiceForScanning?.expectedBins ?? 0;
-      const newScannedCount = baseScannedBins + 1;
-      const isComplete = newScannedCount >= expectedBins;
-      const expectedTotal = invoiceInSharedState?.totalQty ?? invoiceForScanning?.totalQty ?? 0;
-      
-      // Calculate what the total would be after adding this bin
-      const currentTotalBeforeNewBin = validatedBins.reduce((sum, bin) => sum + bin.qty, 0);
-      const totalAfterNewBin = currentTotalBeforeNewBin + parsedQuantity;
-      
-      // If this is the last bin and totals don't match, adjust the quantity
-      let finalQuantity = parsedQuantity;
-      if (isComplete && expectedTotal > 0 && totalAfterNewBin !== expectedTotal) {
-        finalQuantity = expectedTotal - currentTotalBeforeNewBin;
-        if (finalQuantity < 0) {
-          toast.error("⚠️ Error: Scanned quantities exceed invoice total!", {
-            description: `Current total: ${totalAfterNewBin}, Expected: ${expectedTotal}. Please verify previous scans.`,
-            duration: 6000,
-          });
-          setCustomerScan(null);
-          setAutolivScan(null);
-          return;
-        }
-        
-        // Update newBin with corrected quantity
-        newBin.qty = finalQuantity;
-        
-        if (finalQuantity !== parsedQuantity) {
-          toast.warning("⚠️ Quantity adjusted to match invoice total!", {
-            description: `Last bin quantity adjusted from ${parsedQuantity} to ${finalQuantity} to match invoice total of ${expectedTotal}.`,
-            duration: 5000,
-          });
-        }
-      }
-      
-      // Check in local validatedBins state using functional update
-      if (!isDuplicate) {
-        setValidatedBins(prev => {
-          // Check for duplicate scan - prevent scanning the same barcode twice
-          const existingBarcode = prev.find(
-            bin => bin.customerBarcode === customerScan.rawValue.trim() || 
-                   bin.autolivBarcode === autolivScan.rawValue.trim()
-          );
-          
-          if (existingBarcode) {
-            isDuplicate = true;
-            // Return previous state without adding duplicate
-            return prev;
-          }
-          
-          // Add new bin with potentially adjusted quantity
-          return [...prev, { ...newBin, qty: finalQuantity }];
-        });
-      }
-      
-      // If duplicate detected, show error and clear inputs without updating invoice
-      if (isDuplicate) {
-        toast.error("⚠️ Barcode already scanned!", {
-          description: `This barcode (${customerScan.binNumber || customerScan.partCode}) has already been scanned.`,
-          duration: 4000,
-        });
-        // Clear the input fields
-        setCustomerScan(null);
-        setAutolivScan(null);
-        return;
-      }
-      
-      // Update the current invoice's scanned bins count in shared session (only if not duplicate)
-      // Use invoiceForScanning which prefers sharedInvoices version
+      // Update the invoice's scanned Customer Items count in shared session
       if (invoiceForScanning) {
+        // Update scannedBins to represent scanned Customer Items count
+        // Update expectedBins to represent total Customer Items count
+        const invoiceToUpdate = invoiceInSharedState || invoiceForScanning;
+        
         // If invoice is not in sharedInvoices yet, add it first (for dummy invoices)
         if (!invoiceInSharedState && currentInvoice) {
           addInvoices([currentInvoice], 'System');
-          // After adding, use the currentInvoice directly since it will be in sharedInvoices after state update
           updateInvoiceAudit(currentInvoice.id, {
             scannedBins: newScannedCount,
+            expectedBins: totalCustomerItems,
             auditComplete: isComplete,
             auditDate: isComplete ? new Date() : currentInvoice.auditDate,
             validatedBarcodes: [
@@ -1800,10 +1643,9 @@ const Dashboard = () => {
             ]
           }, currentUser);
         } else {
-          // Invoice is already in sharedInvoices, use the one from sharedInvoices for accurate state
-          const invoiceToUpdate = invoiceInSharedState || invoiceForScanning;
           updateInvoiceAudit(invoiceToUpdate.id, {
             scannedBins: newScannedCount,
+            expectedBins: totalCustomerItems,
             auditComplete: isComplete,
             auditDate: isComplete ? new Date() : invoiceToUpdate.auditDate,
             validatedBarcodes: [
@@ -1814,32 +1656,32 @@ const Dashboard = () => {
         }
         
         if (isComplete) {
-          const finalTotal = currentTotalBeforeNewBin + finalQuantity;
           toast.success(`🎉 Invoice audit completed by ${currentUser}!`, {
-            description: `All ${invoiceForScanning.expectedBins} items scanned. Total: ${finalTotal}/${expectedTotal}`
+            description: `All ${totalCustomerItems} Customer Items scanned successfully.`
           });
         }
-      } else {
-        // If invoice not found, show error
-        toast.error("⚠️ Invoice not found!", {
-          description: "The selected invoice could not be found. Please select an invoice again.",
-          duration: 4000,
-        });
       }
       
-      toast.success("✅ Barcodes matched! Item added to list.", {
-        description: `${newBin.partCode} - Qty: ${finalQuantity} - ${newBin.binNo}`
+      toast.success("✅ Barcodes matched! Customer Item added to list.", {
+        description: `Customer Item: ${customerItem} - Qty: ${invoiceQuantity}`
       });
       
-      // Clear the input fields
+      // Clear the input fields and reset scan order
       setCustomerScan(null);
       setAutolivScan(null);
+      setFirstScanType(null);
     } else {
-      // Barcodes don't match - automatically send approval request and record mismatch
+      // Barcodes don't match or wrong scan order - automatically send approval request and record mismatch
       const currentInvoice = sharedInvoices.find(inv => inv.id === selectedInvoice);
       
-      // Record the mismatch in the system
+      // Block the invoice and record the mismatch in the system
       if (currentInvoice) {
+        // Block the invoice
+        updateInvoiceAudit(currentInvoice.id, {
+          blocked: true,
+          blockedAt: new Date()
+        }, currentUser);
+
         addMismatchAlert({
           user: currentUser,
           customer: currentInvoice.customer,
@@ -1860,8 +1702,16 @@ const Dashboard = () => {
         });
       }
       
+      // Show appropriate error message based on scan order
+      let errorDescription = "Part code or quantity doesn't match. Invoice has been blocked.";
+      if (autolivScannedFirst) {
+        errorDescription = "⚠️ Wrong scan order! Please scan Customer Label first, then Autoliv Label. Invoice has been blocked.";
+      } else if (customerScannedFirst && !barcodesMatch) {
+        errorDescription = "Part code or quantity doesn't match. Invoice has been blocked.";
+      }
+      
       toast.error("⚠️ Barcode Mismatch Detected!", {
-        description: "The customer barcode and Autoliv barcode do not match.",
+        description: errorDescription,
         duration: 5000,
       });
       
@@ -1872,6 +1722,11 @@ const Dashboard = () => {
           duration: 5000,
         });
       }, 500);
+      
+      // Clear scans after mismatch
+      setCustomerScan(null);
+      setAutolivScan(null);
+      setFirstScanType(null);
     }
   };
 
@@ -1931,14 +1786,62 @@ const Dashboard = () => {
       return;
     }
 
-    // Add to loaded list with the scanned barcode data including bin number and quantity
+    // Find the invoice item that matches the scanned part code to get Customer Item, Item Number, and quantity
+    let matchedInvoiceItem: UploadedRow | undefined;
+    const scannedPartCode = dispatchCustomerScan.partCode?.trim();
+    
+    // Search through selected invoices to find the matching item
+    for (const invoiceId of selectedInvoices) {
+      const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+      if (invoice && invoice.items && scannedPartCode) {
+        matchedInvoiceItem = invoice.items.find((item: UploadedRow) => 
+          item.part && item.part.toString().trim() === scannedPartCode
+        );
+        if (matchedInvoiceItem) {
+          break; // Found the matching item, exit loop
+        }
+      }
+    }
+    
+    // If no match found, try to use the first unscanned Customer Item from selected invoices (for demo mode)
+    if (!matchedInvoiceItem && selectedInvoices.length > 0) {
+      for (const invoiceId of selectedInvoices) {
+        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+        if (invoice && invoice.items) {
+          // Get all Customer Items from this invoice that haven't been loaded yet
+          const uniqueCustomerItems = getUniqueCustomerItems(invoice);
+          const loadedCustomerItems = new Set(
+            loadedBarcodes.map(pair => pair.customerItem).filter(Boolean)
+          );
+          const unloadedCustomerItem = uniqueCustomerItems.find(item => 
+            !loadedCustomerItems.has(item.customerItem)
+          );
+          
+          if (unloadedCustomerItem) {
+            // Find an invoice item with this Customer Item
+            matchedInvoiceItem = invoice.items.find((item: UploadedRow) => 
+              item.customerItem && item.customerItem.trim() === unloadedCustomerItem.customerItem
+            );
+            if (matchedInvoiceItem) {
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Add to loaded list with the scanned barcode data including invoice item details
     // Autoliv barcode is not required for dispatch, so we set it to empty string
     const newPair: ValidatedBarcodePair = {
       customerBarcode: dispatchCustomerScan.rawValue,
       autolivBarcode: "", // Not required for dispatch
       binNumber: dispatchCustomerScan.binNumber,
       quantity: dispatchCustomerScan.quantity,
-      partCode: dispatchCustomerScan.partCode
+      partCode: dispatchCustomerScan.partCode,
+      // Add invoice item data if found
+      customerItem: matchedInvoiceItem?.customerItem || undefined,
+      itemNumber: matchedInvoiceItem?.part || undefined,
+      actualQuantity: matchedInvoiceItem?.qty || undefined
     };
     
     setLoadedBarcodes(prev => [...prev, newPair]);
@@ -1951,8 +1854,12 @@ const Dashboard = () => {
       }
     });
     
+    const displayInfo = matchedInvoiceItem 
+      ? `${matchedInvoiceItem.customerItem || dispatchCustomerScan.partCode} - Qty: ${matchedInvoiceItem.qty || dispatchCustomerScan.quantity}`
+      : `${dispatchCustomerScan.partCode} - Qty: ${dispatchCustomerScan.quantity}`;
+    
     toast.success("✅ Item loaded successfully!", {
-      description: `${dispatchCustomerScan.partCode} - Qty: ${dispatchCustomerScan.quantity} - ${dispatchCustomerScan.binNumber}`
+      description: displayInfo
     });
     
     // Clear the input fields
@@ -2512,16 +2419,16 @@ const Dashboard = () => {
         {/* Dashboard View */}
         {activeView === 'dashboard' && (
           <>
-            {/* Current Shift KPIs */}
+            {/* Overall System Metrics */}
             <div className="mb-6">
               <div className="flex items-center gap-2 mb-4">
                 <Badge variant="default" className="text-sm px-3 py-1">
-                  {currentShift === 'A' ? '🌅' : '🌙'} {getShiftLabel(currentShift)}
+                  📊 System Overview
                 </Badge>
-                <h2 className="text-lg font-semibold">Current Shift Metrics</h2>
+                <h2 className="text-lg font-semibold">Overall System Metrics</h2>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                {currentShiftKPIs.map((kpi, index) => (
+                {overallSystemKPIs.map((kpi, index) => (
                   <Card key={index} className="hover:shadow-md transition-shadow">
                     <CardContent className="pt-6">
                       <div className="flex items-start justify-between">
@@ -2538,43 +2445,6 @@ const Dashboard = () => {
                         <span className={`text-xs font-semibold ${
                           kpi.trend === 'Active' || kpi.trend === 'Scheduled' ? 'text-primary' : 
                           kpi.trend === 'None' || kpi.trend === 'Empty' ? 'text-muted-foreground' : 
-                          'text-success'
-                        }`}>
-                          {kpi.trend}
-                        </span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-
-            {/* Next Shift KPIs */}
-            <div className="mb-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Badge variant="outline" className="text-sm px-3 py-1">
-                  {nextShift === 'A' ? '🌅' : '🌙'} {getShiftLabel(nextShift)}
-                </Badge>
-                <h2 className="text-lg font-semibold">Next Shift Schedule</h2>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                {nextShiftKPIs.map((kpi, index) => (
-                  <Card key={index} className="hover:shadow-md transition-shadow">
-                    <CardContent className="pt-6">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground mb-1">{kpi.title}</p>
-                          <h3 className="text-3xl font-bold text-foreground mb-1">{kpi.value}</h3>
-                          <p className="text-xs text-muted-foreground">{kpi.subtitle}</p>
-                        </div>
-                        <div className="p-2 bg-primary/10 rounded-lg">
-                          <kpi.icon className="h-5 w-5 text-primary" />
-                        </div>
-                      </div>
-                      <div className="mt-3 pt-3 border-t border-border">
-                        <span className={`text-xs font-semibold ${
-                          kpi.trend === 'Scheduled' ? 'text-primary' : 
-                          kpi.trend === 'None' ? 'text-muted-foreground' : 
                           'text-success'
                         }`}>
                           {kpi.trend}
@@ -3013,37 +2883,58 @@ const Dashboard = () => {
                             <tr>
                               <th className="text-left p-3 font-semibold">Invoice No</th>
                               <th className="text-left p-3 font-semibold">Customer</th>
+                              <th className="text-left p-3 font-semibold">Customer Code</th>
                               <th className="text-left p-3 font-semibold">Part Code</th>
+                              <th className="text-left p-3 font-semibold">Customer Item</th>
                               <th className="text-left p-3 font-semibold">Qty</th>
                               <th className="text-left p-3 font-semibold">Status</th>
                             </tr>
                           </thead>
                           <tbody>
                             {uploadedData.length > 0 ? (
-                              uploadedData.map((row, i) => (
+                              uploadedData.map((row, i) => {
+                                const invoice = processedInvoices.find(inv => inv.id === row.invoice);
+                                const customerCode = invoice?.billTo || '-';
+                                const scheduledCustomerCodes = new Set(parsedScheduleItems.map(item => String(item.customerCode)));
+                                const isInvoiceMatched = invoice?.billTo && scheduledCustomerCodes.has(String(invoice.billTo));
+                                
+                                // Determine status display text based on invoice-level matching
+                                let statusText: string = row.status;
+                                if (row.status === 'error' || row.status === 'warning') {
+                                  statusText = row.status;
+                                } else if (isInvoiceMatched) {
+                                  statusText = 'matched';
+                                } else {
+                                  statusText = 'unmatched';
+                                }
+                                
+                                return (
                                 <tr key={i} className="border-t hover:bg-muted/50">
                                   <td className="p-3">{row.invoice}</td>
                                   <td className="p-3">{row.customer}</td>
+                                  <td className="p-3">{customerCode}</td>
                                   <td className="p-3">{row.part}</td>
+                                  <td className="p-3">{row.customerItem || '-'}</td>
                                   <td className="p-3">{row.qty}</td>
                                   <td className="p-3">
                                     <Badge variant={
-                                      row.status === 'valid' ? 'default' : 
+                                      (row.status === 'valid-matched' || row.status === 'valid-unmatched') && isInvoiceMatched ? 'default' : 
+                                      (row.status === 'valid-matched' || row.status === 'valid-unmatched') && !isInvoiceMatched ? 'outline' :
                                       row.status === 'error' ? 'destructive' : 
-                                      'outline'
+                                      'secondary'
                                     }>
-                                      {row.status === 'valid' && <CheckCircle2 className="h-3 w-3 mr-1" />}
                                       {row.status === 'error' && <XCircle className="h-3 w-3 mr-1" />}
                                       {row.status === 'warning' && <AlertTriangle className="h-3 w-3 mr-1" />}
-                                      {row.status}
+                                      {statusText}
                                       {row.errorMessage && ` - ${row.errorMessage}`}
                                     </Badge>
                                   </td>
                                 </tr>
-                              ))
+                                );
+                              })
                             ) : (
                               <tr>
-                                <td colSpan={5} className="p-8 text-center text-muted-foreground">
+                                <td colSpan={7} className="p-8 text-center text-muted-foreground">
                                   No data available
                                 </td>
                               </tr>
@@ -3148,7 +3039,7 @@ const Dashboard = () => {
                   // Reset selection states
                   setSelectedCustomerCode("");
                   setSelectedDeliveryDate(undefined);
-                  setSelectedPlant("");
+                  setSelectedDeliveryTime("");
                 }}
                 className="flex items-center gap-2 justify-center sm:justify-start"
               >
@@ -3194,12 +3085,6 @@ const Dashboard = () => {
                   <p className="text-sm font-medium">
                     📊 Schedule-Based Doc Audit
                   </p>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Current Shift:</span>
-                    <Badge variant={currentShift === 'A' ? 'default' : 'secondary'} className="text-xs">
-                      {getShiftLabel(currentShift)}
-                    </Badge>
-                  </div>
                 </div>
                 <div className="text-xs text-muted-foreground space-y-1">
                   <p>• Showing invoices that match the uploaded schedule</p>
@@ -3212,12 +3097,12 @@ const Dashboard = () => {
               </div>
             )}
             
-            {/* Selection Fields: Customer Code, Delivery Date, Plant */}
+            {/* Selection Fields: Customer Code, Delivery Date, Delivery Time */}
             {scheduleData && (
               <Card className="mb-6 border-2 border-primary">
                 <CardHeader>
                   <CardTitle>Configure Dispatch Details</CardTitle>
-                  <CardDescription>Select customer code, delivery date, and plant before selecting an invoice</CardDescription>
+                  <CardDescription>Select customer code, delivery date, and delivery time before selecting an invoice</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="grid md:grid-cols-3 gap-4">
@@ -3231,9 +3116,9 @@ const Dashboard = () => {
                         value={selectedCustomerCode} 
                         onValueChange={(value) => {
                           setSelectedCustomerCode(value);
-                          // Reset delivery date and plant when customer code changes
+                          // Reset delivery date and delivery time when customer code changes
                           setSelectedDeliveryDate(undefined);
-                          setSelectedPlant("");
+                          setSelectedDeliveryTime("");
                           setSelectedInvoice(""); // Reset invoice selection
                         }}
                       >
@@ -3312,44 +3197,47 @@ const Dashboard = () => {
                       )}
                     </div>
 
-                    {/* Plant Selection */}
+                    {/* Delivery Time Selection */}
                     <div className="space-y-2">
                       <Label className="text-sm font-medium flex items-center gap-2">
-                        <MapPin className="h-4 w-4" />
-                        Plant (Delivery Location) <span className="text-destructive">*</span>
+                        <Clock className="h-4 w-4" />
+                        Delivery Time <span className="text-destructive">*</span>
                       </Label>
                       <Select 
-                        value={selectedPlant} 
+                        value={selectedDeliveryTime} 
                         onValueChange={(value) => {
-                          setSelectedPlant(value);
+                          setSelectedDeliveryTime(value);
                           setSelectedInvoice(""); // Reset invoice selection
                         }}
-                        disabled={!selectedCustomerCode}
+                        disabled={!selectedCustomerCode || !selectedDeliveryDate}
                       >
-                        <SelectTrigger className={!selectedPlant ? "border-destructive" : ""} disabled={!selectedCustomerCode}>
-                          <SelectValue placeholder={selectedCustomerCode ? "Select plant" : "Select customer code first"}>
-                            {selectedPlant || undefined}
+                        <SelectTrigger className={!selectedDeliveryTime ? "border-destructive" : ""} disabled={!selectedCustomerCode || !selectedDeliveryDate}>
+                          <SelectValue placeholder={selectedCustomerCode && selectedDeliveryDate ? "Select delivery time" : !selectedCustomerCode ? "Select customer code first" : "Select delivery date first"}>
+                            {selectedDeliveryTime || undefined}
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
-                          {availablePlants.length === 0 ? (
+                          {availableDeliveryTimes.length === 0 ? (
                             <div className="p-4 text-center text-sm text-muted-foreground">
-                              {selectedCustomerCode ? "No plants available" : "Select customer code first"}
+                              {selectedCustomerCode && selectedDeliveryDate ? "No delivery times available" : !selectedCustomerCode ? "Select customer code first" : "Select delivery date first"}
                             </div>
                           ) : (
-                            availablePlants.map(plant => (
-                              <SelectItem key={plant} value={plant}>
-                                {plant}
+                            availableDeliveryTimes.map(time => (
+                              <SelectItem key={time} value={time}>
+                                {time}
                               </SelectItem>
                             ))
                           )}
                         </SelectContent>
                       </Select>
-                      {!selectedPlant && selectedCustomerCode && (
-                        <p className="text-xs text-destructive">⚠️ Please select a plant</p>
+                      {!selectedDeliveryTime && selectedCustomerCode && selectedDeliveryDate && (
+                        <p className="text-xs text-destructive">⚠️ Please select a delivery time</p>
                       )}
                       {!selectedCustomerCode && (
                         <p className="text-xs text-muted-foreground">Select customer code first</p>
+                      )}
+                      {selectedCustomerCode && !selectedDeliveryDate && (
+                        <p className="text-xs text-muted-foreground">Select delivery date first</p>
                       )}
                     </div>
                   </div>
@@ -3358,14 +3246,14 @@ const Dashboard = () => {
                   <div className="mt-4 p-3 bg-muted rounded-lg">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-xs font-semibold">Selection Status:</p>
-                      {(selectedCustomerCode || selectedDeliveryDate || selectedPlant) && (
+                      {(selectedCustomerCode || selectedDeliveryDate || selectedDeliveryTime) && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => {
                             setSelectedCustomerCode("");
                             setSelectedDeliveryDate(undefined);
-                            setSelectedPlant("");
+                            setSelectedDeliveryTime("");
                             setSelectedInvoice("");
                           }}
                           className="h-7 text-xs"
@@ -3382,8 +3270,8 @@ const Dashboard = () => {
                       <Badge variant={selectedDeliveryDate ? "default" : "outline"}>
                         Delivery Date: {selectedDeliveryDate ? selectedDeliveryDate.toLocaleDateString() : "Not selected"}
                       </Badge>
-                      <Badge variant={selectedPlant ? "default" : "outline"}>
-                        Plant: {selectedPlant || "Not selected"}
+                      <Badge variant={selectedDeliveryTime ? "default" : "outline"}>
+                        Delivery Time: {selectedDeliveryTime || "Not selected"}
                       </Badge>
                     </div>
                   </div>
@@ -3397,14 +3285,14 @@ const Dashboard = () => {
                 <CardTitle>Select Invoice</CardTitle>
                 <CardDescription>
                   Choose an invoice to begin document audit
-                  {selectedCustomerCode && selectedDeliveryDate && selectedPlant && (
+                  {selectedCustomerCode && selectedDeliveryDate && selectedDeliveryTime && (
                     <span className="block mt-1 text-success text-sm font-medium">
                       ✅ All selections made - Invoice selection is now enabled
                     </span>
                   )}
-                  {(!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant) && (
+                  {(!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime) && (
                     <span className="block mt-1 text-destructive text-sm font-medium">
-                      ⚠️ Please select customer code, delivery date, and plant first
+                      ⚠️ Please select customer code, delivery date, and delivery time first
                     </span>
                   )}
                 </CardDescription>
@@ -3413,30 +3301,30 @@ const Dashboard = () => {
                 {invoices.length === 0 ? (
                   <div className="p-4 bg-muted rounded-lg text-center">
                     <p className="text-sm text-muted-foreground">
-                      {!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant
+                      {!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime
                         ? "Please complete the selections above to see invoices"
-                        : `No invoices scheduled for ${getShiftLabel(currentShift)} matching your selections`}
+                        : "No invoices matching your selections"}
                     </p>
                   </div>
                 ) : (
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.length} invoice(s) for {getShiftLabel(currentShift)}. Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
+                        📅 Showing {invoices.length} invoice(s). Scheduled on: {scheduleData?.scheduledDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
                       </p>
                     </div>
                 <Select 
                   value={selectedInvoice} 
                   onValueChange={setSelectedInvoice}
-                  disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant}
+                  disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime}
                 >
                   <SelectTrigger 
-                    className={`h-12 text-base ${(!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant) ? "opacity-50 cursor-not-allowed" : ""}`}
-                    disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedPlant}
+                    className={`h-12 text-base ${(!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime) ? "opacity-50 cursor-not-allowed" : ""}`}
+                    disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime}
                   >
                     <SelectValue 
                       placeholder={
-                        !selectedCustomerCode || !selectedDeliveryDate || !selectedPlant
+                        !selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime
                           ? "Complete selections above first"
                           : invoices.length === 0 
                           ? "No invoices available" 
@@ -3457,11 +3345,21 @@ const Dashboard = () => {
                         const scannedCount = invoiceInShared?.scannedBins ?? invoice.scannedBins;
                         const expectedCount = invoiceInShared?.expectedBins ?? invoice.expectedBins;
                         const isAudited = invoiceInShared?.auditComplete ?? invoice.auditComplete;
+                        const isBlocked = invoiceInShared?.blocked ?? invoice.blocked ?? false;
+                        // Calculate unique Customer Items for display
+                        const invoiceItems = invoiceInShared?.items || invoice.items || [];
+                        const uniqueCustItems = new Set<string>();
+                        invoiceItems.forEach((item: UploadedRow) => {
+                          if (item.customerItem && item.customerItem.trim() !== '') {
+                            uniqueCustItems.add(item.customerItem.trim());
+                          }
+                        });
+                        const totalCustItems = uniqueCustItems.size;
                         return (
-                          <SelectItem key={invoice.id} value={invoice.id}>
-                            {invoice.shift === 'A' ? '🌅' : '🌙'} {invoice.id} - {invoice.customer} ({scannedCount}/{expectedCount} BINs)
-                            {invoice.shift && ` [Shift ${invoice.shift}]`}
+                          <SelectItem key={invoice.id} value={invoice.id} disabled={isBlocked}>
+                            {invoice.id} - {invoice.customer} ({scannedCount}/{totalCustItems} Customer Items)
                             {isAudited && ' ✓ Audited'}
+                            {isBlocked && ' ⛔ Blocked'}
                           </SelectItem>
                         );
                       })
@@ -3473,7 +3371,7 @@ const Dashboard = () => {
 
                 {invoiceForDisplay && (
                   <div className="mt-6 p-4 bg-muted rounded-lg">
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-3">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-3">
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Invoice No</p>
                         <p className="font-semibold">{invoiceForDisplay.id}</p>
@@ -3483,36 +3381,58 @@ const Dashboard = () => {
                         <p className="font-semibold">{invoiceForDisplay.customer}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
-                        <p className="font-semibold">{invoiceForDisplay.totalQty}</p>
-                      </div>
-                      <div>
                         <p className="text-xs text-muted-foreground mb-1">Customer Code</p>
                         <p className="font-semibold">{invoiceForDisplay.billTo || 'N/A'}</p>
                       </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1">Scanned/Expected BINs</p>
-                        <p className="font-semibold">{invoiceForDisplay.scannedBins}/{invoiceForDisplay.expectedBins}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1">Shift</p>
-                        <p className="font-semibold">
-                          {invoiceForDisplay.shift === 'A' ? '🌅 Shift A (8 AM - 8 PM)' : '🌙 Shift B (8 PM - 8 AM)'}
-                        </p>
-                      </div>
                     </div>
                     
+                    {/* Line Items Section */}
+                    {uniqueCustomerItems.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-border">
+                        <p className="text-xs font-semibold text-muted-foreground mb-2">Line Items</p>
+                        <div className="border rounded-lg overflow-hidden">
+                          <table className="w-full text-xs">
+                            <thead className="bg-muted/50">
+                              <tr>
+                                <th className="text-left p-2 font-semibold">Customer Item</th>
+                                <th className="text-left p-2 font-semibold">Item Number</th>
+                                <th className="text-left p-2 font-semibold">Part Description</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {uniqueCustomerItems.map((item, index) => {
+                                const isScanned = validatedBins.some(bin => bin.customerItem === item.customerItem);
+                                return (
+                                  <tr key={index} className={`border-t ${isScanned ? 'bg-green-50 dark:bg-green-950/20' : ''}`}>
+                                    <td className="p-2 font-medium">{item.customerItem}</td>
+                                    <td className="p-2">{item.itemNumber}</td>
+                                    <td className="p-2 text-muted-foreground">{item.partDescription || 'N/A'}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                    
                     <div className="flex gap-2 flex-wrap pt-2 border-t border-border mt-3">
-                      {currentInvoice.uploadedBy && (
+                      {invoiceForDisplay?.uploadedBy && (
                         <Badge variant="outline" className="text-xs">
                           <Upload className="h-3 w-3 mr-1" />
-                          Uploaded by: {currentInvoice.uploadedBy}
+                          Uploaded by: {invoiceForDisplay.uploadedBy}
                         </Badge>
                       )}
-                      {currentInvoice.auditedBy && (
+                      {invoiceForDisplay?.auditedBy && (
                         <Badge variant="default" className="text-xs">
                           <CheckCircle2 className="h-3 w-3 mr-1" />
-                          Audited by: {currentInvoice.auditedBy}
+                          Audited by: {invoiceForDisplay.auditedBy}
+                        </Badge>
+                      )}
+                      {invoiceForDisplay?.blocked && (
+                        <Badge variant="destructive" className="text-xs">
+                          <XCircle className="h-3 w-3 mr-1" />
+                          Blocked
                         </Badge>
                       )}
                     </div>
@@ -3529,8 +3449,8 @@ const Dashboard = () => {
                   variant="ghost"
                   onClick={() => {
                     setSelectedInvoice("");
-                    setCustomerScan("");
-                    setAutolivScan("");
+                    setCustomerScan(null);
+                    setAutolivScan(null);
                   }}
                   className="flex items-center gap-2 mb-4 text-sm sm:text-base"
                 >
@@ -3538,8 +3458,24 @@ const Dashboard = () => {
                   <span className="hidden sm:inline">Change Invoice</span>
                   <span className="sm:hidden">Back</span>
                 </Button>
+
+                {/* Blocked Warning Card */}
+                {invoiceForDisplay?.blocked && (
+                  <Card className="mb-6 border-2 border-red-500 bg-red-50 dark:bg-red-950">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-red-900 dark:text-red-100">
+                        <XCircle className="h-5 w-5" />
+                        Admin Approval Needed
+                      </CardTitle>
+                      <CardDescription className="text-red-700 dark:text-red-300">
+                        This invoice has a barcode mismatch and cannot be scanned until an admin marks it as corrected.
+                        Please contact your supervisor to resolve this issue.
+                      </CardDescription>
+                    </CardHeader>
+                  </Card>
+                )}
                 
-              <Card className="mb-6">
+              <Card className={`mb-6 ${invoiceForDisplay?.blocked ? "opacity-60" : ""}`}>
                 <CardHeader className="pb-4">
                   <div className="flex items-center gap-3">
                     <div className="p-2 bg-primary/10 rounded-lg">
@@ -3547,7 +3483,11 @@ const Dashboard = () => {
                     </div>
                     <div>
                       <CardTitle className="text-lg">Barcode Scanning & Validation</CardTitle>
-                      <CardDescription>Scan both customer and Autoliv labels to validate</CardDescription>
+                      <CardDescription>
+                        {invoiceForDisplay?.blocked 
+                          ? "Admin approval needed - Scanning disabled" 
+                          : "Scan both customer and Autoliv labels to validate"}
+                      </CardDescription>
                     </div>
                   </div>
                 </CardHeader>
@@ -3581,6 +3521,13 @@ const Dashboard = () => {
                         )}
                         <BarcodeScanButton
                           onScan={(data) => {
+                            if (invoiceForDisplay?.blocked) {
+                              toast.error("⚠️ Invoice is Blocked", {
+                                description: "This invoice has a mismatch. Please wait for admin to mark it as corrected.",
+                                duration: 5000,
+                              });
+                              return;
+                            }
                             setCustomerScan(data);
                             toast.success("Customer barcode scanned!");
                           }}
@@ -3593,6 +3540,7 @@ const Dashboard = () => {
                           binCapacity={invoiceForDisplay?.binCapacity}
                           expectedBins={invoiceForDisplay?.expectedBins}
                           currentBinIndex={invoiceForDisplay?.scannedBins}
+                          disabled={invoiceForDisplay?.blocked}
                         />
                       </div>
 
@@ -3647,6 +3595,7 @@ const Dashboard = () => {
                         onClick={() => {
                             setCustomerScan(null);
                             setAutolivScan(null);
+                            setFirstScanType(null);
                         }}
                           className="h-12"
                       >
@@ -3676,11 +3625,11 @@ const Dashboard = () => {
                 </CardContent>
               </Card>
 
-            {/* Scanned BINs Table */}
+            {/* Scanned Customer Items Table */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Scanned BINs ({validatedBins.length})</CardTitle>
-                  <CardDescription>Real-time list of scanned and validated BINs</CardDescription>
+                  <CardTitle>Scanned Customer Items ({validatedBins.length})</CardTitle>
+                  <CardDescription>Real-time list of scanned and validated Customer Items</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {validatedBins.length > 0 ? (
@@ -3689,9 +3638,9 @@ const Dashboard = () => {
                         <table className="w-full text-xs sm:text-sm min-w-[600px]">
                         <thead className="bg-muted">
                           <tr>
-                            <th className="text-left p-3 font-semibold">BIN No</th>
-                            <th className="text-left p-3 font-semibold">Barcode</th>
-                              <th className="text-left p-3 font-semibold">Quantity</th>
+                            <th className="text-left p-3 font-semibold">Customer Item</th>
+                            <th className="text-left p-3 font-semibold">Item Number</th>
+                            <th className="text-left p-3 font-semibold">Quantity</th>
                             <th className="text-left p-3 font-semibold">Status</th>
                             <th className="text-left p-3 font-semibold">Scanned By</th>
                             <th className="text-left p-3 font-semibold">Time</th>
@@ -3700,9 +3649,9 @@ const Dashboard = () => {
                         <tbody>
                           {validatedBins.map((bin, i) => (
                             <tr key={i} className="border-t hover:bg-muted/50">
-                              <td className="p-3 font-mono">{bin.binNo}</td>
-                              <td className="p-3 font-mono">{bin.partCode}</td>
-                                <td className="p-3 font-semibold">{bin.qty}</td>
+                              <td className="p-3 font-medium">{bin.customerItem}</td>
+                              <td className="p-3 font-mono">{bin.itemNumber}</td>
+                              <td className="p-3 font-semibold">{bin.quantity}</td>
                               <td className="p-3">
                                 <Badge variant={bin.status === 'matched' ? 'default' : 'destructive'}>
                                   {bin.status === 'matched' ? (
@@ -3721,24 +3670,16 @@ const Dashboard = () => {
                       </table>
                     </div>
                       
-                      {/* Total Quantity Summary */}
-                      <div className="mt-4 p-3 bg-primary/5 border border-primary/20 rounded-lg flex items-center justify-between">
-                        <span className="text-sm font-medium text-muted-foreground">Total Quantity (Sum of all scanned bins):</span>
-                        <span className="text-lg font-bold text-primary">
-                          {validatedBins.reduce((sum, bin) => sum + bin.qty, 0)}
-                        </span>
-                      </div>
-                      
-                      {/* Complete Audit Button - appears when all bins are scanned */}
-                      {invoiceForProgress && invoiceForProgress.scannedBins >= invoiceForProgress.expectedBins && !invoiceForProgress.auditComplete && (
+                      {/* Complete Audit Button - appears when all Customer Items are scanned */}
+                      {invoiceForProgress && scannedCustomerItemsCount >= totalCustomerItemsCount && !invoiceForProgress.auditComplete && (
                         <div className="mt-6 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
                           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                             <div>
                               <p className="text-sm font-medium text-green-700 dark:text-green-300 mb-1">
-                                ✅ All Bins Scanned: {invoiceForProgress.scannedBins}/{invoiceForProgress.expectedBins}
+                                ✅ All Customer Items Scanned: {scannedCustomerItemsCount}/{totalCustomerItemsCount}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                All items scanned and validated. Click "Complete Audit" to finish.
+                                All Customer Items scanned and validated. Click "Complete Audit" to finish.
                               </p>
                             </div>
                             <Button
@@ -3752,6 +3693,7 @@ const Dashboard = () => {
                                   setSelectedInvoice("");
                                   setCustomerScan(null);
                                   setAutolivScan(null);
+                                  setFirstScanType(null);
                                   setValidatedBins([]);
                                 }
                               }}
@@ -3782,6 +3724,7 @@ const Dashboard = () => {
                                 setSelectedInvoice("");
                                 setCustomerScan(null);
                                 setAutolivScan(null);
+                                setFirstScanType(null);
                                 setValidatedBins([]);
                               }}
                               className="flex items-center gap-2 h-10"
@@ -3910,7 +3853,7 @@ const Dashboard = () => {
                                     <p className="font-semibold">{invoice.totalQty}</p>
                                   </div>
                                   <div>
-                                    <p className="text-muted-foreground">Bins</p>
+                                    <p className="text-muted-foreground">Customer Items</p>
                                     <p className="font-semibold">{invoice.scannedBins}/{invoice.expectedBins}</p>
                                   </div>
                                 </div>
@@ -4209,7 +4152,7 @@ const Dashboard = () => {
                                 </div>
                                       <div className="grid grid-cols-2 gap-2 text-xs">
                                   <div>
-                                          <p className="text-muted-foreground">Items</p>
+                                          <p className="text-muted-foreground">Customer Items</p>
                                     <p className="font-medium">{invoice.scannedBins}/{invoice.expectedBins}</p>
                                   </div>
                                   <div>
@@ -4374,26 +4317,22 @@ const Dashboard = () => {
                                     </Badge>
                                   </div>
                                   <div className="space-y-2 text-sm">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-muted-foreground min-w-[80px]">Customer:</span>
-                                      <span className="font-mono text-xs">{barcodePair.customerBarcode}</span>
-                                    </div>
-                                    {barcodePair.partCode && (
+                                    {barcodePair.customerItem && (
                                       <div className="flex items-center gap-2">
-                                        <span className="text-xs text-muted-foreground min-w-[80px]">Part Code:</span>
-                                        <span className="font-mono text-xs">{barcodePair.partCode}</span>
+                                        <span className="text-xs text-muted-foreground min-w-[100px]">Customer Item:</span>
+                                        <span className="font-medium text-xs">{barcodePair.customerItem}</span>
                                       </div>
                                     )}
-                                    {barcodePair.quantity && (
+                                    {barcodePair.itemNumber && (
                                       <div className="flex items-center gap-2">
-                                        <span className="text-xs text-muted-foreground min-w-[80px]">Quantity:</span>
-                                        <span className="font-mono text-xs">{barcodePair.quantity}</span>
+                                        <span className="text-xs text-muted-foreground min-w-[100px]">Item Number:</span>
+                                        <span className="font-mono text-xs">{barcodePair.itemNumber}</span>
                                       </div>
                                     )}
-                                    {barcodePair.binNumber && (
+                                    {(barcodePair.actualQuantity !== undefined) && (
                                       <div className="flex items-center gap-2">
-                                        <span className="text-xs text-muted-foreground min-w-[80px]">Bin Number:</span>
-                                        <span className="font-mono text-xs">{barcodePair.binNumber}</span>
+                                        <span className="text-xs text-muted-foreground min-w-[100px]">Quantity:</span>
+                                        <span className="font-semibold text-xs">{barcodePair.actualQuantity}</span>
                                       </div>
                                     )}
                                   </div>

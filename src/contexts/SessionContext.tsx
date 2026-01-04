@@ -46,12 +46,13 @@ export interface InvoiceData {
   // New fields for schedule matching
   billTo?: string; // Customer code from invoice for matching with schedule
   scheduledDate?: Date; // When this invoice is scheduled for dispatch
-  shift?: 'A' | 'B'; // Shift A: 8 AM - 8 PM, Shift B: 8 PM - 8 AM
   // Doc audit selection fields
-  selectedDeliveryShift?: 'A' | 'B'; // User-selected shift for this invoice during doc audit
-  selectedPlant?: string; // User-selected plant for this invoice during doc audit
+  selectedPlant?: string; // User-selected plant for this invoice during doc audit (deprecated, use deliveryTime)
+  deliveryTime?: string; // Delivery time from schedule (user-selected during doc audit)
   deliveryDate?: Date; // Delivery date from schedule
   plant?: string; // Plant from invoice data (extracted during upload)
+  blocked?: boolean; // Invoice is blocked due to mismatch, requires admin correction
+  blockedAt?: Date; // When the invoice was blocked
 }
 
 export interface LogEntry {
@@ -122,157 +123,10 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   // Schedule data state
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
   
-  // Initialize with minimal default invoices (only Oct 13 and 14)
-  const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>(() => {
-    const today = new Date();
-    
-    return [
-      // Today (Oct 13) - 2 invoices
-      {
-        id: '2510706711',
-        customer: 'BHARAT SEATS LIMITED',
-        invoiceDate: new Date(today),
-        totalQty: 240,
-        binCapacity: 80,
-        expectedBins: 3,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1223', // BSL Manesar customer code
-        shift: 'A' // Morning shift
-      },
-      {
-        id: '2510706712',
-        customer: 'BHARAT SEATS LIMITED',
-        invoiceDate: new Date(today),
-        totalQty: 150,
-        binCapacity: 50,
-        expectedBins: 3,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1222', // BSL Gurgaon customer code
-        shift: 'B' // Night shift
-      },
-      // Oct 14 - 2 invoices
-      {
-        id: '2510706714',
-        customer: 'KRISHNA MARUTI LTD SEATING',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
-        totalQty: 100,
-        binCapacity: 50,
-        expectedBins: 2,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1228', // KML Manesar customer code
-        shift: 'A' // Morning shift
-      },
-      {
-        id: '2510706715',
-        customer: 'KRISHNA MARUTI LTD SEATING',
-        invoiceDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
-        totalQty: 200,
-        binCapacity: 50,
-        expectedBins: 4,
-        scannedBins: 0,
-        binsLoaded: 0,
-        auditComplete: false,
-        items: [],
-        uploadedBy: 'Admin',
-        uploadedAt: new Date(Date.now() - 1800000),
-        billTo: '1227', // KML Narshinghpur customer code
-        shift: 'B' // Night shift
-      }
-    ];
-  });
-  
-  // Initialize with upload logs
-  const [logs, setLogs] = useState<LogEntry[]>([
-    {
-      id: 'log-1',
-      user: 'Admin',
-      action: 'Uploaded 4 invoice(s)',
-      details: 'Invoices: 2510706711, 2510706712, 2510706714, 2510706715',
-      timestamp: new Date(Date.now() - 1800000), // 30 minutes ago
-      type: 'upload'
-    }
-  ]);
-  const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([
-    // Pre-populate with 2-3 sample mismatches from different steps
-    {
-      id: 'mismatch-1',
-      user: 'User 1',
-      customer: 'BHARAT SEATS LIMITED',
-      invoiceId: '2510706711',
-      step: 'doc-audit',
-      customerScan: {
-        partCode: '2023919386001',
-        quantity: '5',
-        binNumber: '76480M66T01',
-        rawValue: '123456789012'
-      },
-      autolivScan: {
-        partCode: '2023919386099',
-        quantity: '7',
-        binNumber: '76480M66T99',
-        rawValue: '999999999999'
-      },
-      timestamp: new Date(Date.now() - 3600000), // 1 hour ago
-      status: 'pending'
-    },
-    {
-      id: 'mismatch-2',
-      user: 'User 2',
-      customer: 'HONDA CARS INDIA LTD',
-      invoiceId: '2510706717',
-      step: 'loading-dispatch',
-      customerScan: {
-        partCode: '2023919386002',
-        quantity: '8',
-        binNumber: '76480M66T02',
-        rawValue: '234567890123'
-      },
-      autolivScan: {
-        partCode: '2023919386088',
-        quantity: '4',
-        binNumber: '76480M66T88',
-        rawValue: '888888888888'
-      },
-      timestamp: new Date(Date.now() - 7200000), // 2 hours ago
-      status: 'pending'
-    },
-    {
-      id: 'mismatch-3',
-      user: 'User 1',
-      customer: 'MARUTI SUZUKI INDIA Ltd-II',
-      invoiceId: '2510706725',
-      step: 'doc-audit',
-      customerScan: {
-        partCode: '2023919386003',
-        quantity: '3',
-        binNumber: '76480M66T03',
-        rawValue: '345678901234'
-      },
-      autolivScan: {
-        partCode: '2023919386077',
-        quantity: '9',
-        binNumber: '76480M66T77',
-        rawValue: '777777777777'
-      },
-      timestamp: new Date(Date.now() - 10800000), // 3 hours ago
-      status: 'pending'
-    }
-  ]);
+  // Initialize with empty arrays - no dummy data
+  const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([]);
 
   const addLog = (log: Omit<LogEntry, 'id' | 'timestamp'>) => {
     const newLog: LogEntry = {

@@ -20,7 +20,7 @@ import {
 
 const ExceptionAlerts = () => {
   const navigate = useNavigate();
-  const { currentUser, mismatchAlerts, updateMismatchStatus } = useSession();
+  const { currentUser, mismatchAlerts, updateMismatchStatus, updateInvoiceAudit } = useSession();
   const [selectedAlert, setSelectedAlert] = useState<string | null>(null);
 
   // Permission check
@@ -51,10 +51,21 @@ const ExceptionAlerts = () => {
 
   const confirmCorrected = () => {
     if (selectedAlert) {
-      updateMismatchStatus(selectedAlert, 'approved', currentUser);
-      toast.success('Barcode corrected successfully!', {
-        description: `Correction confirmed by ${currentUser}`
-      });
+      const alert = mismatchAlerts.find(a => a.id === selectedAlert);
+      if (alert) {
+        // Update mismatch status
+        updateMismatchStatus(selectedAlert, 'approved', currentUser);
+        
+        // Unblock the invoice
+        updateInvoiceAudit(alert.invoiceId, {
+          blocked: false,
+          blockedAt: undefined
+        }, currentUser);
+        
+        toast.success('Barcode corrected successfully!', {
+          description: `Invoice ${alert.invoiceId} has been unblocked and is now available for scanning.`
+        });
+      }
       setSelectedAlert(null);
     }
   };

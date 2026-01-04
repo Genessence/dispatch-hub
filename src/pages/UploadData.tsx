@@ -46,12 +46,13 @@ const UploadData = () => {
     toast.success("Data imported successfully!");
   };
 
-  const validationResults = {
-    total: 150,
-    valid: 145,
-    errors: 5,
-    warnings: 8
-  };
+  // Validation results will be populated from actual file parsing
+  const [validationResults, setValidationResults] = useState({
+    total: 0,
+    valid: 0,
+    errors: 0,
+    warnings: 0
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -188,47 +189,12 @@ const UploadData = () => {
                     </div>
                   </div>
 
-                  {/* Sample Data Table */}
-                  <div className="border rounded-lg overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-muted">
-                        <tr>
-                          <th className="text-left p-3 font-semibold">Invoice No</th>
-                          <th className="text-left p-3 font-semibold">Customer</th>
-                          <th className="text-left p-3 font-semibold">Part Code</th>
-                          <th className="text-left p-3 font-semibold">Qty</th>
-                          <th className="text-left p-3 font-semibold">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[
-                          { invoice: 'INV-2024-001', customer: 'Acme Corp', part: '2023919386001', qty: 5, status: 'valid' },
-                          { invoice: 'INV-2024-002', customer: 'Tech Solutions', part: '2023919386002', qty: 8, status: 'valid' },
-                          { invoice: 'INV-2024-003', customer: 'Global Industries', part: '2023919386003', qty: 4, status: 'error' },
-                          { invoice: 'INV-2024-004', customer: 'Manufacturing Co', part: '2023919386004', qty: 7, status: 'warning' },
-                        ].map((row, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="p-3">{row.invoice}</td>
-                            <td className="p-3">{row.customer}</td>
-                            <td className="p-3">{row.part}</td>
-                            <td className="p-3">{row.qty}</td>
-                            <td className="p-3">
-                              <Badge variant={
-                                row.status === 'valid' ? 'default' : 
-                                row.status === 'error' ? 'destructive' : 
-                                'outline'
-                              }>
-                                {row.status === 'valid' && <CheckCircle2 className="h-3 w-3 mr-1" />}
-                                {row.status === 'error' && <XCircle className="h-3 w-3 mr-1" />}
-                                {row.status === 'warning' && <AlertCircle className="h-3 w-3 mr-1" />}
-                                {row.status}
-                              </Badge>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  {/* Data preview will be shown here after file parsing */}
+                  {validationResults.total === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p>File preview will appear here after validation</p>
+                    </div>
+                  )}
 
                   {/* Actions */}
                   <div className="flex gap-3">

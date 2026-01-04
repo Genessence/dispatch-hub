@@ -17,15 +17,15 @@ const DocAudit = () => {
     scheduleData, 
     getScheduleForCustomer,
     updateInvoiceAudit,
-    currentUser 
+    currentUser,
+    addMismatchAlert
   } = useSession();
   
   // Selection states
   const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>("");
   const [selectedInvoice, setSelectedInvoice] = useState<string>("");
   const [invoiceSelections, setInvoiceSelections] = useState<Record<string, {
-    shift?: 'A' | 'B';
-    plant?: string;
+    deliveryTime?: string;
   }>>({});
   
   // Audit states
@@ -105,53 +105,24 @@ const DocAudit = () => {
     return items;
   }, [selectedCustomerCode, scheduleData]);
 
-  // Get unique plants from invoices for the selected customer
-  const availablePlants = useMemo(() => {
-    const plants = new Set<string>();
-    invoicesForCustomer.forEach(inv => {
-      if (inv.plant) plants.add(inv.plant);
-    });
-    // Also check schedule items for plant info
+  // Get unique delivery times from schedule items for the selected customer
+  const availableDeliveryTimes = useMemo(() => {
+    const times = new Set<string>();
+    // Get delivery times from schedule items
     scheduleItemsForCustomer.forEach(item => {
-      if (item.plant) plants.add(item.plant);
+      if (item.deliveryTime) {
+        times.add(item.deliveryTime);
+      }
     });
-    return Array.from(plants).sort();
-  }, [invoicesForCustomer, scheduleItemsForCustomer]);
+    return Array.from(times).sort();
+  }, [scheduleItemsForCustomer]);
 
-  // Get default shift from schedule (most common shift in schedule items)
-  const getDefaultShift = (invoice: InvoiceData): 'A' | 'B' | undefined => {
-    if (scheduleItemsForCustomer.length === 0) return invoice.shift;
-    
-    const shifts = scheduleItemsForCustomer
-      .map(item => item.deliveryTime ? timeToShift(item.deliveryTime) : undefined)
-      .filter((s): s is 'A' | 'B' => s !== undefined);
-    
-    if (shifts.length === 0) return invoice.shift;
-    
-    // Count occurrences
-    const shiftCounts = { A: 0, B: 0 };
-    shifts.forEach(s => shiftCounts[s]++);
-    
-    return shiftCounts.A >= shiftCounts.B ? 'A' : 'B';
-  };
 
-  // Helper to convert time string to shift
-  const timeToShift = (timeStr: string): 'A' | 'B' | undefined => {
-    if (!timeStr) return undefined;
-    const timeMatch = timeStr.toString().match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-    if (!timeMatch) return undefined;
-    
-    let hours = parseInt(timeMatch[1]);
-    const ampm = timeMatch[3]?.toUpperCase();
-    
-    if (ampm === 'PM' && hours !== 12) hours += 12;
-    if (ampm === 'AM' && hours === 12) hours = 0;
-    
-    if (hours >= 8 && hours < 20) return 'A';
-    return 'B';
-  };
-
-  const currentInvoice = invoicesForCustomer.find(inv => inv.id === selectedInvoice);
+  // Get current invoice from sharedInvoices to ensure we have the latest state
+  const currentInvoice = useMemo(() => {
+    if (!selectedInvoice) return undefined;
+    return sharedInvoices.find(inv => inv.id === selectedInvoice);
+  }, [sharedInvoices, selectedInvoice]);
   const currentSelections = invoiceSelections[selectedInvoice] || {};
   const progress = currentInvoice ? (currentInvoice.scannedBins / currentInvoice.expectedBins) * 100 : 0;
 
@@ -170,23 +141,21 @@ const DocAudit = () => {
 
   // Initialize default selections when customer code is selected
   useEffect(() => {
-    if (selectedCustomerCode && invoicesForCustomer.length > 0 && availablePlants.length >= 0) {
-      const newSelections: Record<string, { shift?: 'A' | 'B'; plant?: string }> = {};
-      invoicesForCustomer.forEach(invoice => {
-        const defaultShift = getDefaultShift(invoice);
-        const defaultPlant = invoice.plant || availablePlants[0];
-        if (defaultShift || defaultPlant) {
+    if (selectedCustomerCode && invoicesForCustomer.length > 0 && availableDeliveryTimes.length > 0) {
+      const newSelections: Record<string, { deliveryTime?: string }> = {};
+      const defaultDeliveryTime = availableDeliveryTimes[0];
+      if (defaultDeliveryTime) {
+        invoicesForCustomer.forEach(invoice => {
           newSelections[invoice.id] = {
-            shift: defaultShift,
-            plant: defaultPlant
+            deliveryTime: defaultDeliveryTime
           };
+        });
+        if (Object.keys(newSelections).length > 0) {
+          setInvoiceSelections(prev => ({ ...prev, ...newSelections }));
         }
-      });
-      if (Object.keys(newSelections).length > 0) {
-        setInvoiceSelections(prev => ({ ...prev, ...newSelections }));
       }
     }
-  }, [selectedCustomerCode, invoicesForCustomer, availablePlants, scheduleItemsForCustomer]);
+  }, [selectedCustomerCode, invoicesForCustomer, availableDeliveryTimes]);
 
   // Handle customer code selection
   const handleCustomerCodeSelect = (customerCode: string) => {
@@ -195,46 +164,58 @@ const DocAudit = () => {
     setInvoiceSelections({}); // Reset all selections
   };
 
-  // Handle shift selection for an invoice
-  const handleShiftSelect = (invoiceId: string, shift: 'A' | 'B') => {
+  // Handle delivery time selection for an invoice
+  const handleDeliveryTimeSelect = (invoiceId: string, deliveryTime: string) => {
     setInvoiceSelections(prev => ({
       ...prev,
       [invoiceId]: {
         ...prev[invoiceId],
-        shift
-      }
-    }));
-  };
-
-  // Handle plant selection for an invoice
-  const handlePlantSelect = (invoiceId: string, plant: string) => {
-    setInvoiceSelections(prev => ({
-      ...prev,
-      [invoiceId]: {
-        ...prev[invoiceId],
-        plant
+        deliveryTime
       }
     }));
   };
 
 
   const handleScan = (type: 'customer' | 'autoliv') => {
+    // Check if invoice is blocked
+    if (currentInvoice?.blocked) {
+      toast.error("⚠️ Invoice is Blocked", {
+        description: "This invoice has a mismatch. Please wait for admin to mark it as corrected.",
+        duration: 5000,
+      });
+      return;
+    }
+
     const scanValue = type === 'customer' ? customerScan : autolivScan;
     if (!scanValue) {
       toast.error("Please enter a barcode value");
       return;
     }
 
-    // Simulate scan validation
-    const isValid = Math.random() > 0.3;
-    if (isValid) {
+    // Validate barcode scan - compare customer and autoliv scans
+    // Only validate if both scans are present
+    let isValid = true;
+    if (customerScan && autolivScan) {
+      // Compare part codes and quantities
+      const partCodesMatch = customerScan.partCode?.trim() === autolivScan.partCode?.trim();
+      const quantitiesMatch = customerScan.quantity?.trim() === autolivScan.quantity?.trim();
+      const rawValuesMatch = customerScan.rawValue?.trim() === autolivScan.rawValue?.trim();
+      
+      isValid = partCodesMatch && quantitiesMatch && rawValuesMatch;
+    } else {
+      // If only one scan is present, we can't validate yet - just proceed
       toast.success(`${type === 'customer' ? 'Customer' : 'Autoliv'} label scanned successfully!`);
+      return;
+    }
+
+    if (isValid) {
+      toast.success(`Both labels scanned and validated successfully!`);
       
       // Add to scanned bins
       const newBin = {
-        binNo: scanValue.binNumber || 'N/A',
-        partCode: scanValue.partCode || 'N/A',
-        qty: parseInt(scanValue.quantity || '0'),
+        binNo: customerScan.binNumber || 'N/A',
+        partCode: customerScan.partCode || 'N/A',
+        qty: parseInt(customerScan.quantity || '0'),
         status: 'matched',
         scannedBy: currentUser,
         time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
@@ -248,13 +229,42 @@ const DocAudit = () => {
         }, currentUser);
       }
       
-      if (type === 'customer') setCustomerScan(null);
-      else setAutolivScan(null);
+      // Clear both scans after successful validation
+      setCustomerScan(null);
+      setAutolivScan(null);
     } else {
+      // Mismatch detected - block the invoice
       toast.error("⚠️ Barcode Mismatch Detected!", {
-        description: "Part code or quantity doesn't match.",
+        description: "Part code or quantity doesn't match. Invoice has been blocked.",
         duration: 5000,
       });
+      
+      // Block the invoice and create mismatch alert
+      if (currentInvoice && customerScan && autolivScan) {
+        updateInvoiceAudit(currentInvoice.id, {
+          blocked: true,
+          blockedAt: new Date()
+        }, currentUser);
+
+        addMismatchAlert({
+          user: currentUser,
+          customer: currentInvoice.customer,
+          invoiceId: currentInvoice.id,
+          step: 'doc-audit',
+          customerScan: {
+            partCode: customerScan.partCode || 'N/A',
+            quantity: customerScan.quantity || 'N/A',
+            binNumber: customerScan.binNumber || 'N/A',
+            rawValue: customerScan.rawValue || 'N/A'
+          },
+          autolivScan: {
+            partCode: autolivScan.partCode || 'N/A',
+            quantity: autolivScan.quantity || 'N/A',
+            binNumber: autolivScan.binNumber || 'N/A',
+            rawValue: autolivScan.rawValue || 'N/A'
+          }
+        });
+      }
       
       // Automatically show approval message
       setTimeout(() => {
@@ -263,19 +273,15 @@ const DocAudit = () => {
           duration: 5000,
         });
       }, 500);
+
+      // Clear scans after mismatch
+      setCustomerScan(null);
+      setAutolivScan(null);
     }
   };
 
   return (
     <div className="min-h-screen bg-background">
-      {/* HUGE VISIBLE TEST BANNER - If you see this, new code is loaded! */}
-      <div className="bg-red-600 text-white p-4 text-center font-bold text-2xl border-b-4 border-yellow-400 z-50">
-        🚨 NEW CODE VERSION LOADED - If you see this red banner, changes are working! 🚨
-        <div className="text-sm mt-2">
-          selectedInvoice: {selectedInvoice || 'none'} | selectedCustomerCode: {selectedCustomerCode || 'none'}
-        </div>
-      </div>
-      
       {/* Header */}
       <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
@@ -297,7 +303,7 @@ const DocAudit = () => {
                 Scanner {scannerConnected ? 'Connected' : 'Disconnected'}
               </Badge>
               <div className="text-right hidden md:block">
-                <p className="text-sm font-medium">John Operator</p>
+                <p className="text-sm font-medium">{currentUser}</p>
                 <p className="text-xs text-muted-foreground">Operator</p>
               </div>
             </div>
@@ -306,13 +312,6 @@ const DocAudit = () => {
       </header>
 
       <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8">
-        {/* VISIBLE TEST: This should always show */}
-        <div className="mb-4 p-4 bg-blue-500 text-white rounded-lg">
-          <p className="font-bold text-lg">🔵 TEST: If you see this blue box, the new code is loaded!</p>
-          <p className="text-sm">selectedInvoice: {selectedInvoice || 'none'}</p>
-          <p className="text-sm">selectedCustomerCode: {selectedCustomerCode || 'none'}</p>
-        </div>
-        
         {/* Step 1: Customer Code Selection - ALWAYS show this first when no invoice is selected */}
         {!selectedInvoice && (
           <>
@@ -439,37 +438,51 @@ const DocAudit = () => {
                 <div className="space-y-4">
                   {invoicesForCustomer.map((invoice) => {
                     const selections = invoiceSelections[invoice.id] || {};
-                    const defaultShift = getDefaultShift(invoice);
-                    const defaultPlant = invoice.plant || availablePlants[0];
+                    const defaultDeliveryTime = availableDeliveryTimes[0] || "";
                     
                     // Use defaults for display, but require explicit selection for audit
-                    const displayShift = selections.shift || defaultShift || "";
-                    const displayPlant = selections.plant || defaultPlant || "";
+                    const displayDeliveryTime = selections.deliveryTime || defaultDeliveryTime || "";
 
-                    // Can only start audit if BOTH shift and plant are explicitly selected
-                    const canStartAudit = !!(selections.shift && selections.plant);
+                    // Can only start audit if delivery time is explicitly selected
+                    const canStartAudit = !!selections.deliveryTime;
 
                     return (
                       <Card key={invoice.id} className="border-2">
                         <CardContent className="pt-6">
                           <div className="space-y-4">
                             {/* Invoice Info */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                              <div>
-                                <p className="text-xs text-muted-foreground mb-1">Invoice No</p>
-                                <p className="font-semibold">{invoice.id}</p>
+                            <div className="flex items-start justify-between mb-4">
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1">
+                                <div>
+                                  <p className="text-xs text-muted-foreground mb-1">Invoice No</p>
+                                  <p className="font-semibold">{invoice.id}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-muted-foreground mb-1">Customer</p>
+                                  <p className="font-semibold">{invoice.customer}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
+                                  <p className="font-semibold">{invoice.totalQty}</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-muted-foreground mb-1">Expected BINs</p>
+                                  <p className="font-semibold">{invoice.expectedBins}</p>
+                                </div>
                               </div>
-                              <div>
-                                <p className="text-xs text-muted-foreground mb-1">Customer</p>
-                                <p className="font-semibold">{invoice.customer}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-muted-foreground mb-1">Total Quantity</p>
-                                <p className="font-semibold">{invoice.totalQty}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs text-muted-foreground mb-1">Expected BINs</p>
-                                <p className="font-semibold">{invoice.expectedBins}</p>
+                              <div className="flex flex-col gap-2">
+                                {invoice.auditComplete && (
+                                  <Badge variant="default" className="w-fit">
+                                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                                    Audited
+                                  </Badge>
+                                )}
+                                {invoice.blocked && (
+                                  <Badge variant="destructive" className="w-fit">
+                                    <XCircle className="h-3 w-3 mr-1" />
+                                    Blocked
+                                  </Badge>
+                                )}
                               </div>
                             </div>
 
@@ -483,71 +496,70 @@ const DocAudit = () => {
                               </div>
                             )}
 
-                            {/* Shift and Plant Selection */}
-                            <div className="grid md:grid-cols-2 gap-4">
+                            {/* Delivery Time Selection */}
+                            <div className="gap-4">
                               <div className="space-y-2">
                                 <Label className="text-sm font-medium flex items-center gap-2">
                                   <Clock className="h-4 w-4" />
-                                  Delivery Shift
+                                  Delivery Time
                                 </Label>
                                 <Select
-                                  value={displayShift}
-                                  onValueChange={(value) => handleShiftSelect(invoice.id, value as 'A' | 'B')}
+                                  value={displayDeliveryTime}
+                                  onValueChange={(value) => handleDeliveryTimeSelect(invoice.id, value)}
                                 >
-                                  <SelectTrigger className={!selections.shift ? "border-destructive" : ""}>
-                                    <SelectValue placeholder={defaultShift ? `Default: Shift ${defaultShift}` : "Select shift (Required)"} />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="A">Shift A (8 AM - 8 PM)</SelectItem>
-                                    <SelectItem value="B">Shift B (8 PM - 8 AM)</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                                {!selections.shift && (
-                                  <p className="text-xs text-destructive mt-1">⚠️ Please select a delivery shift</p>
-                                )}
-                              </div>
-
-                              <div className="space-y-2">
-                                <Label className="text-sm font-medium flex items-center gap-2">
-                                  <MapPin className="h-4 w-4" />
-                                  Plant (Delivery Location)
-                                </Label>
-                                <Select
-                                  value={displayPlant}
-                                  onValueChange={(value) => handlePlantSelect(invoice.id, value)}
-                                >
-                                  <SelectTrigger className={!selections.plant ? "border-destructive" : ""}>
-                                    <SelectValue placeholder={defaultPlant ? `Default: ${defaultPlant}` : "Select plant (Required)"} />
+                                  <SelectTrigger className={!selections.deliveryTime ? "border-destructive" : ""}>
+                                    <SelectValue placeholder={defaultDeliveryTime ? `Default: ${defaultDeliveryTime}` : "Select delivery time (Required)"} />
               </SelectTrigger>
               <SelectContent>
-                                    {availablePlants.length > 0 ? (
-                                      availablePlants.map(plant => (
-                                        <SelectItem key={plant} value={plant}>
-                                          {plant}
+                                    {availableDeliveryTimes.length > 0 ? (
+                                      availableDeliveryTimes.map(time => (
+                                        <SelectItem key={time} value={time}>
+                                          {time}
                                         </SelectItem>
                                       ))
                                     ) : (
-                                      <SelectItem value={invoice.plant || "N/A"}>
-                                        {invoice.plant || "No plant data"}
+                                      <SelectItem value="N/A">
+                                        No delivery time available
                   </SelectItem>
                                     )}
               </SelectContent>
             </Select>
-                                {!selections.plant && (
-                                  <p className="text-xs text-destructive mt-1">⚠️ Please select a plant</p>
+                                {!selections.deliveryTime && (
+                                  <p className="text-xs text-destructive mt-1">⚠️ Please select a delivery time</p>
                                 )}
                               </div>
                             </div>
 
-                            {/* Start Audit Button - Only enabled when both shift and plant are selected */}
+                            {/* Blocked Status Badge */}
+                            {invoice.blocked && (
+                              <div className="p-3 bg-red-50 dark:bg-red-950 border-2 border-red-200 dark:border-red-800 rounded-lg mb-4">
+                                <div className="flex items-center gap-2">
+                                  <XCircle className="h-5 w-5 text-red-600" />
+                                  <div>
+                                    <p className="font-semibold text-red-900 dark:text-red-100">Invoice Blocked</p>
+                                    <p className="text-sm text-red-700 dark:text-red-300">
+                                      This invoice has a mismatch. Please wait for admin to mark it as corrected.
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Start Audit Button - Only enabled when delivery time is selected and not blocked */}
                             <div className="pt-2">
                               <Button
                                 onClick={() => {
-                                  if (selections.shift && selections.plant) {
+                                  if (invoice.blocked) {
+                                    toast.error("⚠️ Invoice is Blocked", {
+                                      description: "This invoice has a mismatch. Please wait for admin to mark it as corrected.",
+                                      duration: 5000,
+                                    });
+                                    return;
+                                  }
+                                  if (selections.deliveryTime) {
                                     // Store selections in invoice data
                                     updateInvoiceAudit(invoice.id, {
-                                      selectedDeliveryShift: selections.shift,
-                                      selectedPlant: selections.plant,
+                                      deliveryTime: selections.deliveryTime,
                                       deliveryDate: scheduleItemsForCustomer[0]?.deliveryDate
                                     }, currentUser);
 
@@ -555,19 +567,24 @@ const DocAudit = () => {
                                     setSelectedInvoice(invoice.id);
                                     toast.success(`Audit started for invoice ${invoice.id}`);
                                   } else {
-                                    toast.error("Please select both delivery shift and plant before starting audit");
+                                    toast.error("Please select delivery time before starting audit");
                                   }
                                 }}
-                                disabled={!canStartAudit}
+                                disabled={!canStartAudit || invoice.blocked}
                                 className="w-full"
                                 size="lg"
+                                variant={invoice.blocked ? "destructive" : "default"}
                               >
                                 <ScanBarcode className="h-4 w-4 mr-2" />
-                                {canStartAudit ? "Start Document Audit" : "Select Shift & Plant to Continue"}
+                                {invoice.blocked 
+                                  ? "Invoice Blocked - Cannot Start Audit"
+                                  : canStartAudit 
+                                  ? "Start Document Audit" 
+                                  : "Select Delivery Time to Continue"}
                               </Button>
-                              {!canStartAudit && (
+                              {!canStartAudit && !invoice.blocked && (
                                 <p className="text-xs text-muted-foreground mt-2 text-center">
-                                  ⚠️ You must select both delivery shift and plant before starting the audit
+                                  ⚠️ You must select delivery time before starting the audit
                                 </p>
                               )}
                             </div>
@@ -607,18 +624,35 @@ const DocAudit = () => {
                 <Badge variant="outline" className="text-sm">
                   {currentInvoice.id}
                 </Badge>
-                {currentInvoice.selectedDeliveryShift && (
+                {currentInvoice.deliveryTime && (
                   <Badge variant="secondary" className="text-sm">
-                    Shift {currentInvoice.selectedDeliveryShift}
+                    {currentInvoice.deliveryTime}
                   </Badge>
                 )}
-                {currentInvoice.selectedPlant && (
-                  <Badge variant="secondary" className="text-sm">
-                    {currentInvoice.selectedPlant}
+                {currentInvoice.blocked && (
+                  <Badge variant="destructive" className="text-sm">
+                    <XCircle className="h-3 w-3 mr-1" />
+                    Blocked
                   </Badge>
                 )}
               </div>
             </div>
+
+            {/* Blocked Warning Card */}
+            {currentInvoice.blocked && (
+              <Card className="mb-6 border-2 border-red-500 bg-red-50 dark:bg-red-950">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-red-900 dark:text-red-100">
+                    <XCircle className="h-5 w-5" />
+                    Admin Approval Needed
+                  </CardTitle>
+                  <CardDescription className="text-red-700 dark:text-red-300">
+                    This invoice has a barcode mismatch and cannot be scanned until an admin marks it as corrected.
+                    Please contact your supervisor to resolve this issue.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            )}
 
             {/* Invoice Details Card */}
             <Card className="mb-6">
@@ -645,18 +679,12 @@ const DocAudit = () => {
                     <p className="font-semibold">{currentInvoice.expectedBins}</p>
                   </div>
                 </div>
-                {currentInvoice.selectedDeliveryShift && (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+                {currentInvoice.deliveryTime && (
+                  <div className="grid grid-cols-2 md:grid-cols-2 gap-4 mb-4">
                     <div>
-                      <p className="text-xs text-muted-foreground mb-1">Delivery Shift</p>
-                      <p className="font-semibold">Shift {currentInvoice.selectedDeliveryShift}</p>
+                      <p className="text-xs text-muted-foreground mb-1">Delivery Time</p>
+                      <p className="font-semibold">{currentInvoice.deliveryTime}</p>
                     </div>
-                    {currentInvoice.selectedPlant && (
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1">Plant</p>
-                        <p className="font-semibold">{currentInvoice.selectedPlant}</p>
-                      </div>
-                    )}
                     {currentInvoice.deliveryDate && (
                       <div>
                         <p className="text-xs text-muted-foreground mb-1">Delivery Date</p>
@@ -679,7 +707,7 @@ const DocAudit = () => {
             
             <div className="grid md:grid-cols-2 gap-6 mb-6">
             {/* Customer Label Scan */}
-            <Card>
+            <Card className={currentInvoice.blocked ? "opacity-60" : ""}>
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-primary/10 rounded-lg">
@@ -687,7 +715,11 @@ const DocAudit = () => {
                   </div>
                   <div>
                     <CardTitle className="text-lg">Scan Customer Label</CardTitle>
-                    <CardDescription>Scan the customer's barcode label</CardDescription>
+                    <CardDescription>
+                      {currentInvoice.blocked 
+                        ? "Admin approval needed - Scanning disabled" 
+                        : "Scan the customer's barcode label"}
+                    </CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -714,6 +746,13 @@ const DocAudit = () => {
                   )}
                   <BarcodeScanButton
                     onScan={(data) => {
+                      if (currentInvoice?.blocked) {
+                        toast.error("⚠️ Invoice is Blocked", {
+                          description: "This invoice has a mismatch. Please wait for admin to mark it as corrected.",
+                          duration: 5000,
+                        });
+                        return;
+                      }
                       setCustomerScan(data);
                       toast.success("Customer barcode scanned!");
                     }}
@@ -721,12 +760,14 @@ const DocAudit = () => {
                     variant="default"
                     matchValue={autolivScan?.rawValue || undefined}
                     shouldMismatch={!!autolivScan}
+                    disabled={currentInvoice?.blocked}
                   />
                   {customerScan && (
                     <Button 
                       onClick={() => handleScan('customer')} 
                       className="w-full h-12"
                       variant="secondary"
+                      disabled={currentInvoice?.blocked}
                     >
                       <CheckCircle2 className="h-4 w-4 mr-2" />
                       Validate Customer Label
@@ -737,7 +778,7 @@ const DocAudit = () => {
             </Card>
 
             {/* Autoliv Label Scan */}
-            <Card>
+            <Card className={currentInvoice.blocked ? "opacity-60" : ""}>
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-accent/10 rounded-lg">
@@ -745,7 +786,11 @@ const DocAudit = () => {
                   </div>
                   <div>
                     <CardTitle className="text-lg">Scan Autoliv Label</CardTitle>
-                    <CardDescription>Scan the internal Autoliv label</CardDescription>
+                    <CardDescription>
+                      {currentInvoice.blocked 
+                        ? "Admin approval needed - Scanning disabled" 
+                        : "Scan the internal Autoliv label"}
+                    </CardDescription>
                   </div>
                 </div>
               </CardHeader>
@@ -772,6 +817,13 @@ const DocAudit = () => {
                   )}
                   <BarcodeScanButton
                     onScan={(data) => {
+                      if (currentInvoice?.blocked) {
+                        toast.error("⚠️ Invoice is Blocked", {
+                          description: "This invoice has a mismatch. Please wait for admin to mark it as corrected.",
+                          duration: 5000,
+                        });
+                        return;
+                      }
                       setAutolivScan(data);
                       toast.success("Autoliv barcode scanned!");
                     }}
@@ -779,12 +831,14 @@ const DocAudit = () => {
                     variant="secondary"
                     matchValue={customerScan?.rawValue || undefined}
                     shouldMismatch={false}
+                    disabled={currentInvoice?.blocked}
                   />
                   {autolivScan && (
                     <Button 
                       onClick={() => handleScan('autoliv')} 
                       className="w-full h-12"
                       variant="secondary"
+                      disabled={currentInvoice?.blocked}
                     >
                       <CheckCircle2 className="h-4 w-4 mr-2" />
                       Validate Autoliv Label
