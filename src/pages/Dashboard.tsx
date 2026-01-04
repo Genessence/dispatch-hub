@@ -1995,7 +1995,8 @@ const Dashboard = () => {
       items: items // Detailed list of all items with part code, bin number, and quantity
     };
     
-    return JSON.stringify(qrData, null, 2);
+    // Remove formatting to minimize QR code size - improves Android scanning compatibility
+    return JSON.stringify(qrData);
   };
 
   // Print gatepass functionality
@@ -2018,8 +2019,8 @@ const Dashboard = () => {
     const qrData = generateGatepassQRData();
     // Encode QR data for URL
     const encodedQRData = encodeURIComponent(qrData);
-    // Use QR code API to generate QR code image
-    const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodedQRData}`;
+    // Use QR code API to generate QR code image with larger size and better error correction
+    const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&ecc=H&margin=4&data=${encodedQRData}`;
 
     const printContent = `
       <!DOCTYPE html>
@@ -2172,7 +2173,7 @@ const Dashboard = () => {
             <h3 style="margin-bottom: 15px; font-size: 16px; text-align: center;">QR Code:</h3>
             <div style="text-align: center; padding: 20px;">
               <div style="display: inline-block; padding: 20px; background: white; border: 2px solid #ddd; border-radius: 8px;">
-                <img src="${qrCodeImageUrl}" alt="Gatepass QR Code" style="width: 200px; height: 200px; display: block;" />
+                <img src="${qrCodeImageUrl}" alt="Gatepass QR Code" style="width: 300px; height: 300px; display: block;" />
               </div>
             </div>
             <p style="margin-top: 10px; font-size: 11px; color: #666; text-align: center;">Scan QR code to verify gatepass details</p>
@@ -4509,9 +4510,12 @@ const Dashboard = () => {
                       <div className="p-4 bg-white rounded-lg border-2 border-border shadow-sm">
                         <QRCodeSVG
                           value={generateGatepassQRData()}
-                          size={200}
+                          size={300}
                           level="H"
                           includeMargin={true}
+                          marginSize={4}
+                          bgColor="#FFFFFF"
+                          fgColor="#000000"
                         />
                       </div>
                       <div className="mt-4 p-3 bg-muted rounded-lg w-full max-w-md">
