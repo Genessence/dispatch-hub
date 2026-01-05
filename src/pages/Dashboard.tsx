@@ -241,16 +241,6 @@ const Dashboard = () => {
     inv.dispatchedBy !== undefined && inv.dispatchedAt && isDateToday(inv.dispatchedAt)
   ).length;
   
-  // Upcoming Schedule: invoices scheduled for future dates
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const upcomingScheduled = invoicesWithSchedule.filter(inv => {
-    if (!inv.scheduledDate) return false;
-    const scheduledDate = new Date(inv.scheduledDate);
-    scheduledDate.setHours(0, 0, 0, 0);
-    return scheduledDate > today;
-  }).length;
-  
   const hasRealData = sharedInvoices.length > 0;
 
   // Overall System KPIs
@@ -270,18 +260,18 @@ const Dashboard = () => {
       trend: readyForDispatch > 0 ? "Active" : "Empty"
     },
     {
-      title: "Completed Today",
-      value: hasRealData ? (completedTodayAudits + completedTodayDispatches).toString() : "0",
-      subtitle: `${completedTodayAudits} audits, ${completedTodayDispatches} dispatches`,
-      icon: CheckCircle2,
-      trend: (completedTodayAudits + completedTodayDispatches) > 0 ? "Active" : "None"
+      title: "Completed Today (Audit)",
+      value: hasRealData ? completedTodayAudits.toString() : "0",
+      subtitle: "Audits completed today",
+      icon: ScanBarcode,
+      trend: completedTodayAudits > 0 ? "Active" : "None"
     },
     {
-      title: "Upcoming Schedule",
-      value: hasRealData ? upcomingScheduled.toString() : "0",
-      subtitle: "Future scheduled",
-      icon: CalendarIcon,
-      trend: upcomingScheduled > 0 ? "Scheduled" : "None"
+      title: "Completed Today (Dispatch)",
+      value: hasRealData ? completedTodayDispatches.toString() : "0",
+      subtitle: "Dispatches completed today",
+      icon: Truck,
+      trend: completedTodayDispatches > 0 ? "Active" : "None"
     }
   ];
 
