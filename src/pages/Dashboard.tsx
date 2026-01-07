@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Calendar } from "@/components/ui/calendar";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import * as XLSX from 'xlsx';
 import { 
@@ -70,6 +70,8 @@ interface ValidatedBarcodePair {
 // InvoiceData is imported from SessionContext
 
 const Dashboard = () => {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { 
     currentUser, 
     sharedInvoices, 
@@ -88,9 +90,28 @@ const Dashboard = () => {
     addScheduleData,
     getScheduleForCustomer,
     getInvoicesWithSchedule,
-    getScheduledDispatchableInvoices
+    getScheduledDispatchableInvoices,
+    // Customer and Site selection
+    selectedCustomer,
+    selectedSite
   } = useSession();
   const [activeView, setActiveView] = useState<ViewType>('dashboard');
+
+  // Route guard: Check if customer and site are selected
+  useEffect(() => {
+    if (!selectedCustomer || !selectedSite) {
+      toast.error("Please select a customer and site before accessing the dashboard");
+      navigate("/select-customer-site");
+    }
+  }, [selectedCustomer, selectedSite, navigate]);
+
+  // Read view query parameter and set activeView
+  useEffect(() => {
+    const viewParam = searchParams.get('view');
+    if (viewParam && ['dashboard', 'upload', 'doc-audit', 'dispatch'].includes(viewParam)) {
+      setActiveView(viewParam as ViewType);
+    }
+  }, [searchParams]);
   
   // Logs states
   const [showUploadLogs, setShowUploadLogs] = useState(false);

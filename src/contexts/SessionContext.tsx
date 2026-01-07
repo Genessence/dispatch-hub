@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, ReactNode } from "react";
 
 // Schedule data from the schedule file (each row from each sheet)
 export interface ScheduleItem {
@@ -114,9 +114,19 @@ interface SessionContextType {
   getScheduleForCustomer: (customerCode: string) => ScheduleItem[];
   getInvoicesWithSchedule: () => InvoiceData[];
   getScheduledDispatchableInvoices: () => InvoiceData[];
+  // Customer and Site selection
+  selectedCustomer: string | null;
+  selectedSite: string | null;
+  setSelectedCustomer: (customer: string) => void;
+  setSelectedSite: (site: string) => void;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
+
+const STORAGE_KEYS = {
+  SELECTED_CUSTOMER: 'dispatch-hub-selected-customer',
+  SELECTED_SITE: 'dispatch-hub-selected-site',
+};
 
 export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [currentUser, setCurrentUser] = useState("User 1");
@@ -128,6 +138,50 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([]);
+
+  // Customer and Site selection with localStorage persistence
+  const [selectedCustomer, setSelectedCustomerState] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(STORAGE_KEYS.SELECTED_CUSTOMER);
+    }
+    return null;
+  });
+
+  const [selectedSite, setSelectedSiteState] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem(STORAGE_KEYS.SELECTED_SITE);
+    }
+    return null;
+  });
+
+  // Persist to localStorage when selections change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if (selectedCustomer) {
+        localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER, selectedCustomer);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.SELECTED_CUSTOMER);
+      }
+    }
+  }, [selectedCustomer]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      if (selectedSite) {
+        localStorage.setItem(STORAGE_KEYS.SELECTED_SITE, selectedSite);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.SELECTED_SITE);
+      }
+    }
+  }, [selectedSite]);
+
+  const setSelectedCustomer = (customer: string) => {
+    setSelectedCustomerState(customer);
+  };
+
+  const setSelectedSite = (site: string) => {
+    setSelectedSiteState(site);
+  };
 
   const addLog = (log: Omit<LogEntry, 'id' | 'timestamp'>) => {
     const newLog: LogEntry = {
@@ -351,7 +405,12 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         clearScheduleData,
         getScheduleForCustomer,
         getInvoicesWithSchedule,
-        getScheduledDispatchableInvoices
+        getScheduledDispatchableInvoices,
+        // Customer and Site selection
+        selectedCustomer,
+        selectedSite,
+        setSelectedCustomer,
+        setSelectedSite
       }}
     >
       {children}

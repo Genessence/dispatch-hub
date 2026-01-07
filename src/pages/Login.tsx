@@ -18,7 +18,7 @@ const Login = () => {
     // Simple validation
     if (email && password) {
       toast.success("Login successful!");
-      navigate("/dashboard");
+      navigate("/select-customer-site");
     } else {
       toast.error("Please enter both email and password");
     }
