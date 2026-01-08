@@ -115,9 +115,9 @@ interface SessionContextType {
   getInvoicesWithSchedule: () => InvoiceData[];
   getScheduledDispatchableInvoices: () => InvoiceData[];
   // Customer and Site selection
-  selectedCustomer: string | null;
+  selectedCustomer: string[];
   selectedSite: string | null;
-  setSelectedCustomer: (customer: string) => void;
+  setSelectedCustomer: (customers: string[]) => void;
   setSelectedSite: (site: string) => void;
 }
 
@@ -126,6 +126,22 @@ const SessionContext = createContext<SessionContextType | undefined>(undefined);
 const STORAGE_KEYS = {
   SELECTED_CUSTOMER: 'dispatch-hub-selected-customer',
   SELECTED_SITE: 'dispatch-hub-selected-site',
+};
+
+// Helper to parse stored customer data (handles backward compatibility)
+const parseStoredCustomers = (stored: string | null): string[] => {
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    // If it's already an array, return it
+    if (Array.isArray(parsed)) return parsed;
+    // If it's a string (old format), convert to array
+    if (typeof parsed === 'string') return [parsed];
+    return [];
+  } catch {
+    // If JSON parsing fails, it's an old plain string format
+    return stored ? [stored] : [];
+  }
 };
 
 export const SessionProvider = ({ children }: { children: ReactNode }) => {
@@ -139,12 +155,12 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([]);
 
-  // Customer and Site selection with localStorage persistence
-  const [selectedCustomer, setSelectedCustomerState] = useState<string | null>(() => {
+  // Customer selection with localStorage persistence (now supports array)
+  const [selectedCustomer, setSelectedCustomerState] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem(STORAGE_KEYS.SELECTED_CUSTOMER);
+      return parseStoredCustomers(localStorage.getItem(STORAGE_KEYS.SELECTED_CUSTOMER));
     }
-    return null;
+    return [];
   });
 
   const [selectedSite, setSelectedSiteState] = useState<string | null>(() => {
@@ -157,8 +173,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   // Persist to localStorage when selections change
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      if (selectedCustomer) {
-        localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER, selectedCustomer);
+      if (selectedCustomer.length > 0) {
+        localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER, JSON.stringify(selectedCustomer));
       } else {
         localStorage.removeItem(STORAGE_KEYS.SELECTED_CUSTOMER);
       }
@@ -175,8 +191,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [selectedSite]);
 
-  const setSelectedCustomer = (customer: string) => {
-    setSelectedCustomerState(customer);
+  const setSelectedCustomer = (customers: string[]) => {
+    setSelectedCustomerState(customers);
   };
 
   const setSelectedSite = (site: string) => {

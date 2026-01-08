@@ -99,7 +99,7 @@ const Dashboard = () => {
 
   // Route guard: Check if customer and site are selected
   useEffect(() => {
-    if (!selectedCustomer || !selectedSite) {
+    if (!selectedCustomer || selectedCustomer.length === 0 || !selectedSite) {
       toast.error("Please select a customer and site before accessing the dashboard");
       navigate("/select-customer-site");
     }
@@ -137,10 +137,9 @@ const Dashboard = () => {
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
   
-  // Doc Audit selection states (customer code, delivery date, delivery time)
-  const [selectedCustomerCode, setSelectedCustomerCode] = useState<string>("");
+  // Doc Audit selection states (delivery date, delivery times - multiple selection)
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
-  const [selectedDeliveryTime, setSelectedDeliveryTime] = useState<string>("");
+  const [selectedDeliveryTimes, setSelectedDeliveryTimes] = useState<string[]>([]);
   
   // Helper function to format date as YYYY-MM-DD in local timezone (not UTC)
   // This avoids timezone issues where toISOString() converts to UTC
@@ -1222,29 +1221,16 @@ const Dashboard = () => {
 
   // Doc Audit data and handlers
 
-  // Get available customer codes from invoices with schedule
-  const availableCustomerCodes = useMemo(() => {
-    const codes = new Set<string>();
-    invoicesWithSchedule.forEach(inv => {
-      if (inv.billTo) codes.add(inv.billTo);
-    });
-    // Only return actual customer codes from data - no dummy codes
-    return Array.from(codes).sort();
-  }, [invoicesWithSchedule, scheduleData]);
 
-  // Get available delivery dates for selected customer code (from schedule items that match invoice items)
+  // Get available delivery dates across ALL customers (from schedule items that match invoice items)
   const availableDeliveryDates = useMemo(() => {
-    if (!selectedCustomerCode || !scheduleData) return [];
+    if (!scheduleData || !invoicesWithSchedule.length) return [];
     
     const dates = new Set<string>();
     
-    // Get invoices for the selected customer code
-    const invoicesForCustomer = invoicesWithSchedule.filter(inv => inv.billTo === selectedCustomerCode);
-    if (invoicesForCustomer.length === 0) return [];
-    
-    // Get all customer items from invoices for this customer
+    // Get all customer items from ALL invoices with schedule
     const customerItemsSet = new Set<string>();
-    invoicesForCustomer.forEach(invoice => {
+    invoicesWithSchedule.forEach(invoice => {
       invoice.items?.forEach((item: any) => {
         if (item.customerItem && item.status === 'valid-matched') {
           customerItemsSet.add(String(item.customerItem).trim());
@@ -1253,30 +1239,23 @@ const Dashboard = () => {
     });
     
     // Find schedule items that match these customer items (via partNumber)
-    const scheduleItems = scheduleData.items.filter(
-      item => String(item.customerCode) === String(selectedCustomerCode)
-    );
-    scheduleItems.forEach(item => {
+    scheduleData.items.forEach(item => {
       if (item.deliveryDate && item.partNumber && customerItemsSet.has(String(item.partNumber).trim())) {
         dates.add(formatDateAsLocalString(item.deliveryDate)); // Format as YYYY-MM-DD in local timezone
       }
     });
     
     return Array.from(dates).sort();
-  }, [selectedCustomerCode, scheduleData, invoicesWithSchedule]);
+  }, [scheduleData, invoicesWithSchedule]);
 
-  // Get available delivery times for selected customer code and delivery date (from schedule items that match invoice items)
+  // Get available delivery times for selected delivery date across ALL customers (from schedule items that match invoice items)
   const availableDeliveryTimes = useMemo(() => {
-    if (!selectedCustomerCode || !selectedDeliveryDate || !scheduleData) return [];
+    if (!selectedDeliveryDate || !scheduleData || !invoicesWithSchedule.length) return [];
     const times = new Set<string>();
     
-    // Get invoices for the selected customer code
-    const invoicesForCustomer = invoicesWithSchedule.filter(inv => inv.billTo === selectedCustomerCode);
-    if (invoicesForCustomer.length === 0) return [];
-    
-    // Get all customer items from invoices for this customer
+    // Get all customer items from ALL invoices with schedule
     const customerItemsSet = new Set<string>();
-    invoicesForCustomer.forEach(invoice => {
+    invoicesWithSchedule.forEach(invoice => {
       invoice.items?.forEach((item: any) => {
         if (item.customerItem && item.status === 'valid-matched') {
           customerItemsSet.add(String(item.customerItem).trim());
@@ -1284,45 +1263,35 @@ const Dashboard = () => {
       });
     });
     
-    // Find schedule items that match customer code, delivery date, and customer items (via partNumber)
-    const scheduleItems = scheduleData.items.filter(
-      item => {
-        if (String(item.customerCode) !== String(selectedCustomerCode)) return false;
-        if (!item.deliveryDate) return false;
-        const itemDate = formatDateAsLocalString(item.deliveryDate);
-        const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
-        return itemDate === selectedDate;
-      }
-    );
-    scheduleItems.forEach(item => {
-      if (item.deliveryTime && item.partNumber && customerItemsSet.has(String(item.partNumber).trim())) {
+    // Find schedule items that match delivery date and customer items (via partNumber)
+    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
+    scheduleData.items.forEach(item => {
+      if (!item.deliveryDate || !item.deliveryTime || !item.partNumber) return;
+      const itemDate = formatDateAsLocalString(item.deliveryDate);
+      if (itemDate === selectedDate && customerItemsSet.has(String(item.partNumber).trim())) {
         times.add(item.deliveryTime);
       }
     });
     
     return Array.from(times).sort();
-  }, [selectedCustomerCode, selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
+  }, [selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
 
   // Get invoices with schedule for Doc Audit - filtered by selections
   // Reuse invoicesWithSchedule declared above for KPIs
   const invoices = useMemo(() => {
-    if (!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime || !scheduleData) {
+    if (!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || !scheduleData) {
       // If not all selections are made, return empty array
       return [];
     }
     
-    // First, filter by customer code
+    // First, filter out dispatched invoices
     let filtered = invoicesWithSchedule.filter(inv => {
       // Hide dispatched invoices
       if (inv.dispatchedBy) return false;
-      
-      // Filter by customer code
-      if (inv.billTo !== selectedCustomerCode) return false;
-      
       return true;
     });
     
-    // Get all customer items from invoices for this customer
+    // Get all customer items from ALL invoices with schedule
     const customerItemsSet = new Set<string>();
     filtered.forEach(invoice => {
       invoice.items?.forEach((item: any) => {
@@ -1332,14 +1301,13 @@ const Dashboard = () => {
       });
     });
     
-    // Find schedule items that match the criteria (customer code, delivery date, delivery time, and partNumber)
+    // Find schedule items that match the criteria (delivery date, ANY selected delivery time, and partNumber)
+    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
     const matchingScheduleItems = scheduleData.items.filter(item => {
-      if (String(item.customerCode) !== String(selectedCustomerCode)) return false;
       if (!item.deliveryDate || !item.deliveryTime || !item.partNumber) return false;
       const itemDate = formatDateAsLocalString(item.deliveryDate);
-      const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
       return itemDate === selectedDate 
-        && item.deliveryTime === selectedDeliveryTime
+        && selectedDeliveryTimes.includes(item.deliveryTime)
         && customerItemsSet.has(String(item.partNumber).trim());
     });
     
@@ -1354,15 +1322,27 @@ const Dashboard = () => {
       });
     });
     
-    // Sort invoices: customer code → delivery date → delivery time → invoice ID
+    // Sort invoices: delivery date → delivery time → invoice ID
     return filtered.sort((a, b) => {
-      // Customer code (already filtered, so same)
       // Delivery date (already filtered, so same)
-      // Delivery time (already filtered, so same)
+      // Delivery time - get the first matching time for sorting
+      const aTime = matchingScheduleItems.find(item => 
+        a.items?.some((invItem: any) => 
+          invItem.customerItem && String(item.partNumber).trim() === String(invItem.customerItem).trim()
+        )
+      )?.deliveryTime || '';
+      const bTime = matchingScheduleItems.find(item => 
+        b.items?.some((invItem: any) => 
+          invItem.customerItem && String(item.partNumber).trim() === String(invItem.customerItem).trim()
+        )
+      )?.deliveryTime || '';
+      
+      if (aTime !== bTime) return aTime.localeCompare(bTime);
+      
       // Invoice ID
       return a.id.localeCompare(b.id);
     });
-  }, [invoicesWithSchedule, selectedCustomerCode, selectedDeliveryTime, selectedDeliveryDate, scheduleData]);
+  }, [invoicesWithSchedule, selectedDeliveryTimes, selectedDeliveryDate, scheduleData]);
   
   // Group invoices by scheduled date for display
   const groupedByDate = invoices.reduce((acc, inv) => {
@@ -3091,9 +3071,8 @@ const Dashboard = () => {
                   setAutolivScan(null);
                   setValidatedBins([]);
                   // Reset selection states
-                  setSelectedCustomerCode("");
                   setSelectedDeliveryDate(undefined);
-                  setSelectedDeliveryTime("");
+                  setSelectedDeliveryTimes([]);
                 }}
                 className="flex items-center gap-2 justify-center sm:justify-start"
               >
@@ -3151,60 +3130,20 @@ const Dashboard = () => {
               </div>
             )}
             
-            {/* Selection Fields: Customer Code, Delivery Date, Delivery Time */}
+            {/* Selection Fields: Delivery Date, Delivery Times (Multiple) */}
             {scheduleData && (
               <Card className="mb-6 border-2 border-primary">
                 <CardHeader>
                   <CardTitle>Configure Dispatch Details</CardTitle>
-                  <CardDescription>Select customer code, delivery date, and delivery time before selecting an invoice</CardDescription>
+                  <CardDescription>Select delivery date and delivery time(s) before selecting an invoice</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid md:grid-cols-3 gap-4">
-                    {/* Customer Code Selection */}
-                    <div className="space-y-2">
-                      <Label className="text-sm font-medium flex items-center gap-2">
-                        <Package className="h-4 w-4" />
-                        Customer Code <span className="text-destructive">*</span>
-                      </Label>
-                      <Select 
-                        value={selectedCustomerCode} 
-                        onValueChange={(value) => {
-                          setSelectedCustomerCode(value);
-                          // Reset delivery date and delivery time when customer code changes
-                          setSelectedDeliveryDate(undefined);
-                          setSelectedDeliveryTime("");
-                          setSelectedInvoice(""); // Reset invoice selection
-                        }}
-                      >
-                        <SelectTrigger className={!selectedCustomerCode ? "border-destructive" : ""}>
-                          <SelectValue placeholder="Select customer code" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableCustomerCodes.length === 0 ? (
-                            <div className="p-4 text-center text-sm text-muted-foreground">
-                              No customer codes available
-                            </div>
-                          ) : (
-                            availableCustomerCodes.map(code => {
-                              return (
-                                <SelectItem key={code} value={code}>
-                                  {code}
-                                </SelectItem>
-                              );
-                            })
-                          )}
-                        </SelectContent>
-                      </Select>
-                      {!selectedCustomerCode && (
-                        <p className="text-xs text-destructive">⚠️ Please select a customer code</p>
-                      )}
-                    </div>
-
-                    {/* Delivery Date Selection */}
+                  <div className="space-y-6">
+                    {/* Step 1: Delivery Date Selection */}
                     <div className="space-y-2">
                       <Label className="text-sm font-medium flex items-center gap-2">
                         <CalendarIcon className="h-4 w-4" />
-                        Delivery Date <span className="text-destructive">*</span>
+                        Step 1: Delivery Date <span className="text-destructive">*</span>
                       </Label>
                       <Select 
                         value={selectedDeliveryDate ? formatDateAsLocalString(selectedDeliveryDate) : ""} 
@@ -3214,12 +3153,12 @@ const Dashboard = () => {
                           const [year, month, day] = value.split('-').map(Number);
                           const date = new Date(year, month - 1, day);
                           setSelectedDeliveryDate(date);
+                          setSelectedDeliveryTimes([]); // Reset delivery times when date changes
                           setSelectedInvoice(""); // Reset invoice selection
                         }}
-                        disabled={!selectedCustomerCode}
                       >
-                        <SelectTrigger className={!selectedDeliveryDate ? "border-destructive" : ""} disabled={!selectedCustomerCode}>
-                          <SelectValue placeholder={selectedCustomerCode ? "Select delivery date" : "Select customer code first"}>
+                        <SelectTrigger className={!selectedDeliveryDate ? "border-destructive" : ""}>
+                          <SelectValue placeholder="Select delivery date">
                             {selectedDeliveryDate 
                               ? selectedDeliveryDate.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })
                               : undefined}
@@ -3228,7 +3167,7 @@ const Dashboard = () => {
                         <SelectContent>
                           {availableDeliveryDates.length === 0 ? (
                             <div className="p-4 text-center text-sm text-muted-foreground">
-                              {selectedCustomerCode ? "No delivery dates available" : "Select customer code first"}
+                              No delivery dates available
                             </div>
                           ) : (
                             availableDeliveryDates.map(dateStr => {
@@ -3244,71 +3183,98 @@ const Dashboard = () => {
                           )}
                         </SelectContent>
                       </Select>
-                      {!selectedDeliveryDate && selectedCustomerCode && (
+                      {!selectedDeliveryDate && (
                         <p className="text-xs text-destructive">⚠️ Please select a delivery date</p>
-                      )}
-                      {!selectedCustomerCode && (
-                        <p className="text-xs text-muted-foreground">Select customer code first</p>
                       )}
                     </div>
 
-                    {/* Delivery Time Selection */}
-                    <div className="space-y-2">
-                      <Label className="text-sm font-medium flex items-center gap-2">
-                        <Clock className="h-4 w-4" />
-                        Delivery Time <span className="text-destructive">*</span>
-                      </Label>
-                      <Select 
-                        value={selectedDeliveryTime} 
-                        onValueChange={(value) => {
-                          setSelectedDeliveryTime(value);
-                          setSelectedInvoice(""); // Reset invoice selection
-                        }}
-                        disabled={!selectedCustomerCode || !selectedDeliveryDate}
-                      >
-                        <SelectTrigger className={!selectedDeliveryTime ? "border-destructive" : ""} disabled={!selectedCustomerCode || !selectedDeliveryDate}>
-                          <SelectValue placeholder={selectedCustomerCode && selectedDeliveryDate ? "Select delivery time" : !selectedCustomerCode ? "Select customer code first" : "Select delivery date first"}>
-                            {selectedDeliveryTime || undefined}
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableDeliveryTimes.length === 0 ? (
-                            <div className="p-4 text-center text-sm text-muted-foreground">
-                              {selectedCustomerCode && selectedDeliveryDate ? "No delivery times available" : !selectedCustomerCode ? "Select customer code first" : "Select delivery date first"}
+                    {/* Step 2: Delivery Time Selection (Multiple Checkboxes) */}
+                    {selectedDeliveryDate && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm font-medium flex items-center gap-2">
+                            <Clock className="h-4 w-4" />
+                            Step 2: Delivery Time(s) <span className="text-destructive">*</span>
+                          </Label>
+                          {availableDeliveryTimes.length > 1 && (
+                            <div className="flex gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedDeliveryTimes([...availableDeliveryTimes]);
+                                  setSelectedInvoice("");
+                                }}
+                                className="h-7 text-xs"
+                              >
+                                Select All
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedDeliveryTimes([]);
+                                  setSelectedInvoice("");
+                                }}
+                                className="h-7 text-xs"
+                              >
+                                Deselect All
+                              </Button>
                             </div>
-                          ) : (
-                            availableDeliveryTimes.map(time => (
-                              <SelectItem key={time} value={time}>
-                                {time}
-                              </SelectItem>
-                            ))
                           )}
-                        </SelectContent>
-                      </Select>
-                      {!selectedDeliveryTime && selectedCustomerCode && selectedDeliveryDate && (
-                        <p className="text-xs text-destructive">⚠️ Please select a delivery time</p>
-                      )}
-                      {!selectedCustomerCode && (
-                        <p className="text-xs text-muted-foreground">Select customer code first</p>
-                      )}
-                      {selectedCustomerCode && !selectedDeliveryDate && (
-                        <p className="text-xs text-muted-foreground">Select delivery date first</p>
-                      )}
-                    </div>
+                        </div>
+                        
+                        {availableDeliveryTimes.length === 0 ? (
+                          <div className="p-4 bg-muted rounded-lg text-center">
+                            <p className="text-sm text-muted-foreground">
+                              No delivery times available for the selected date
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 p-4 bg-muted/50 rounded-lg border-2 border-muted">
+                            {availableDeliveryTimes.map(time => (
+                              <div key={time} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`time-${time}`}
+                                  checked={selectedDeliveryTimes.includes(time)}
+                                  onCheckedChange={() => {
+                                    if (selectedDeliveryTimes.includes(time)) {
+                                      setSelectedDeliveryTimes(prev => prev.filter(t => t !== time));
+                                    } else {
+                                      setSelectedDeliveryTimes(prev => [...prev, time]);
+                                    }
+                                    setSelectedInvoice("");
+                                  }}
+                                />
+                                <label
+                                  htmlFor={`time-${time}`}
+                                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                                >
+                                  {time}
+                                </label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        
+                        {selectedDeliveryTimes.length === 0 && availableDeliveryTimes.length > 0 && (
+                          <p className="text-xs text-destructive">⚠️ Please select at least one delivery time</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                   
                   {/* Selection Status */}
-                  <div className="mt-4 p-3 bg-muted rounded-lg">
+                  <div className="mt-6 p-3 bg-muted rounded-lg">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-xs font-semibold">Selection Status:</p>
-                      {(selectedCustomerCode || selectedDeliveryDate || selectedDeliveryTime) && (
+                      {(selectedDeliveryDate || selectedDeliveryTimes.length > 0) && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            setSelectedCustomerCode("");
                             setSelectedDeliveryDate(undefined);
-                            setSelectedDeliveryTime("");
+                            setSelectedDeliveryTimes([]);
                             setSelectedInvoice("");
                           }}
                           className="h-7 text-xs"
@@ -3319,14 +3285,11 @@ const Dashboard = () => {
                       )}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Badge variant={selectedCustomerCode ? "default" : "outline"}>
-                        Customer Code: {selectedCustomerCode || "Not selected"}
-                      </Badge>
                       <Badge variant={selectedDeliveryDate ? "default" : "outline"}>
                         Delivery Date: {selectedDeliveryDate ? selectedDeliveryDate.toLocaleDateString() : "Not selected"}
                       </Badge>
-                      <Badge variant={selectedDeliveryTime ? "default" : "outline"}>
-                        Delivery Time: {selectedDeliveryTime || "Not selected"}
+                      <Badge variant={selectedDeliveryTimes.length > 0 ? "default" : "outline"}>
+                        Delivery Time(s): {selectedDeliveryTimes.length > 0 ? selectedDeliveryTimes.join(", ") : "Not selected"}
                       </Badge>
                     </div>
                   </div>
@@ -3340,14 +3303,14 @@ const Dashboard = () => {
                 <CardTitle>Select Invoice</CardTitle>
                 <CardDescription>
                   Choose an invoice to begin document audit
-                  {selectedCustomerCode && selectedDeliveryDate && selectedDeliveryTime && (
+                  {selectedDeliveryDate && selectedDeliveryTimes.length > 0 && (
                     <span className="block mt-1 text-success text-sm font-medium">
                       ✅ All selections made - Invoice selection is now enabled
                     </span>
                   )}
-                  {(!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime) && (
+                  {(!selectedDeliveryDate || selectedDeliveryTimes.length === 0) && (
                     <span className="block mt-1 text-destructive text-sm font-medium">
-                      ⚠️ Please select customer code, delivery date, and delivery time first
+                      ⚠️ Please select delivery date and at least one delivery time first
                     </span>
                   )}
                 </CardDescription>
@@ -3356,7 +3319,7 @@ const Dashboard = () => {
                 {invoices.length === 0 ? (
                   <div className="p-4 bg-muted rounded-lg text-center">
                     <p className="text-sm text-muted-foreground">
-                      {!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime
+                      {!selectedDeliveryDate || selectedDeliveryTimes.length === 0
                         ? "Please complete the selections above to see invoices"
                         : "No invoices matching your selections"}
                     </p>
@@ -3365,21 +3328,26 @@ const Dashboard = () => {
                   <>
                     <div className="mb-3 p-2 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                       <p className="text-xs text-blue-700 dark:text-blue-300">
-                        📅 Showing {invoices.length} invoice(s). Scheduled for {selectedDeliveryDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'} and {selectedDeliveryTime || 'N/A'}
+                        📅 Showing {invoices.length} invoice(s) for {selectedDeliveryDate?.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || 'N/A'}
+                        {selectedDeliveryTimes.length > 0 && (
+                          <span className="block mt-1">
+                            ⏰ Delivery Times: {selectedDeliveryTimes.join(", ")}
+                          </span>
+                        )}
                       </p>
                     </div>
                 <Select 
                   value={selectedInvoice} 
                   onValueChange={setSelectedInvoice}
-                  disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime}
+                  disabled={!selectedDeliveryDate || selectedDeliveryTimes.length === 0}
                 >
                   <SelectTrigger 
-                    className={`h-12 text-base ${(!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime) ? "opacity-50 cursor-not-allowed" : ""}`}
-                    disabled={!selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime}
+                    className={`h-12 text-base ${(!selectedDeliveryDate || selectedDeliveryTimes.length === 0) ? "opacity-50 cursor-not-allowed" : ""}`}
+                    disabled={!selectedDeliveryDate || selectedDeliveryTimes.length === 0}
                   >
                     <SelectValue 
                       placeholder={
-                        !selectedCustomerCode || !selectedDeliveryDate || !selectedDeliveryTime
+                        !selectedDeliveryDate || selectedDeliveryTimes.length === 0
                           ? "Complete selections above first"
                           : invoices.length === 0 
                           ? "No invoices available" 
@@ -3410,9 +3378,33 @@ const Dashboard = () => {
                           }
                         });
                         const totalCustItems = uniqueCustItems.size;
+                        
+                        // Find the delivery time for this invoice from schedule
+                        let deliveryTimeForInvoice = '';
+                        if (scheduleData && selectedDeliveryDate) {
+                          const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
+                          const customerItemsInInvoice = new Set<string>();
+                          invoiceItems.forEach((item: UploadedRow) => {
+                            if (item.customerItem && item.status === 'valid-matched') {
+                              customerItemsInInvoice.add(String(item.customerItem).trim());
+                            }
+                          });
+                          
+                          const matchingScheduleItem = scheduleData.items.find(item => {
+                            if (!item.deliveryDate || !item.deliveryTime || !item.partNumber) return false;
+                            const itemDate = formatDateAsLocalString(item.deliveryDate);
+                            return itemDate === selectedDate 
+                              && selectedDeliveryTimes.includes(item.deliveryTime)
+                              && customerItemsInInvoice.has(String(item.partNumber).trim());
+                          });
+                          
+                          deliveryTimeForInvoice = matchingScheduleItem?.deliveryTime || '';
+                        }
+                        
                         return (
                           <SelectItem key={invoice.id} value={invoice.id} disabled={isBlocked}>
                             {invoice.id} - {invoice.customer} ({scannedCount}/{totalCustItems} Customer Items)
+                            {deliveryTimeForInvoice && ` | ⏰ ${deliveryTimeForInvoice}`}
                             {isAudited && ' ✓ Audited'}
                             {isBlocked && ' ⛔ Blocked'}
                           </SelectItem>
