@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -16,7 +17,8 @@ import {
   ArrowLeft,
   Calendar as CalendarIcon,
   XCircle,
-  X
+  X,
+  ChevronDown
 } from "lucide-react";
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
@@ -1071,140 +1073,183 @@ const DocAudit = () => {
                 {/* SECONDARY METHOD: Dropdown Selection */}
                 <div className="space-y-2">
                   <Label className="text-sm font-medium">Manual Selection - Dropdown:</Label>
-                  <Select
-                    value=""
-                    onValueChange={(value) => {
-                      if (value && !selectedInvoices.includes(value)) {
-                        setSelectedInvoices(prev => [...prev, value]);
-                        toast.success(`Invoice ${value} added to selection`);
-                      }
-                    }}
-                    disabled={!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0}
-                  >
-                    <SelectTrigger className="h-12">
-                      <SelectValue placeholder="Select invoice from dropdown..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {invoices.map(invoice => {
-                        const invoiceInShared = sharedInvoices.find(inv => inv.id === invoice.id);
-                        const isBlocked = invoiceInShared?.blocked ?? invoice.blocked ?? false;
-                        const isSelected = selectedInvoices.includes(invoice.id);
-                        const isAudited = invoiceInShared?.auditComplete ?? invoice.auditComplete;
-                        
-                        return (
-                          <SelectItem 
-                            key={invoice.id} 
-                            value={invoice.id}
-                            disabled={isBlocked}
-                          >
-                            {isSelected && '✓ '}
-                            {invoice.id} - {invoice.customer}
-                            {isAudited && ' (Audited)'}
-                            {isBlocked && ' ⛔'}
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* TERTIARY METHOD: Checkbox List */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-sm font-medium">OR Select from list below:</Label>
-                    {invoices.length > 1 && (
-                      <div className="flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            const selectableInvoices = invoices.filter(inv => {
-                              const invoiceInShared = sharedInvoices.find(i => i.id === inv.id);
-                              return !(invoiceInShared?.blocked ?? inv.blocked ?? false);
-                            });
-                            setSelectedInvoices(selectableInvoices.map(inv => inv.id));
-                          }}
-                          className="h-7 text-xs"
-                          disabled={!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0}
-                        >
-                          Select All
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedInvoices([])}
-                          className="h-7 text-xs"
-                        >
-                          Deselect All
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="space-y-2">
-                  {invoices.map(invoice => {
-                    const invoiceInShared = sharedInvoices.find(inv => inv.id === invoice.id);
-                    const scannedCount = invoiceInShared?.scannedBins ?? invoice.scannedBins;
-                    const isAudited = invoiceInShared?.auditComplete ?? invoice.auditComplete;
-                    const isBlocked = invoiceInShared?.blocked ?? invoice.blocked ?? false;
-                    
-                    const invoiceItems = invoiceInShared?.items || invoice.items || [];
-                    const uniqueCustItems = new Set<string>();
-                    invoiceItems.forEach((item: UploadedRow) => {
-                      const partNum = item.customerItem || item.part;
-                      if (partNum && String(partNum).trim() !== '') {
-                        uniqueCustItems.add(String(partNum).trim());
-                      }
-                    });
-                    const totalCustItems = uniqueCustItems.size;
-                    
-                    return (
-                      <div 
-                        key={invoice.id} 
-                        className={`p-3 border-2 rounded-lg transition-colors ${
-                          selectedInvoices.includes(invoice.id)
-                            ? 'border-success bg-success/5'
-                            : 'border-border'
-                        } ${isBlocked ? 'opacity-50' : 'hover:border-primary/50'}`}
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className="w-full h-12 justify-between text-base"
+                        disabled={!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0}
                       >
-                        <div className="flex items-start gap-3">
-                          <Checkbox
-                            id={`invoice-${invoice.id}`}
-                            checked={selectedInvoices.includes(invoice.id)}
-                            disabled={isBlocked || !selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0}
-                            onCheckedChange={() => {
-                              if (selectedInvoices.includes(invoice.id)) {
-                                setSelectedInvoices(prev => prev.filter(id => id !== invoice.id));
-                              } else {
-                                setSelectedInvoices(prev => [...prev, invoice.id]);
+                        <span className="text-muted-foreground">
+                          {selectedInvoices.length > 0 
+                            ? `${selectedInvoices.length} invoice(s) selected - Click to add more`
+                            : "Select invoices from dropdown..."}
+                        </span>
+                        <ChevronDown className="h-4 w-4 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-full p-0" align="start" style={{ width: 'var(--radix-popover-trigger-width)' }}>
+                      <div className="max-h-80 overflow-y-auto">
+                        <div className="p-2 border-b bg-muted/50 sticky top-0 z-10">
+                          <p className="text-xs font-semibold text-muted-foreground">
+                            Click invoices to add/remove • {invoices.length} available
+                          </p>
+                        </div>
+                        <div className="p-2 space-y-1">
+                          {invoices.map(invoice => {
+                            const invoiceInShared = sharedInvoices.find(inv => inv.id === invoice.id);
+                            const isBlocked = invoiceInShared?.blocked ?? invoice.blocked ?? false;
+                            const isSelected = selectedInvoices.includes(invoice.id);
+                            const isAudited = invoiceInShared?.auditComplete ?? invoice.auditComplete;
+                            const scannedCount = invoiceInShared?.scannedBins ?? invoice.scannedBins;
+                            
+                            const invoiceItems = invoiceInShared?.items || invoice.items || [];
+                            const uniqueCustItems = new Set<string>();
+                            invoiceItems.forEach((item: UploadedRow) => {
+                              const partNum = item.customerItem || item.part;
+                              if (partNum && String(partNum).trim() !== '') {
+                                uniqueCustItems.add(String(partNum).trim());
                               }
-                            }}
-                            className="mt-1"
-                          />
-                          <label
-                            htmlFor={`invoice-${invoice.id}`}
-                            className="flex-1 cursor-pointer"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex-1">
-                                <p className="font-semibold text-sm">
-                                  {invoice.id} - {invoice.customer}
-                                </p>
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  Customer Code: {invoice.billTo || 'N/A'} | Progress: {scannedCount}/{totalCustItems} Customer Items
-                                </p>
-                              </div>
-                              <div className="flex gap-1">
-                                {isAudited && <Badge variant="secondary" className="text-xs">✓ Audited</Badge>}
-                                {isBlocked && <Badge variant="destructive" className="text-xs">⛔ Blocked</Badge>}
-                              </div>
-                            </div>
-                          </label>
+                            });
+                            const totalCustItems = uniqueCustItems.size;
+                            
+                            return (
+                              <button
+                                key={invoice.id}
+                                onClick={() => {
+                                  if (isBlocked) {
+                                    toast.error("Invoice is blocked and cannot be selected");
+                                    return;
+                                  }
+                                  
+                                  if (isSelected) {
+                                    setSelectedInvoices(prev => prev.filter(id => id !== invoice.id));
+                                    toast.info(`Invoice ${invoice.id} removed from selection`);
+                                  } else {
+                                    setSelectedInvoices(prev => [...prev, invoice.id]);
+                                    toast.success(`Invoice ${invoice.id} added to selection`);
+                                  }
+                                }}
+                                disabled={isBlocked}
+                                className={`w-full text-left p-3 rounded-md transition-colors ${
+                                  isSelected 
+                                    ? 'bg-success/10 border-2 border-success hover:bg-success/20' 
+                                    : 'hover:bg-muted border-2 border-transparent'
+                                } ${isBlocked ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      {isSelected && <CheckCircle2 className="h-4 w-4 text-success" />}
+                                      <p className="font-semibold text-sm">
+                                        {invoice.id} - {invoice.customer}
+                                      </p>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                      Progress: {scannedCount}/{totalCustItems} items
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-col gap-1 items-end">
+                                    {isAudited && <Badge variant="secondary" className="text-xs">✓ Audited</Badge>}
+                                    {isBlocked && <Badge variant="destructive" className="text-xs">⛔</Badge>}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
-                    );
-                  })}
-                  </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
+
+                {/* TERTIARY METHOD: Selected Invoices List (Read-Only Display with Remove Option) */}
+                {selectedInvoices.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium">Selected Invoices ({selectedInvoices.length}):</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedInvoices([])}
+                        className="h-7 text-xs"
+                      >
+                        Clear All
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                    {selectedInvoices.map(invoiceId => {
+                      const invoice = invoices.find(inv => inv.id === invoiceId);
+                      const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
+                      
+                      // If invoice not found in current filter, still show it but mark it
+                      const scannedCount = invoiceInShared?.scannedBins ?? invoice?.scannedBins ?? 0;
+                      const isAudited = invoiceInShared?.auditComplete ?? invoice?.auditComplete ?? false;
+                      const isBlocked = invoiceInShared?.blocked ?? invoice?.blocked ?? false;
+                      
+                      const invoiceItems = invoiceInShared?.items || invoice?.items || [];
+                      const uniqueCustItems = new Set<string>();
+                      invoiceItems.forEach((item: UploadedRow) => {
+                        const partNum = item.customerItem || item.part;
+                        if (partNum && String(partNum).trim() !== '') {
+                          uniqueCustItems.add(String(partNum).trim());
+                        }
+                      });
+                      const totalCustItems = uniqueCustItems.size;
+                      
+                      return (
+                        <div 
+                          key={invoiceId} 
+                          className="p-3 border-2 border-success bg-success/5 rounded-lg transition-colors"
+                        >
+                          <div className="flex items-start gap-3">
+                            <Checkbox
+                              id={`invoice-${invoiceId}`}
+                              checked={true}
+                              onCheckedChange={() => {
+                                setSelectedInvoices(prev => prev.filter(id => id !== invoiceId));
+                                toast.info(`Invoice ${invoiceId} removed from selection`);
+                              }}
+                              className="mt-1"
+                            />
+                            <label
+                              htmlFor={`invoice-${invoiceId}`}
+                              className="flex-1 cursor-pointer"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1">
+                                  <p className="font-semibold text-sm">
+                                    {invoiceId} - {invoice?.customer || invoiceInShared?.customer || 'Unknown'}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    Customer Code: {invoice?.billTo || invoiceInShared?.billTo || 'N/A'} | Progress: {scannedCount}/{totalCustItems} Customer Items
+                                  </p>
+                                </div>
+                                <div className="flex gap-1">
+                                  {isAudited && <Badge variant="secondary" className="text-xs">✓ Audited</Badge>}
+                                  {isBlocked && <Badge variant="destructive" className="text-xs">⛔ Blocked</Badge>}
+                                </div>
+                              </div>
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    </div>
+                  </div>
+                )}
+                
+                {selectedInvoices.length === 0 && (
+                  <div className="p-6 bg-muted/50 border-2 border-dashed border-muted-foreground/20 rounded-lg text-center">
+                    <ScanBarcode className="h-12 w-12 mx-auto mb-3 text-muted-foreground/40" />
+                    <p className="text-sm font-medium text-muted-foreground mb-1">
+                      No invoices selected yet
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Use the QR scanner above or dropdown to add invoices
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 

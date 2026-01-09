@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
@@ -79,6 +80,7 @@ const Dispatch = () => {
   const [selectInvoiceValue, setSelectInvoiceValue] = useState<string>("");
   const [gatepassNumber, setGatepassNumber] = useState<string>("");
   const [showDispatchLogs, setShowDispatchLogs] = useState(false);
+  const [showInvoiceQRScanner, setShowInvoiceQRScanner] = useState(false);
 
   // Clear selected invoices if they've been dispatched
   useEffect(() => {
@@ -153,6 +155,37 @@ const Dispatch = () => {
         loaded.customerBarcode === pair.customerBarcode
       )
     );
+  };
+
+  // Handle invoice QR scan - Randomly picks unscanned invoice
+  const handleInvoiceQRScan = (data: BarcodeData) => {
+    // Get unscanned invoices (scheduled, audited, not dispatched, not already selected)
+    const availableInvoices = getScheduledDispatchableInvoices().filter(inv => {
+      const isAlreadySelected = selectedInvoices.includes(inv.id);
+      return !isAlreadySelected && inv.id !== "No Data";
+    });
+    
+    // Check if any unscanned invoices available
+    if (availableInvoices.length === 0) {
+      toast.warning("All invoices already selected", {
+        description: "All available invoices have been added to selection",
+        duration: 3000
+      });
+      return;
+    }
+    
+    // Randomly pick one unscanned invoice
+    const randomIndex = Math.floor(Math.random() * availableInvoices.length);
+    const randomInvoice = availableInvoices[randomIndex];
+    
+    // Add to selection
+    setSelectedInvoices(prev => [...prev, randomInvoice.id]);
+    toast.success(`✅ Invoice ${randomInvoice.id} added!`, {
+      description: `${randomInvoice.customer} - ${selectedInvoices.length + 1} invoice(s) selected`,
+      duration: 3000
+    });
+    
+    // Don't close scanner - allow multiple scans
   };
 
   // Auto-validate when customer barcode is scanned
@@ -760,12 +793,42 @@ const Dispatch = () => {
             <Card>
               <CardHeader>
                 <CardTitle>Select Invoice for Loading</CardTitle>
-                <CardDescription>Choose an audited invoice to load onto the vehicle</CardDescription>
+                <CardDescription>Scan invoice QR codes or manually select invoices to load onto the vehicle</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
+                  {/* PRIMARY METHOD: QR Scanner Button - Large and Prominent */}
+                  <div className="relative">
+                    <Button
+                      onClick={() => setShowInvoiceQRScanner(true)}
+                      disabled={getScheduledDispatchableInvoices().length === 0}
+                      className="w-full h-16 text-lg font-bold bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 shadow-lg hover:shadow-xl transition-all duration-200"
+                    >
+                      <ScanBarcode className="h-8 w-8 mr-3" />
+                      Scan Invoice QR Code
+                    </Button>
+                    <p className="text-xs text-center text-muted-foreground mt-2">
+                      🎯 Primary Method: Scan any invoice QR to add to selection
+                    </p>
+                  </div>
+
+                  {/* Summary Info */}
+                  {getScheduledDispatchableInvoices().length > 0 && (
+                    <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                        📅 {getScheduledDispatchableInvoices().filter(inv => inv.id !== "No Data").length} scheduled & audited invoice(s) available for dispatch
+                        {selectedInvoices.length > 0 && (
+                          <span className="block mt-1 font-semibold text-blue-900 dark:text-blue-100">
+                            ✅ {selectedInvoices.length} invoice(s) selected for loading
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* SECONDARY METHOD: Dropdown Selection */}
                   <div className="space-y-2">
-                    <Label htmlFor="invoice-select">Select Invoice(s)</Label>
+                    <Label htmlFor="invoice-select">Manual Selection - Dropdown:</Label>
                     <div className="flex gap-2">
                       <Select 
                         value={selectInvoiceValue}
@@ -1296,6 +1359,128 @@ const Dispatch = () => {
           </>
         )}
       </main>
+
+      {/* Invoice QR Scanner Dialog */}
+      <Dialog open={showInvoiceQRScanner} onOpenChange={setShowInvoiceQRScanner}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ScanBarcode className="h-5 w-5" />
+              Scan Invoice QR Codes
+            </DialogTitle>
+            <DialogDescription>
+              Camera stays open for multiple scans - each scan adds a random audited invoice to your selection
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            {/* Scan Counter and Summary */}
+            <div className="p-4 bg-gradient-to-r from-primary/10 to-accent/10 border-2 border-primary/20 rounded-lg">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="h-5 w-5 text-primary" />
+                  <p className="font-semibold text-lg">
+                    {selectedInvoices.length} Invoice(s) Scanned
+                  </p>
+                </div>
+                <Badge variant="default" className="text-sm px-3 py-1">
+                  {getScheduledDispatchableInvoices().filter(inv => inv.id !== "No Data").length - selectedInvoices.filter(id => getScheduledDispatchableInvoices().some(inv => inv.id === id)).length} Remaining
+                </Badge>
+              </div>
+              {selectedInvoices.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Keep scanning to add more invoices or close when done
+                </p>
+              )}
+            </div>
+
+            {/* Real-time Scanned Invoices List */}
+            {selectedInvoices.length > 0 && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg max-h-48 overflow-y-auto">
+                <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-2">
+                  Scanned Invoices:
+                </p>
+                <div className="space-y-1">
+                  {selectedInvoices.map((invId, index) => {
+                    const invoice = sharedInvoices.find(inv => inv.id === invId);
+                    return (
+                      <div key={invId} className="flex items-center justify-between bg-white dark:bg-gray-800 p-2 rounded">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            #{index + 1}
+                          </Badge>
+                          <span className="text-xs font-medium">{invId}</span>
+                          {invoice && (
+                            <span className="text-xs text-muted-foreground">
+                              - {invoice.customer}
+                            </span>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedInvoices(prev => prev.filter(id => id !== invId))}
+                          className="h-6 w-6 p-0"
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            
+            {/* Scanner Button */}
+            <div className="space-y-3">
+              <BarcodeScanButton
+                onScan={handleInvoiceQRScan}
+                label="Click to Scan Next Invoice QR"
+                variant="default"
+                scanButtonText="Scan this QR"
+                cameraGuideText="Position invoice QR here"
+              />
+              
+              <div className="p-3 bg-muted rounded-lg">
+                <p className="text-xs font-semibold mb-2">How it works:</p>
+                <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
+                  <li>Each scan randomly adds one unscanned invoice</li>
+                  <li>Only scheduled & audited invoices are eligible</li>
+                  <li>Camera stays open for continuous scanning</li>
+                  <li>Watch the counter above to track progress</li>
+                  <li>Remove unwanted invoices using the X button</li>
+                  <li>Close scanner when you're done</li>
+                </ul>
+              </div>
+            </div>
+            
+            {/* Action Buttons */}
+            <div className="flex gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setShowInvoiceQRScanner(false)}
+                className="flex-1 h-12"
+              >
+                <X className="h-4 w-4 mr-2" />
+                Close Scanner
+              </Button>
+              {selectedInvoices.length > 0 && (
+                <Button
+                  variant="default"
+                  onClick={() => {
+                    setShowInvoiceQRScanner(false);
+                    toast.success(`Ready to load ${selectedInvoices.length} invoice(s)`);
+                  }}
+                  className="flex-1 h-12"
+                >
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Done - Start Loading
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Dispatch Logs Dialog */}
       <LogsDialog
