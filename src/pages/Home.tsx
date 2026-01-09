@@ -77,7 +77,7 @@ const Home = () => {
       color: "text-blue-700",
       bgColor: "bg-gradient-to-br from-blue-50 to-blue-100 hover:from-blue-100 hover:to-blue-200",
       iconBg: "bg-blue-500",
-      onClick: () => navigate("/dashboard?view=doc-audit"),
+      onClick: () => navigate("/doc-audit"),
     },
     {
       title: "Loading & Dispatch",
@@ -86,7 +86,7 @@ const Home = () => {
       color: "text-blue-700",
       bgColor: "bg-gradient-to-br from-blue-50 to-blue-100 hover:from-blue-100 hover:to-blue-200",
       iconBg: "bg-blue-500",
-      onClick: () => navigate("/dashboard?view=dispatch"),
+      onClick: () => navigate("/dispatch"),
     },
   ];
 
@@ -95,12 +95,12 @@ const Home = () => {
     {
       label: "Dashboard",
       icon: HomeIcon,
-      onClick: () => navigate("/dashboard?view=dashboard"),
+      onClick: () => navigate("/dashboard"),
     },
     {
       label: "Upload Sales Data",
       icon: Upload,
-      onClick: () => navigate("/dashboard?view=upload"),
+      onClick: () => navigate("/upload"),
     },
     {
       label: "Master Data",

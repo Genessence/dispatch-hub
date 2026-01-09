@@ -25,6 +25,8 @@ interface BarcodeScannerProps {
   binCapacity?: number; // Maximum capacity per bin
   expectedBins?: number; // Number of bins to divide quantity into
   currentBinIndex?: number; // Current bin being scanned (0-indexed)
+  scanButtonText?: string; // Custom text for the scan button
+  cameraGuideText?: string; // Custom text for the camera guide
 }
 
 export const BarcodeScanner = ({ 
@@ -39,7 +41,9 @@ export const BarcodeScanner = ({
   totalQuantity,
   binCapacity,
   expectedBins,
-  currentBinIndex
+  currentBinIndex,
+  scanButtonText = "Scan This Barcode",
+  cameraGuideText = "Position barcode here"
 }: BarcodeScannerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
@@ -434,7 +438,7 @@ export const BarcodeScanner = ({
                   <div className="absolute inset-0 flex items-center justify-center">
                     <div className="bg-black/60 backdrop-blur-sm px-4 py-2 rounded-lg">
                       <p className="text-white text-sm font-medium text-center">
-                        Position barcode here
+                        {cameraGuideText}
                       </p>
                     </div>
                   </div>
@@ -487,7 +491,7 @@ export const BarcodeScanner = ({
               }`}
             >
               <Zap className="h-4 w-4 sm:h-5 sm:w-5" />
-              {hasScanned ? '✓ Scanned Successfully!' : 'Scan This Barcode'}
+              {hasScanned ? '✓ Scanned Successfully!' : scanButtonText}
             </button>
           </div>
 
@@ -535,6 +539,8 @@ interface BarcodeScanButtonProps {
   binCapacity?: number; // Maximum capacity per bin
   expectedBins?: number; // Number of bins
   currentBinIndex?: number; // Current bin being scanned
+  scanButtonText?: string; // Custom text for the scan button (defaults to "Scan This Barcode")
+  cameraGuideText?: string; // Custom text for the camera guide (defaults to "Position barcode here")
 }
 
 export const BarcodeScanButton = ({ 
@@ -549,7 +555,9 @@ export const BarcodeScanButton = ({
   totalQuantity,
   binCapacity,
   expectedBins,
-  currentBinIndex
+  currentBinIndex,
+  scanButtonText,
+  cameraGuideText
 }: BarcodeScanButtonProps) => {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -584,6 +592,8 @@ export const BarcodeScanButton = ({
         binCapacity={binCapacity}
         expectedBins={expectedBins}
         currentBinIndex={currentBinIndex}
+        scanButtonText={scanButtonText}
+        cameraGuideText={cameraGuideText}
       />
     </>
   );

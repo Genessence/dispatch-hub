@@ -37,8 +37,8 @@ const ExceptionAlerts = () => {
               Only Admin users can access the Exception Alerts module.
             </p>
           </div>
-          <Button onClick={() => navigate("/dashboard")} className="w-full">
-            Return to Dashboard
+          <Button onClick={() => navigate("/home")} className="w-full">
+            Return to Home
           </Button>
         </div>
       </div>
@@ -93,7 +93,7 @@ const ExceptionAlerts = () => {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => navigate("/dashboard")}
+                onClick={() => navigate("/home")}
                 className="h-8 w-8"
               >
                 <ArrowLeft className="h-4 w-4" />

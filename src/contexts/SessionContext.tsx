@@ -13,6 +13,7 @@ export interface ScheduleItem {
   deliveryDate?: Date; // Extracted from schedule file columns like "Delivery Date & Time" or "Supply Date"
   deliveryTime?: string; // Extracted from schedule file (will be converted to shift A/B)
   plant?: string; // Plant code/name from schedule (if available)
+  unloadingLoc?: string; // UNLOADING LOC field for location-based filtering
 }
 
 export interface ScheduleData {
