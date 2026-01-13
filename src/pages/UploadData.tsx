@@ -17,6 +17,7 @@ import {
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { ScheduleItem, InvoiceData } from "@/contexts/SessionContext";
+import { invoicesApi, scheduleApi } from "@/lib/api";
 
 interface UploadedRow {
   invoice: string;
@@ -33,8 +34,7 @@ const UploadData = () => {
   const navigate = useNavigate();
   const {
     currentUser,
-    addInvoices,
-    addScheduleData,
+    refreshData,
     getUploadLogs
   } = useSession();
 
@@ -667,8 +667,13 @@ const UploadData = () => {
     }
   };
 
-  const handleImport = () => {
-    // Validate schedule data before importing
+  const handleImport = async () => {
+    if (!file || !scheduleFile) {
+      toast.error("Please upload both files");
+      return;
+    }
+
+    // Validate schedule data before uploading
     const itemsWithDates = parsedScheduleItems.filter(i => i.deliveryDate).length;
     const itemsWithTimes = parsedScheduleItems.filter(i => i.deliveryTime).length;
     const itemsWithPartNumbers = parsedScheduleItems.filter(i => i.partNumber).length;
@@ -692,17 +697,41 @@ const UploadData = () => {
         duration: 6000
       });
     }
-    
-    if (parsedScheduleItems.length > 0) {
-      addScheduleData(parsedScheduleItems, currentUser);
-    }
-    
-    addInvoices(processedInvoices, currentUser);
-    
-    setUploadStage('complete');
-    toast.success(`Data imported successfully by ${currentUser}!`, {
-      description: "Invoices are now available for all users to audit"
+
+    const loadingToast = toast.loading("Uploading files to server...", {
+      duration: 0
     });
+
+    try {
+      // Upload schedule file first
+      const scheduleResult = await scheduleApi.upload(scheduleFile);
+      console.log('Schedule upload result:', scheduleResult);
+      if (scheduleResult.success) {
+        toast.success(`Schedule uploaded: ${scheduleResult.itemCount || 0} items`);
+      }
+      
+      // Upload invoice file
+      const invoiceResult = await invoicesApi.upload(file);
+      console.log('Invoice upload result:', invoiceResult);
+      if (invoiceResult.success) {
+        toast.success(`Invoices uploaded: ${invoiceResult.invoiceCount || 0} invoices`);
+      }
+
+      // Refresh data from backend (this will trigger WebSocket update to all devices)
+      await refreshData();
+
+      setUploadStage('complete');
+      toast.dismiss(loadingToast);
+      toast.success(`Data imported successfully by ${currentUser}!`, {
+        description: "Invoices are now available for all users to audit"
+      });
+    } catch (error: any) {
+      toast.dismiss(loadingToast);
+      toast.error(`Upload failed: ${error.message || 'Unknown error'}`);
+      console.error('Upload error:', error);
+      // Keep preview data visible so user can retry - don't clear uploadedData, processedInvoices, or parsedScheduleItems
+      // Don't change uploadStage - stay on 'validate' stage so user can see preview and try again
+    }
   };
 
   // Calculate validation results

@@ -25,6 +25,7 @@ import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
 import { QRCodeSVG } from "qrcode.react";
+import { auditApi, dispatchApi } from "@/lib/api";
 
 interface UploadedRow {
   invoice: string;
@@ -58,6 +59,7 @@ const Dispatch = () => {
     getScheduleForCustomer,
     updateInvoiceDispatch,
     getDispatchLogs,
+    refreshData,
     selectedCustomer,
     selectedSite
   } = useSession();
@@ -79,6 +81,18 @@ const Dispatch = () => {
   const [loadedBarcodes, setLoadedBarcodes] = useState<ValidatedBarcodePair[]>([]);
   const [selectInvoiceValue, setSelectInvoiceValue] = useState<string>("");
   const [gatepassNumber, setGatepassNumber] = useState<string>("");
+  const [gatepassDetails, setGatepassDetails] = useState<{
+    customerCode?: string | null;
+    dispatchDate?: string;
+    invoices?: Array<{
+      id: string;
+      deliveryDate?: string | null;
+      deliveryTime?: string | null;
+      unloadingLoc?: string | null;
+      status: string;
+    }>;
+  } | null>(null);
+  const [customerCodeError, setCustomerCodeError] = useState<string | null>(null);
   const [showDispatchLogs, setShowDispatchLogs] = useState(false);
   const [showInvoiceQRScanner, setShowInvoiceQRScanner] = useState(false);
 
@@ -195,7 +209,7 @@ const Dispatch = () => {
     }
   }, [dispatchCustomerScan]);
 
-  const handleDispatchScan = () => {
+  const handleDispatchScan = async () => {
     if (!dispatchCustomerScan) {
       toast.error("Please scan customer barcode");
       return;
@@ -213,8 +227,10 @@ const Dispatch = () => {
     }
 
     let matchedInvoiceItem: UploadedRow | undefined;
+    let matchedInvoiceId: string | undefined;
     const scannedPartCode = dispatchCustomerScan.partCode?.trim();
     
+    // Try to find matching invoice item
     for (const invoiceId of selectedInvoices) {
       const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
       if (invoice && invoice.items && scannedPartCode) {
@@ -222,11 +238,13 @@ const Dispatch = () => {
           item.part && item.part.toString().trim() === scannedPartCode
         );
         if (matchedInvoiceItem) {
+          matchedInvoiceId = invoiceId;
           break;
         }
       }
     }
     
+    // If no match by part code, try to match by customer item
     if (!matchedInvoiceItem && selectedInvoices.length > 0) {
       for (const invoiceId of selectedInvoices) {
         const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
@@ -244,12 +262,16 @@ const Dispatch = () => {
               item.customerItem && item.customerItem.trim() === unloadedCustomerItem.customerItem
             );
             if (matchedInvoiceItem) {
+              matchedInvoiceId = invoiceId;
               break;
             }
           }
         }
       }
     }
+
+    // Use first selected invoice if no match found
+    const invoiceIdToUse = matchedInvoiceId || selectedInvoices[0];
 
     const newPair: ValidatedBarcodePair = {
       customerBarcode: dispatchCustomerScan.rawValue,
@@ -262,6 +284,30 @@ const Dispatch = () => {
       actualQuantity: matchedInvoiceItem?.qty || undefined
     };
     
+    // Save scan to database immediately
+    if (invoiceIdToUse) {
+      try {
+        await auditApi.recordScan(invoiceIdToUse, {
+          customerBarcode: dispatchCustomerScan.rawValue,
+          autolivBarcode: null,
+          customerItem: matchedInvoiceItem?.customerItem || dispatchCustomerScan.partCode || 'N/A',
+          itemNumber: matchedInvoiceItem?.part || dispatchCustomerScan.partCode || 'N/A',
+          partDescription: matchedInvoiceItem?.partDescription || 'N/A',
+          quantity: matchedInvoiceItem?.qty || parseInt(dispatchCustomerScan.quantity || '0') || 0,
+          status: 'matched',
+          scanContext: 'loading-dispatch'
+        });
+      } catch (error: any) {
+        console.error('Error saving loading scan to database:', error);
+        toast.error('Failed to save scan to database', {
+          description: error.message || 'Please try again',
+          duration: 5000
+        });
+        // Continue with local state update even if API fails
+      }
+    }
+    
+    // Update local state optimistically
     setLoadedBarcodes(prev => [...prev, newPair]);
     
     selectedInvoices.forEach(invoiceId => {
@@ -283,7 +329,7 @@ const Dispatch = () => {
     setDispatchAutolivScan(null);
   };
 
-  const handleGenerateGatepass = () => {
+  const handleGenerateGatepass = async () => {
     if (!vehicleNumber) {
       toast.error("Please enter vehicle number");
       return;
@@ -301,61 +347,270 @@ const Dispatch = () => {
       return;
     }
 
-    const dispatchedInvoicesList = selectedInvoices.join(', ');
-    selectedInvoices.forEach(invoiceId => {
-      const binNumber = loadedBarcodes.length > 0 ? loadedBarcodes[0].binNumber : undefined;
-      const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+    const loadingToast = toast.loading("Generating gatepass and saving dispatch...", {
+      duration: 0
+    });
+
+    try {
+      // Call backend API to dispatch invoices and generate gatepass
+      const result = await dispatchApi.dispatch({
+        invoiceIds: selectedInvoices,
+        vehicleNumber: vehicleNumber,
+        loadedBarcodes: loadedBarcodes.map(b => ({
+          customerBarcode: b.customerBarcode,
+          autolivBarcode: b.autolivBarcode || '',
+          customerItem: b.customerItem,
+          itemNumber: b.itemNumber,
+          partCode: b.partCode,
+          quantity: b.quantity,
+          binNumber: b.binNumber
+        }))
+      });
+
+      if (result.success && result.gatepassNumber) {
+        // Update local state optimistically
+        selectedInvoices.forEach(invoiceId => {
+          updateInvoiceDispatch(invoiceId, currentUser, vehicleNumber, undefined, undefined);
+        });
+
+        setGatepassNumber(result.gatepassNumber);
+        setGatepassGenerated(true);
+        
+        // Store gatepass details from API response
+        // This contains the most accurate data including delivery dates, times, and unloading locations
+        const gatepassData = {
+          customerCode: result.customerCode || null,
+          dispatchDate: result.dispatchDate,
+          invoices: result.invoices || []
+        };
+        
+        // Log the raw API response
+        console.log('📥 Raw API response:', result);
+        console.log('📋 Invoice details from API response:', result.invoices);
+        console.log('💾 Storing gatepass details:', gatepassData);
+        
+        // Verify each invoice has the required fields
+        if (result.invoices && result.invoices.length > 0) {
+          result.invoices.forEach((inv: any) => {
+            console.log(`📄 Invoice ${inv.id}:`, {
+              deliveryDate: inv.deliveryDate,
+              deliveryTime: inv.deliveryTime,
+              unloadingLoc: inv.unloadingLoc,
+              status: inv.status
+            });
+          });
+        } else {
+          console.warn('⚠️ No invoices in API response!');
+        }
+        
+        setGatepassDetails(gatepassData);
+        
+        // Check for customer code mismatch
+        const customerCodes = new Set(
+          selectedInvoices
+            .map(id => sharedInvoices.find(inv => inv.id === id)?.billTo)
+            .filter(Boolean)
+        );
+        if (customerCodes.size > 1) {
+          const errorMsg = `⚠️ ERROR: Invoices have different customer codes: ${Array.from(customerCodes).join(', ')}`;
+          setCustomerCodeError(errorMsg);
+          toast.error("Customer Code Mismatch!", {
+            description: "All invoices in a vehicle must have the same customer code. This has been logged.",
+            duration: 8000
+          });
+        } else {
+          setCustomerCodeError(null);
+        }
+
+        // Refresh data from backend to sync with other devices
+        // Note: This updates sharedInvoices but doesn't affect gatepassDetails state
+        // gatepassDetails is preserved separately and contains the accurate invoice data
+        await refreshData();
+        
+        // Log to verify gatepassDetails is preserved after refresh
+        // Note: gatepassDetails state won't update here, but it's already set above
+        console.log('After refreshData - gatepassDetails should be preserved');
+
+        toast.dismiss(loadingToast);
+        toast.success(`✅ Gatepass generated successfully by ${currentUser}!`, {
+          description: `Vehicle ${vehicleNumber} dispatched with ${selectedInvoices.length} invoice(s).`,
+          duration: 6000
+        });
+      } else {
+        throw new Error(result.message || 'Failed to generate gatepass');
+      }
+    } catch (error: any) {
+      toast.dismiss(loadingToast);
       
-      updateInvoiceDispatch(invoiceId, currentUser, vehicleNumber, binNumber, totalQuantity || undefined);
-    });
-
-    const newGatepassNumber = `GP-${Date.now().toString().slice(-8)}`;
-    setGatepassNumber(newGatepassNumber);
-
-    setGatepassGenerated(true);
-    toast.success(`✅ Gatepass generated successfully by ${currentUser}!`, {
-      description: `Vehicle ${vehicleNumber} dispatched with ${selectedInvoices.length} invoice(s).`,
-      duration: 6000
-    });
+      // Get error message from various possible locations
+      const errorMessage = error?.message || 
+                          error?.response?.message || 
+                          error?.response?.error || 
+                          'Unknown error occurred';
+      
+      console.error('Gatepass generation error:', error);
+      console.error('Error response:', error?.response);
+      console.error('Error status:', error?.status);
+      
+      // Check if it's a customer code mismatch error
+      if (errorMessage.includes('different customer codes') || 
+          errorMessage.includes('Customer code')) {
+        setCustomerCodeError(errorMessage);
+        toast.error("⚠️ Customer Code Mismatch!", {
+          description: errorMessage,
+          duration: 10000
+        });
+      } else if (errorMessage.includes('Invoice') && errorMessage.includes('not found')) {
+        toast.error("❌ Invoice Not Found!", {
+          description: errorMessage,
+          duration: 6000
+        });
+      } else {
+        toast.error(`Failed to generate gatepass: ${errorMessage}`, {
+          description: error?.status === 400 ? 'Please check your input and try again' : 'Please try again',
+          duration: 6000
+        });
+      }
+      // Don't update local state on error - user can retry
+    }
   };
 
   const generateGatepassQRData = () => {
     const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
-    const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
-    const customerName = customers.join(", ");
     
-    const partCodes = [...new Set(loadedBarcodes.map(b => b.partCode).filter(Boolean))];
-    const binNumbers = [...new Set(loadedBarcodes.map(b => b.binNumber).filter(Boolean))];
+    // Get customer code - from gatepass details or from invoices
+    const customerCode = gatepassDetails?.customerCode || 
+      selectedInvoiceData[0]?.billTo || 
+      null;
+    
+    // Check for customer code mismatch
+    const customerCodes = new Set(
+      selectedInvoiceData.map(inv => inv.billTo).filter(Boolean)
+    );
+    const hasCustomerCodeError = customerCodes.size > 1;
+    
+    // Get dispatch date - use compact format (YYYY-MM-DD HH:MM)
+    const dispatchDate = gatepassDetails?.dispatchDate || new Date().toISOString();
+    const dispatchDateCompact = dispatchDate ? 
+      new Date(dispatchDate).toISOString().slice(0, 16).replace('T', ' ') : 
+      new Date().toISOString().slice(0, 16).replace('T', ' ');
+    
+    // Get invoice details - prioritize gatepassDetails from API response
+    // This has the most accurate data including delivery dates, times, and unloading locations
+    let invoiceDetails;
+    
+    console.log('🔍 generateGatepassQRData called');
+    console.log('🔍 gatepassDetails:', gatepassDetails);
+    console.log('🔍 gatepassDetails?.invoices:', gatepassDetails?.invoices);
+    console.log('🔍 selectedInvoices:', selectedInvoices);
+    
+    if (gatepassDetails?.invoices && gatepassDetails.invoices.length > 0) {
+      // Use data from API response (most reliable)
+      console.log('✅ Using gatepassDetails.invoices for QR code');
+      invoiceDetails = gatepassDetails.invoices.map((inv: any) => {
+        const deliveryDate = inv.deliveryDate ? 
+          new Date(inv.deliveryDate).toISOString().slice(0, 10) : 
+          null;
+        
+        const invoiceData = {
+          id: inv.id,
+          loc: inv.unloadingLoc || null,
+          dDate: deliveryDate,
+          dTime: inv.deliveryTime || null,
+          st: inv.status || 'unknown'
+        };
+        
+        console.log(`  📦 Invoice ${inv.id} mapped:`, {
+          original: {
+            deliveryDate: inv.deliveryDate,
+            deliveryTime: inv.deliveryTime,
+            unloadingLoc: inv.unloadingLoc,
+            status: inv.status
+          },
+          mapped: invoiceData
+        });
+        
+        return invoiceData;
+      });
+    } else {
+      // Fallback to sharedInvoices (may not have all data if refreshData hasn't run)
+      console.warn('⚠️ gatepassDetails.invoices not available, using sharedInvoices fallback');
+      console.log('⚠️ sharedInvoices for selected invoices:', selectedInvoiceData);
+      
+      invoiceDetails = selectedInvoices.map(invoiceId => {
+        const invoice = selectedInvoiceData.find(inv => inv.id === invoiceId);
+        const deliveryDate = invoice?.deliveryDate ? 
+          new Date(invoice.deliveryDate).toISOString().slice(0, 10) : 
+          null;
+        
+        const invoiceData = {
+          id: invoiceId,
+          loc: invoice?.unloadingLoc || null,
+          dDate: deliveryDate,
+          dTime: invoice?.deliveryTime || null,
+          st: 'unknown' // Status not available in sharedInvoices
+        };
+        
+        console.log(`  📦 Invoice ${invoiceId} from sharedInvoices:`, {
+          found: !!invoice,
+          deliveryDate: invoice?.deliveryDate,
+          deliveryTime: invoice?.deliveryTime,
+          unloadingLoc: invoice?.unloadingLoc,
+          mapped: invoiceData
+        });
+        
+        return invoiceData;
+      });
+    }
+    
+    // Log final invoice details for QR code
+    console.log('📊 Final QR Code Invoice Details:', invoiceDetails);
+    invoiceDetails.forEach((inv: any, index: number) => {
+      console.log(`  ${index + 1}. Invoice ${inv.id}:`, {
+        loc: inv.loc,
+        dDate: inv.dDate,
+        dTime: inv.dTime,
+        st: inv.st
+      });
+    });
+    
     const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
     
-    const items = loadedBarcodes.map((barcode, index) => ({
-      itemNumber: index + 1,
-      partCode: barcode.partCode || "N/A",
-      binNumber: barcode.binNumber || "N/A",
-      quantity: barcode.quantity || "0",
-      customerBarcode: barcode.customerBarcode
-    }));
-    
+    // Create compact QR data - only essential information
+    // Using short field names to reduce size
     const qrData = {
-      gatepassNumber: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`,
-      vehicleNumber: vehicleNumber,
-      dateTime: new Date().toISOString(),
-      authorizedBy: currentUser,
-      customer: customerName,
-      invoices: selectedInvoices,
-      summary: {
-        totalItems: loadedBarcodes.length,
-        invoiceCount: selectedInvoices.length,
-        totalQuantity: totalQuantity,
-        uniquePartCodes: partCodes.length,
-        uniqueBinNumbers: binNumbers.length
+      gp: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`, // gatepass number
+      v: vehicleNumber, // vehicle
+      cc: customerCode, // customer code
+      dt: dispatchDateCompact, // dispatch date/time
+      by: currentUser, // authorized by
+      inv: invoiceDetails, // invoices (compact format)
+      invIds: selectedInvoices, // invoice IDs array
+      sum: { // summary
+        items: loadedBarcodes.length,
+        inv: selectedInvoices.length,
+        qty: totalQuantity
       },
-      partCodes: partCodes,
-      binNumbers: binNumbers,
-      items: items
+      err: hasCustomerCodeError || customerCodeError ? 
+        `CC_MISMATCH:${Array.from(customerCodes).join(',')}` : 
+        null
     };
     
-    return JSON.stringify(qrData);
+    const qrString = JSON.stringify(qrData);
+    
+    // Check if data is too long (QR code max ~4296 chars at level H)
+    if (qrString.length > 3000) {
+      console.warn('QR data is large:', qrString.length, 'characters');
+      // If still too long, create minimal version with just gatepass number and invoice IDs
+      const minimalData = {
+        gp: gatepassNumber,
+        v: vehicleNumber,
+        inv: selectedInvoices
+      };
+      return JSON.stringify(minimalData);
+    }
+    
+    return qrString;
   };
 
   const handlePrintGatepass = () => {
@@ -588,10 +843,40 @@ const Dispatch = () => {
       const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
       const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
       const customerName = customers.join(", ");
+      
+      // Get customer code
+      const customerCode = gatepassDetails?.customerCode || 
+        selectedInvoiceData[0]?.billTo || 
+        null;
+      
+      // Check for customer code mismatch
+      const customerCodes = new Set(
+        selectedInvoiceData.map(inv => inv.billTo).filter(Boolean)
+      );
+      const hasCustomerCodeError = customerCodes.size > 1;
+      
+      // Get dispatch date
+      const dispatchDate = gatepassDetails?.dispatchDate 
+        ? new Date(gatepassDetails.dispatchDate)
+        : new Date();
+      const dispatchDateStr = dispatchDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const dispatchTimeStr = dispatchDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      
+      // Get invoice details
+      const invoiceDetails = gatepassDetails?.invoices || selectedInvoices.map(invoiceId => {
+        const invoice = selectedInvoiceData.find(inv => inv.id === invoiceId);
+        return {
+          id: invoiceId,
+          deliveryDate: invoice?.deliveryDate?.toISOString() || null,
+          deliveryTime: invoice?.deliveryTime || null,
+          unloadingLoc: invoice?.unloadingLoc || null,
+          status: 'unknown'
+        };
+      });
+      
       const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
-      const currentDate = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-      const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+      // Header
       pdf.setFontSize(20);
       pdf.setFont(undefined, 'bold');
       pdf.text('MANUFACTURING DISPATCH', pageWidth / 2, yPos, { align: 'center' });
@@ -607,6 +892,25 @@ const Dispatch = () => {
       pdf.text(`Gatepass #${gatepassNumber}`, pageWidth / 2, yPos, { align: 'center' });
       yPos += 15;
 
+      // Vehicle Number (prominent)
+      pdf.setFontSize(16);
+      pdf.setFont(undefined, 'bold');
+      pdf.text(`Vehicle Number: ${vehicleNumber}`, pageWidth / 2, yPos, { align: 'center' });
+      yPos += 10;
+
+      // Customer Code Error (if any)
+      if (hasCustomerCodeError || customerCodeError) {
+        pdf.setFillColor(255, 200, 200);
+        pdf.rect(margin, yPos, pageWidth - 2 * margin, 10, 'F');
+        pdf.setFontSize(10);
+        pdf.setFont(undefined, 'bold');
+        pdf.setTextColor(200, 0, 0);
+        pdf.text('⚠️ ERROR: Multiple Customer Codes Detected!', margin + 2, yPos + 6);
+        pdf.setTextColor(0, 0, 0);
+        yPos += 12;
+      }
+
+      // Gatepass Information
       pdf.setFontSize(10);
       pdf.setFont(undefined, 'bold');
       pdf.text('Gatepass Information:', margin, yPos);
@@ -614,9 +918,9 @@ const Dispatch = () => {
 
       pdf.setFont(undefined, 'normal');
       pdf.setFontSize(9);
-      pdf.text(`Vehicle Number: ${vehicleNumber}`, margin, yPos);
+      pdf.text(`Customer Code: ${customerCode || 'N/A'}`, margin, yPos);
       yPos += 6;
-      pdf.text(`Date & Time: ${currentDate} at ${currentTime}`, margin, yPos);
+      pdf.text(`Dispatch Date & Time: ${dispatchDateStr} at ${dispatchTimeStr}`, margin, yPos);
       yPos += 6;
       pdf.text(`Customer: ${customerName}`, margin, yPos);
       yPos += 6;
@@ -627,21 +931,80 @@ const Dispatch = () => {
       pdf.text(`Total Items: ${loadedBarcodes.length}`, margin, yPos);
       yPos += 10;
 
+      // Invoice Details Table
       pdf.setFont(undefined, 'bold');
-      pdf.text('Invoice Numbers:', margin, yPos);
-      yPos += 6;
-      pdf.setFont(undefined, 'normal');
-      const invoiceText = selectedInvoices.join(", ");
-      const splitInvoices = pdf.splitTextToSize(invoiceText, pageWidth - 2 * margin);
-      pdf.text(splitInvoices, margin, yPos);
-      yPos += splitInvoices.length * 5 + 5;
+      pdf.text('Invoice Details:', margin, yPos);
+      yPos += 7;
 
+      pdf.setFontSize(8);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Invoice', margin, yPos);
+      pdf.text('UNLOADING LOC', margin + 35, yPos);
+      pdf.text('Delivery Date', margin + 75, yPos);
+      pdf.text('Time', margin + 110, yPos);
+      pdf.text('Status', margin + 130, yPos);
+      yPos += 5;
+
+      pdf.setDrawColor(200, 200, 200);
+      pdf.line(margin, yPos, pageWidth - margin, yPos);
+      yPos += 3;
+
+      pdf.setFont(undefined, 'normal');
+      invoiceDetails.forEach((inv) => {
+        if (yPos > pageHeight - 20) {
+          pdf.addPage();
+          yPos = margin;
+        }
+        
+        const deliveryDateStr = inv.deliveryDate 
+          ? new Date(inv.deliveryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : 'N/A';
+        
+        pdf.text(inv.id.substring(0, 12), margin, yPos);
+        pdf.text(inv.unloadingLoc || 'N/A', margin + 35, yPos);
+        pdf.text(deliveryDateStr, margin + 75, yPos);
+        pdf.text(inv.deliveryTime || 'N/A', margin + 110, yPos);
+        
+        // Status with color
+        const statusText = inv.status === 'on-time' ? 'On Time' : inv.status === 'late' ? 'Late' : 'Unknown';
+        if (inv.status === 'late') {
+          pdf.setTextColor(200, 0, 0);
+        } else if (inv.status === 'on-time') {
+          pdf.setTextColor(0, 150, 0);
+        }
+        pdf.text(statusText, margin + 130, yPos);
+        pdf.setTextColor(0, 0, 0);
+        yPos += 6;
+      });
+      
+      yPos += 5;
+
+      // Invoice Numbers (legacy format)
+      yPos += 5;
       if (yPos > pageHeight - 60) {
         pdf.addPage();
         yPos = margin;
       }
 
       pdf.setFont(undefined, 'bold');
+      pdf.setFontSize(10);
+      pdf.text('Invoice Numbers:', margin, yPos);
+      yPos += 6;
+      pdf.setFont(undefined, 'normal');
+      pdf.setFontSize(9);
+      const invoiceText = selectedInvoices.join(", ");
+      const splitInvoices = pdf.splitTextToSize(invoiceText, pageWidth - 2 * margin);
+      pdf.text(splitInvoices, margin, yPos);
+      yPos += splitInvoices.length * 5 + 10;
+
+      // Items Loaded
+      if (yPos > pageHeight - 60) {
+        pdf.addPage();
+        yPos = margin;
+      }
+
+      pdf.setFont(undefined, 'bold');
+      pdf.setFontSize(10);
       pdf.text('Items Loaded:', margin, yPos);
       yPos += 7;
 
@@ -675,7 +1038,7 @@ const Dispatch = () => {
       pdf.setFont(undefined, 'italic');
       pdf.text('This gatepass is authorized for vehicle exit. Please verify all items before dispatch.', pageWidth / 2, yPos, { align: 'center' });
       yPos += 5;
-      pdf.text(`Generated on ${currentDate} at ${currentTime}`, pageWidth / 2, yPos, { align: 'center' });
+      pdf.text(`Dispatch Date: ${dispatchDateStr} at ${dispatchTimeStr}`, pageWidth / 2, yPos, { align: 'center' });
 
       const fileName = `Gatepass_${gatepassNumber}_${vehicleNumber}_${new Date().toISOString().split('T')[0]}.pdf`;
       pdf.save(fileName);
@@ -1272,15 +1635,67 @@ const Dispatch = () => {
                   <div className="flex flex-col items-center pt-4 border-t">
                     <p className="text-sm font-semibold mb-3 text-muted-foreground">Scan QR Code for Details</p>
                     <div className="p-4 bg-white rounded-lg border-2 border-border shadow-sm">
-                      <QRCodeSVG
-                        value={generateGatepassQRData()}
-                        size={300}
-                        level="H"
-                        includeMargin={true}
-                        marginSize={4}
-                        bgColor="#FFFFFF"
-                        fgColor="#000000"
-                      />
+                      {(() => {
+                        try {
+                          // Generate QR data - this function will use gatepassDetails if available
+                          const qrValue = generateGatepassQRData();
+                          
+                          // Log the actual QR value being encoded
+                          const qrData = JSON.parse(qrValue);
+                          console.log('🔐 Final QR Code Data being encoded:', qrData);
+                          console.log('🔐 Invoice details in QR code:', qrData.inv);
+                          
+                          // Limit size to prevent errors - if too long, show minimal version
+                          if (qrValue.length > 4000) {
+                            console.warn('⚠️ QR data too long, using minimal version');
+                            const minimal = JSON.stringify({
+                              gp: gatepassNumber,
+                              v: vehicleNumber,
+                              inv: selectedInvoices
+                            });
+                            return (
+                              <QRCodeSVG
+                                value={minimal}
+                                size={300}
+                                level="H"
+                                includeMargin={true}
+                                marginSize={4}
+                                bgColor="#FFFFFF"
+                                fgColor="#000000"
+                              />
+                            );
+                          }
+                          return (
+                            <QRCodeSVG
+                              value={qrValue}
+                              size={300}
+                              level="H"
+                              includeMargin={true}
+                              marginSize={4}
+                              bgColor="#FFFFFF"
+                              fgColor="#000000"
+                            />
+                          );
+                        } catch (error) {
+                          console.error('❌ QR code generation error:', error);
+                          // Fallback to minimal QR code
+                          const minimal = JSON.stringify({
+                            gp: gatepassNumber || 'N/A',
+                            v: vehicleNumber || 'N/A'
+                          });
+                          return (
+                            <QRCodeSVG
+                              value={minimal}
+                              size={300}
+                              level="H"
+                              includeMargin={true}
+                              marginSize={4}
+                              bgColor="#FFFFFF"
+                              fgColor="#000000"
+                            />
+                          );
+                        }
+                      })()}
                     </div>
                     <div className="mt-4 p-3 bg-muted rounded-lg w-full max-w-md">
                       <p className="text-xs font-semibold text-muted-foreground mb-2">QR Code Contains:</p>

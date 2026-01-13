@@ -24,6 +24,7 @@ import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
+import { auditApi } from "@/lib/api";
 
 interface UploadedRow {
   invoice: string;
@@ -480,7 +481,7 @@ const DocAudit = () => {
     }
   }, [customerScan, autolivScan]);
 
-  const handleValidateBarcodes = () => {
+  const handleValidateBarcodes = async () => {
     // Check if any selected invoice is blocked
     const hasBlockedInvoice = selectedInvoices.some(invoiceId => {
       const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
@@ -615,6 +616,28 @@ const DocAudit = () => {
       const newScannedCount = invoiceBins.length + 1;
       const isComplete = newScannedCount >= totalCustomerItems;
       
+      // Save scan to database immediately
+      try {
+        await auditApi.recordScan(foundInvoice.id, {
+          customerBarcode: customerScan.rawValue,
+          autolivBarcode: autolivScan?.rawValue || null,
+          customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
+          itemNumber: matchedInvoiceItem.part || 'N/A',
+          partDescription: matchedInvoiceItem.partDescription || 'N/A',
+          quantity: matchedInvoiceItem.qty || 0,
+          status: 'matched',
+          scanContext: 'doc-audit'
+        });
+      } catch (error: any) {
+        console.error('Error saving scan to database:', error);
+        toast.error('Failed to save scan to database', {
+          description: error.message || 'Please try again',
+          duration: 5000
+        });
+        // Continue with local state update even if API fails
+      }
+      
+      // Update local state optimistically
       setValidatedBins(prev => ({
         ...prev,
         [foundInvoice!.id]: [...(prev[foundInvoice!.id] || []), newScannedItem]
@@ -1300,6 +1323,7 @@ const DocAudit = () => {
                                 <th className="text-left p-2 font-semibold">Customer Item</th>
                                 <th className="text-left p-2 font-semibold">Item Number</th>
                                 <th className="text-left p-2 font-semibold">Part Description</th>
+                                <th className="text-left p-2 font-semibold">Quantity</th>
                                 <th className="text-left p-2 font-semibold">Status</th>
                               </tr>
                             </thead>
@@ -1311,6 +1335,7 @@ const DocAudit = () => {
                                     <td className="p-2 font-medium">{item.customerItem}</td>
                                     <td className="p-2">{item.itemNumber}</td>
                                     <td className="p-2 text-muted-foreground">{item.partDescription || 'N/A'}</td>
+                                    <td className="p-2 font-semibold">{item.quantity || 0}</td>
                                     <td className="p-2">
                                       {isScanned ? (
                                         <Badge variant="default" className="text-xs">✓ Scanned</Badge>
@@ -1629,9 +1654,19 @@ const DocAudit = () => {
                             </div>
                             <Button
                               onClick={() => {
+                                // Get UNLOADING LOC - use first selected if multiple
+                                const unloadingLocValue = selectedUnloadingLocs.length > 0 
+                                  ? selectedUnloadingLocs[0] 
+                                  : undefined;
+                                
                                 updateInvoiceAudit(invoiceId, {
                                   auditComplete: true,
-                                  auditDate: new Date()
+                                  auditDate: new Date(),
+                                  deliveryDate: selectedDeliveryDate,
+                                  deliveryTime: selectedDeliveryTimes.length > 0 
+                                    ? selectedDeliveryTimes.join(', ') 
+                                    : undefined,
+                                  unloadingLoc: unloadingLocValue
                                 }, currentUser);
                                 toast.success(`🎉 Audit completed for ${invoiceId}!`);
                               }}

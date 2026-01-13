@@ -25,10 +25,11 @@ import {
 } from "lucide-react";
 import { useSession } from "@/contexts/SessionContext";
 import { toast } from "sonner";
+import { disconnectSocket } from "@/lib/socket";
 
 const Home = () => {
   const navigate = useNavigate();
-  const { currentUser, selectedCustomer, selectedSite } = useSession();
+  const { currentUser, currentUserRole, selectedCustomer, selectedSite } = useSession();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -36,7 +37,7 @@ const Home = () => {
   const [showHelp, setShowHelp] = useState(false);
   const [logoError, setLogoError] = useState(false);
 
-  const isAdmin = currentUser === "Admin";
+  const isAdmin = currentUserRole === "admin";
 
   const handleLogoError = () => {
     setLogoError(true);
@@ -64,6 +65,15 @@ const Home = () => {
   }, [selectedCustomer, selectedSite, navigate]);
 
   const handleLogout = () => {
+    // Clear all auth data
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('user');
+    localStorage.removeItem('dispatch-hub-selected-customer');
+    localStorage.removeItem('dispatch-hub-selected-site');
+    
+    // Disconnect socket
+    disconnectSocket();
+    
     toast.success("Logged out successfully");
     navigate("/");
   };
@@ -90,38 +100,39 @@ const Home = () => {
     },
   ];
 
-  // Sidebar navigation items
+  // Sidebar navigation items - filtered by role
   const sidebarNavItems = [
     {
       label: "Dashboard",
       icon: HomeIcon,
       onClick: () => navigate("/dashboard"),
+      adminOnly: false,
     },
     {
       label: "Upload Sales Data",
       icon: Upload,
       onClick: () => navigate("/upload"),
+      adminOnly: false,
     },
     {
       label: "Master Data",
       icon: Database,
       onClick: () => navigate("/master-data"),
+      adminOnly: true,
     },
     {
       label: "Analytics & Report",
       icon: BarChart3,
       onClick: () => navigate("/analytics"),
+      adminOnly: true,
     },
-    ...(isAdmin
-      ? [
-          {
-            label: "Exception Alerts",
-            icon: AlertTriangle,
-            onClick: () => navigate("/exceptions"),
-          },
-        ]
-      : []),
-  ];
+    {
+      label: "Exception Alerts",
+      icon: AlertTriangle,
+      onClick: () => navigate("/exceptions"),
+      adminOnly: true,
+    },
+  ].filter(item => !item.adminOnly || isAdmin);
 
   const sidebarItems = [
     {
@@ -228,7 +239,12 @@ const Home = () => {
                 <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
                   Facility: {selectedSite}
                 </p>
-                <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">User: {currentUser}</p>
+                <div className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                  User: {currentUser} 
+                  <Badge variant="outline" className="ml-1 text-[10px] px-1 py-0">
+                    {currentUserRole}
+                  </Badge>
+                </div>
               </>
             )}
             {sidebarCollapsed && (
@@ -328,6 +344,9 @@ const Home = () => {
               </Button>
               <h1 className="text-xl font-bold text-blue-900 dark:text-blue-100">Manufacturing Dispatch Hub</h1>
             </div>
+            <Badge variant={isAdmin ? "default" : "secondary"} className="hidden sm:flex">
+              {isAdmin ? "Admin Access" : "User Access"}
+            </Badge>
           </div>
         </header>
 
@@ -399,6 +418,12 @@ const Home = () => {
               <p className="text-sm text-muted-foreground">{currentUser}</p>
             </div>
             <div>
+              <p className="text-sm font-medium">Role</p>
+              <Badge variant={isAdmin ? "default" : "secondary"}>
+                {currentUserRole}
+              </Badge>
+            </div>
+            <div>
               <p className="text-sm font-medium">Customers</p>
               <div className="flex flex-wrap gap-1 mt-1">
                 {selectedCustomer.map((customer) => (
@@ -441,4 +466,3 @@ const Home = () => {
 };
 
 export default Home;
-

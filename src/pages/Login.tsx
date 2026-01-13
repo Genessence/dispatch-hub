@@ -6,22 +6,58 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Lock } from "lucide-react";
 import { toast } from "sonner";
+import { useSession } from "@/contexts/SessionContext";
+import { authApi } from "@/lib/api";
+import { initSocket } from "@/lib/socket";
 
 const Login = () => {
   const [usernameOrEmail, setUsernameOrEmail] = useState("");
   const [password, setPassword] = useState("");
   const [logoError, setLogoError] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+  const { setCurrentUser, setCurrentUserRole, refreshData } = useSession();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Simple validation - accepts both email and username
-    if (usernameOrEmail && password) {
+    if (!usernameOrEmail || !password) {
+      toast.error("Please enter both username/email and password");
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      const response = await authApi.login(usernameOrEmail, password);
+
+      if (!response.success) {
+        toast.error(response.error || "Login failed");
+        setIsLoading(false);
+        return;
+      }
+
+      // Store token and user info in localStorage
+      localStorage.setItem('authToken', response.token);
+      localStorage.setItem('user', JSON.stringify(response.user));
+      
+      // Update session context
+      setCurrentUser(response.user.username);
+      setCurrentUserRole(response.user.role);
+      
+      // Initialize WebSocket connection
+      initSocket(response.token);
+      
+      // Refresh data from backend
+      await refreshData();
+      
       toast.success("Login successful!");
       navigate("/select-customer-site");
-    } else {
-      toast.error("Please enter both username/email and password");
+    } catch (error: any) {
+      console.error('Login error:', error);
+      toast.error(error.message || "Failed to connect to server. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -99,16 +135,17 @@ const Login = () => {
             <form onSubmit={handleLogin} className="space-y-5">
               <div className="space-y-2">
                 <Label htmlFor="usernameOrEmail" className="text-sm font-medium">
-                  Email or Username
+                  Username
                 </Label>
                 <Input
                   id="usernameOrEmail"
                   type="text"
-                  placeholder="username or operator@factory.com"
+                  placeholder="admin or user"
                   value={usernameOrEmail}
                   onChange={(e) => setUsernameOrEmail(e.target.value)}
                   className="h-11 text-base transition-all duration-200 focus:ring-2 focus:ring-primary/20"
                   required
+                  disabled={isLoading}
                 />
               </div>
               <div className="space-y-2">
@@ -124,6 +161,7 @@ const Login = () => {
                     onChange={(e) => setPassword(e.target.value)}
                     className="h-11 text-base pr-10 transition-all duration-200 focus:ring-2 focus:ring-primary/20"
                     required
+                    disabled={isLoading}
                   />
                   <Lock className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                 </div>
@@ -131,9 +169,19 @@ const Login = () => {
               <Button 
                 type="submit" 
                 className="w-full h-11 text-base font-semibold mt-6 transition-all duration-200 hover:shadow-md hover:scale-[1.01] active:scale-[0.99]"
+                disabled={isLoading}
               >
-                Sign In
+                {isLoading ? "Signing in..." : "Sign In"}
               </Button>
+              
+              {/* Demo credentials hint */}
+              <div className="mt-4 p-3 bg-muted rounded-lg">
+                <p className="text-xs text-muted-foreground text-center">
+                  <strong>Demo Credentials:</strong><br />
+                  Admin: <code className="bg-background px-1 rounded">admin</code> / <code className="bg-background px-1 rounded">pass123</code><br />
+                  User: <code className="bg-background px-1 rounded">user</code> / <code className="bg-background px-1 rounded">pass123</code>
+                </p>
+              </div>
             </form>
           </CardContent>
         </Card>

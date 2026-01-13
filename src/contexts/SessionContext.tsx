@@ -1,25 +1,35 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
+import { invoicesApi, scheduleApi, auditApi, logsApi } from "@/lib/api";
+import { 
+  initSocket, 
+  disconnectSocket, 
+  subscribeToInvoicesUpdated, 
+  subscribeToScheduleUpdated,
+  subscribeToAuditProgress,
+  subscribeToAuditScan,
+  subscribeToDispatchCompleted 
+} from "@/lib/socket";
 
 // Schedule data from the schedule file (each row from each sheet)
 export interface ScheduleItem {
   customerCode: string;
   customerPart: string;
-  partNumber?: string; // PART NUMBER field for matching with invoice Customer Item
+  partNumber?: string;
   qadPart: string;
   description: string;
   snp: number;
   bin: number;
   sheetName: string;
-  deliveryDate?: Date; // Extracted from schedule file columns like "Delivery Date & Time" or "Supply Date"
-  deliveryTime?: string; // Extracted from schedule file (will be converted to shift A/B)
-  plant?: string; // Plant code/name from schedule (if available)
-  unloadingLoc?: string; // UNLOADING LOC field for location-based filtering
+  deliveryDate?: Date;
+  deliveryTime?: string;
+  plant?: string;
+  unloadingLoc?: string;
 }
 
 export interface ScheduleData {
   items: ScheduleItem[];
   uploadedAt: Date;
-  scheduledDate: Date; // The upload date becomes the scheduled dispatch date
+  scheduledDate: Date;
   uploadedBy: string;
 }
 
@@ -45,16 +55,17 @@ export interface InvoiceData {
   uploadedAt?: Date;
   auditedAt?: Date;
   dispatchedAt?: Date;
-  // New fields for schedule matching
-  billTo?: string; // Customer code from invoice for matching with schedule
-  scheduledDate?: Date; // When this invoice is scheduled for dispatch
-  // Doc audit selection fields
-  selectedPlant?: string; // User-selected plant for this invoice during doc audit (deprecated, use deliveryTime)
-  deliveryTime?: string; // Delivery time from schedule (user-selected during doc audit)
-  deliveryDate?: Date; // Delivery date from schedule
-  plant?: string; // Plant from invoice data (extracted during upload)
-  blocked?: boolean; // Invoice is blocked due to mismatch, requires admin correction
-  blockedAt?: Date; // When the invoice was blocked
+  billTo?: string;
+  scheduledDate?: Date;
+  selectedPlant?: string;
+  deliveryTime?: string;
+  deliveryDate?: Date;
+  unloadingLoc?: string;
+  plant?: string;
+  blocked?: boolean;
+  blockedAt?: Date;
+  vehicleNumber?: string;
+  gatepassNumber?: string;
 }
 
 export interface LogEntry {
@@ -92,7 +103,9 @@ export interface MismatchAlert {
 
 interface SessionContextType {
   currentUser: string;
+  currentUserRole: 'admin' | 'user';
   setCurrentUser: (user: string) => void;
+  setCurrentUserRole: (role: 'admin' | 'user') => void;
   sharedInvoices: InvoiceData[];
   addInvoices: (invoices: InvoiceData[], uploadedBy: string) => void;
   updateInvoiceAudit: (invoiceId: string, auditData: Partial<InvoiceData>, auditedBy: string) => void;
@@ -108,18 +121,18 @@ interface SessionContextType {
   addMismatchAlert: (alert: Omit<MismatchAlert, 'id' | 'timestamp' | 'status'>) => void;
   updateMismatchStatus: (alertId: string, status: 'approved' | 'rejected', reviewedBy: string) => void;
   getPendingMismatches: () => MismatchAlert[];
-  // Schedule-related
   scheduleData: ScheduleData | null;
   addScheduleData: (items: ScheduleItem[], uploadedBy: string) => void;
   clearScheduleData: () => void;
   getScheduleForCustomer: (customerCode: string) => ScheduleItem[];
   getInvoicesWithSchedule: () => InvoiceData[];
   getScheduledDispatchableInvoices: () => InvoiceData[];
-  // Customer and Site selection
   selectedCustomer: string[];
   selectedSite: string | null;
   setSelectedCustomer: (customers: string[]) => void;
   setSelectedSite: (site: string) => void;
+  refreshData: () => Promise<void>;
+  isLoading: boolean;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
@@ -129,34 +142,50 @@ const STORAGE_KEYS = {
   SELECTED_SITE: 'dispatch-hub-selected-site',
 };
 
-// Helper to parse stored customer data (handles backward compatibility)
+// Helper to parse stored customer data
 const parseStoredCustomers = (stored: string | null): string[] => {
   if (!stored) return [];
   try {
     const parsed = JSON.parse(stored);
-    // If it's already an array, return it
     if (Array.isArray(parsed)) return parsed;
-    // If it's a string (old format), convert to array
     if (typeof parsed === 'string') return [parsed];
     return [];
   } catch {
-    // If JSON parsing fails, it's an old plain string format
     return stored ? [stored] : [];
   }
 };
 
 export const SessionProvider = ({ children }: { children: ReactNode }) => {
-  const [currentUser, setCurrentUser] = useState("User 1");
+  const [currentUser, setCurrentUser] = useState(() => {
+    const user = localStorage.getItem('user');
+    if (user) {
+      try {
+        return JSON.parse(user).username || "User 1";
+      } catch {
+        return "User 1";
+      }
+    }
+    return "User 1";
+  });
   
-  // Schedule data state
+  const [currentUserRole, setCurrentUserRole] = useState<'admin' | 'user'>(() => {
+    const user = localStorage.getItem('user');
+    if (user) {
+      try {
+        return JSON.parse(user).role || "user";
+      } catch {
+        return "user";
+      }
+    }
+    return "user";
+  });
+  
   const [scheduleData, setScheduleData] = useState<ScheduleData | null>(null);
-  
-  // Initialize with empty arrays - no dummy data
   const [sharedInvoices, setSharedInvoices] = useState<InvoiceData[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  // Customer selection with localStorage persistence (now supports array)
   const [selectedCustomer, setSelectedCustomerState] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
       return parseStoredCustomers(localStorage.getItem(STORAGE_KEYS.SELECTED_CUSTOMER));
@@ -171,7 +200,7 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     return null;
   });
 
-  // Persist to localStorage when selections change
+  // Persist selections to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       if (selectedCustomer.length > 0) {
@@ -192,6 +221,130 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [selectedSite]);
 
+  // Fetch data from API
+  const refreshData = useCallback(async () => {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+
+    setIsLoading(true);
+    try {
+      // Fetch invoices
+      const invoicesResponse = await invoicesApi.getAll();
+      if (invoicesResponse.success) {
+        setSharedInvoices(invoicesResponse.invoices.map((inv: any) => ({
+          ...inv,
+          invoiceDate: inv.invoiceDate ? new Date(inv.invoiceDate) : new Date(),
+          uploadedAt: inv.uploadedAt ? new Date(inv.uploadedAt) : undefined,
+          auditedAt: inv.auditedAt ? new Date(inv.auditedAt) : undefined,
+          dispatchedAt: inv.dispatchedAt ? new Date(inv.dispatchedAt) : undefined,
+          blockedAt: inv.blockedAt ? new Date(inv.blockedAt) : undefined,
+          auditDate: inv.auditDate ? new Date(inv.auditDate) : undefined,
+          deliveryDate: inv.deliveryDate ? new Date(inv.deliveryDate) : undefined,
+          deliveryTime: inv.deliveryTime || undefined,
+          unloadingLoc: inv.unloadingLoc || undefined,
+        })));
+      }
+
+      // Fetch schedule
+      const scheduleResponse = await scheduleApi.getAll();
+      if (scheduleResponse.success && scheduleResponse.scheduleData) {
+        const items = scheduleResponse.scheduleData.items.map((item: any) => ({
+          ...item,
+          deliveryDate: item.deliveryDate ? new Date(item.deliveryDate) : undefined,
+        }));
+        
+        if (items.length > 0) {
+          setScheduleData({
+            items,
+            uploadedAt: scheduleResponse.scheduleData.uploadedAt ? new Date(scheduleResponse.scheduleData.uploadedAt) : new Date(),
+            scheduledDate: new Date(),
+            uploadedBy: scheduleResponse.scheduleData.uploadedBy || 'Unknown'
+          });
+        }
+      }
+
+      // Fetch logs
+      const logsResponse = await logsApi.getAll(undefined, 100);
+      if (logsResponse.success) {
+        setLogs(logsResponse.logs.map((log: any) => ({
+          ...log,
+          timestamp: new Date(log.timestamp)
+        })));
+      }
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Initialize socket and fetch data on mount
+  useEffect(() => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      initSocket(token);
+      refreshData();
+
+      // Subscribe to real-time updates
+      const unsubInvoices = subscribeToInvoicesUpdated(() => {
+        console.log('📦 Invoices updated, refreshing...');
+        refreshData();
+      });
+
+      const unsubSchedule = subscribeToScheduleUpdated(() => {
+        console.log('📅 Schedule updated, refreshing...');
+        refreshData();
+      });
+
+      const unsubAudit = subscribeToAuditProgress((data) => {
+        console.log('🔍 Audit progress:', data);
+        // Update local state for the specific invoice
+        setSharedInvoices(prev => prev.map(inv => 
+          inv.id === data.invoiceId 
+            ? { 
+                ...inv, 
+                scannedBins: data.scannedBins ?? inv.scannedBins,
+                expectedBins: data.expectedBins ?? inv.expectedBins,
+                auditComplete: data.auditComplete ?? inv.auditComplete,
+                blocked: data.blocked ?? inv.blocked,
+                auditedBy: data.auditedBy ?? inv.auditedBy
+              }
+            : inv
+        ));
+      });
+
+      const unsubAuditScan = subscribeToAuditScan((data) => {
+        console.log('📸 Audit scan recorded:', data);
+        // Refresh invoice data to update scanned_bins count
+        // Components will fetch scans themselves when needed
+        setSharedInvoices(prev => prev.map(inv => 
+          inv.id === data.invoiceId 
+            ? { 
+                ...inv,
+                scannedBins: (inv.scannedBins || 0) + 1
+              }
+            : inv
+        ));
+        // Also trigger full refresh to ensure consistency
+        refreshData();
+      });
+
+      const unsubDispatch = subscribeToDispatchCompleted((data) => {
+        console.log('🚚 Dispatch completed:', data);
+        refreshData();
+      });
+
+      return () => {
+        unsubInvoices();
+        unsubSchedule();
+        unsubAudit();
+        unsubAuditScan();
+        unsubDispatch();
+        disconnectSocket();
+      };
+    }
+  }, [refreshData]);
+
   const setSelectedCustomer = (customers: string[]) => {
     setSelectedCustomerState(customers);
   };
@@ -200,16 +353,9 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     setSelectedSiteState(site);
   };
 
-  const addLog = (log: Omit<LogEntry, 'id' | 'timestamp'>) => {
-    const newLog: LogEntry = {
-      ...log,
-      id: `${Date.now()}-${Math.random()}`,
-      timestamp: new Date()
-    };
-    setLogs(prev => [...prev, newLog]);
-  };
-
-  const addInvoices = (invoices: InvoiceData[], uploadedBy: string) => {
+  // Add invoices - now uses API
+  const addInvoices = useCallback(async (invoices: InvoiceData[], uploadedBy: string) => {
+    // For now, update local state optimistically
     const newInvoices = invoices.map(inv => ({
       ...inv,
       uploadedBy,
@@ -219,41 +365,16 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       binsLoaded: 0
     }));
     
-    // Track which invoices were actually added (for logging)
-    let addedInvoiceIds: string[] = [];
-    
     setSharedInvoices(prev => {
-      // Get existing invoice IDs to prevent duplicates
       const existingIds = new Set(prev.map(inv => inv.id));
-      
-      // Filter out invoices that already exist (keep existing ones, skip duplicates)
-      const uniqueNewInvoices = newInvoices.filter(inv => {
-        const isNew = !existingIds.has(inv.id);
-        if (isNew) {
-          addedInvoiceIds.push(inv.id);
-        }
-        return isNew;
-      });
-      
-      // Return combined array: existing invoices + only new unique invoices
+      const uniqueNewInvoices = newInvoices.filter(inv => !existingIds.has(inv.id));
       return [...prev, ...uniqueNewInvoices];
     });
-    
-    // Add log entry (log only the invoices that were actually added)
-    if (addedInvoiceIds.length > 0) {
-      addLog({
-        user: uploadedBy,
-        action: `Uploaded ${addedInvoiceIds.length} invoice(s)`,
-        details: `Invoices: ${addedInvoiceIds.join(', ')}`,
-        type: 'upload'
-      });
-    }
-    
-    // Note: Duplicate invoices are silently skipped to preserve existing data
-    // (e.g., if an invoice was already audited, we don't want to overwrite it)
-  };
+  }, []);
 
-  const updateInvoiceAudit = (invoiceId: string, auditData: Partial<InvoiceData>, auditedBy: string) => {
+  // Update invoice audit - now uses API
+  const updateInvoiceAudit = useCallback(async (invoiceId: string, auditData: Partial<InvoiceData>, auditedBy: string) => {
+    // Update local state optimistically
     setSharedInvoices(prev => prev.map(inv => 
       inv.id === invoiceId 
         ? { 
@@ -264,71 +385,62 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
           }
         : inv
     ));
-    
-    // Add log entry when audit is complete
-    if (auditData.auditComplete) {
-      const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-      addLog({
-        user: auditedBy,
-        action: `Completed audit for invoice ${invoiceId}`,
-        details: `Customer: ${invoice?.customer || 'Unknown'}, Items: ${auditData.scannedBins || 0}`,
-        type: 'audit'
-      });
-    }
-  };
 
-  const updateInvoiceDispatch = (invoiceId: string, dispatchedBy: string, vehicleNumber?: string, binNumber?: string, quantity?: number) => {
-    const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-    
+    // Call API
+    try {
+      await auditApi.updateStatus(invoiceId, {
+        scannedBins: auditData.scannedBins,
+        expectedBins: auditData.expectedBins,
+        auditComplete: auditData.auditComplete,
+        blocked: auditData.blocked,
+        deliveryDate: auditData.deliveryDate ? auditData.deliveryDate.toISOString() : undefined,
+        deliveryTime: auditData.deliveryTime,
+        unloadingLoc: auditData.unloadingLoc
+      });
+    } catch (error) {
+      console.error('Error updating audit:', error);
+    }
+  }, []);
+
+  // Update invoice dispatch
+  const updateInvoiceDispatch = useCallback(async (invoiceId: string, dispatchedBy: string, vehicleNumber?: string, _binNumber?: string, _quantity?: number) => {
     setSharedInvoices(prev => prev.map(inv => 
       inv.id === invoiceId 
         ? { 
             ...inv, 
             dispatchedBy,
-            dispatchedAt: new Date()
+            dispatchedAt: new Date(),
+            vehicleNumber
           }
         : inv
     ));
-    
-    // Build detailed dispatch log with bin number and quantity
-    const binInfo = binNumber || 'N/A';
-    const qtyInfo = quantity || invoice?.totalQty || 0;
-    const vehicleInfo = vehicleNumber || 'N/A';
-    
-    // Add log entry with enhanced details
-    addLog({
-      user: dispatchedBy,
-      action: `Dispatched invoice ${invoiceId}`,
-      details: `Customer: ${invoice?.customer || 'Unknown'}, Bin Number: ${binInfo}, Quantity: ${qtyInfo}, Vehicle: ${vehicleInfo}`,
-      type: 'dispatch'
-    });
-  };
+  }, []);
 
-  const getUploadedInvoices = () => {
+  const getUploadedInvoices = useCallback(() => {
     return sharedInvoices.filter(inv => inv.uploadedBy !== undefined);
-  };
+  }, [sharedInvoices]);
 
-  const getAuditedInvoices = () => {
+  const getAuditedInvoices = useCallback(() => {
     return sharedInvoices.filter(inv => inv.auditComplete);
-  };
+  }, [sharedInvoices]);
 
-  const getDispatchableInvoices = () => {
+  const getDispatchableInvoices = useCallback(() => {
     return sharedInvoices.filter(inv => inv.auditComplete && !inv.dispatchedBy);
-  };
+  }, [sharedInvoices]);
 
-  const getUploadLogs = () => {
+  const getUploadLogs = useCallback(() => {
     return logs.filter(log => log.type === 'upload');
-  };
+  }, [logs]);
 
-  const getAuditLogs = () => {
+  const getAuditLogs = useCallback(() => {
     return logs.filter(log => log.type === 'audit');
-  };
+  }, [logs]);
 
-  const getDispatchLogs = () => {
+  const getDispatchLogs = useCallback(() => {
     return logs.filter(log => log.type === 'dispatch');
-  };
+  }, [logs]);
 
-  const addMismatchAlert = (alert: Omit<MismatchAlert, 'id' | 'timestamp' | 'status'>) => {
+  const addMismatchAlert = useCallback(async (alert: Omit<MismatchAlert, 'id' | 'timestamp' | 'status'>) => {
     const newAlert: MismatchAlert = {
       ...alert,
       id: `mismatch-${Date.now()}-${Math.random()}`,
@@ -336,56 +448,60 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       status: 'pending'
     };
     setMismatchAlerts(prev => [...prev, newAlert]);
-  };
 
-  const updateMismatchStatus = (alertId: string, status: 'approved' | 'rejected', reviewedBy: string) => {
+    // Call API
+    try {
+      await auditApi.reportMismatch({
+        invoiceId: alert.invoiceId,
+        customer: alert.customer,
+        step: alert.step,
+        customerScan: alert.customerScan,
+        autolivScan: alert.autolivScan
+      });
+    } catch (error) {
+      console.error('Error reporting mismatch:', error);
+    }
+  }, []);
+
+  const updateMismatchStatus = useCallback((alertId: string, status: 'approved' | 'rejected', reviewedBy: string) => {
     setMismatchAlerts(prev => prev.map(alert =>
       alert.id === alertId
         ? { ...alert, status, reviewedBy, reviewedAt: new Date() }
         : alert
     ));
-  };
+  }, []);
 
-  const getPendingMismatches = () => {
+  const getPendingMismatches = useCallback(() => {
     return mismatchAlerts.filter(alert => alert.status === 'pending');
-  };
+  }, [mismatchAlerts]);
 
-  // Schedule-related methods
-  const addScheduleData = (items: ScheduleItem[], uploadedBy: string) => {
+  // Schedule methods
+  const addScheduleData = useCallback((items: ScheduleItem[], uploadedBy: string) => {
     const now = new Date();
     setScheduleData({
       items,
       uploadedAt: now,
-      scheduledDate: now, // Upload date becomes scheduled date
+      scheduledDate: now,
       uploadedBy
     });
-    
-    addLog({
-      user: uploadedBy,
-      action: `Uploaded schedule with ${items.length} item(s)`,
-      details: `Customer codes: ${[...new Set(items.map(i => i.customerCode))].join(', ')}`,
-      type: 'upload'
-    });
-  };
+  }, []);
 
-  const clearScheduleData = () => {
+  const clearScheduleData = useCallback(() => {
     setScheduleData(null);
-  };
+  }, []);
 
-  const getScheduleForCustomer = (customerCode: string): ScheduleItem[] => {
+  const getScheduleForCustomer = useCallback((customerCode: string): ScheduleItem[] => {
     if (!scheduleData) return [];
     return scheduleData.items.filter(item => String(item.customerCode) === String(customerCode));
-  };
+  }, [scheduleData]);
 
-  // Get invoices that have matching schedule data
-  const getInvoicesWithSchedule = (): InvoiceData[] => {
+  const getInvoicesWithSchedule = useCallback((): InvoiceData[] => {
     if (!scheduleData) return [];
     const scheduledCustomerCodes = new Set(scheduleData.items.map(item => String(item.customerCode)));
     return sharedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)));
-  };
+  }, [scheduleData, sharedInvoices]);
 
-  // Get invoices that are ready for dispatch (have schedule AND audit complete)
-  const getScheduledDispatchableInvoices = (): InvoiceData[] => {
+  const getScheduledDispatchableInvoices = useCallback((): InvoiceData[] => {
     if (!scheduleData) return [];
     const scheduledCustomerCodes = new Set(scheduleData.items.map(item => String(item.customerCode)));
     return sharedInvoices.filter(inv => 
@@ -394,13 +510,15 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       inv.auditComplete && 
       !inv.dispatchedBy
     );
-  };
+  }, [scheduleData, sharedInvoices]);
 
   return (
     <SessionContext.Provider
       value={{
         currentUser,
+        currentUserRole,
         setCurrentUser,
+        setCurrentUserRole,
         sharedInvoices,
         addInvoices,
         updateInvoiceAudit,
@@ -416,18 +534,18 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         addMismatchAlert,
         updateMismatchStatus,
         getPendingMismatches,
-        // Schedule-related
         scheduleData,
         addScheduleData,
         clearScheduleData,
         getScheduleForCustomer,
         getInvoicesWithSchedule,
         getScheduledDispatchableInvoices,
-        // Customer and Site selection
         selectedCustomer,
         selectedSite,
         setSelectedCustomer,
-        setSelectedSite
+        setSelectedSite,
+        refreshData,
+        isLoading
       }}
     >
       {children}
@@ -442,4 +560,3 @@ export const useSession = () => {
   }
   return context;
 };
-
