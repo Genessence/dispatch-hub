@@ -62,7 +62,6 @@ const DocAudit = () => {
   const [selectedInvoices, setSelectedInvoices] = useState<string[]>([]);
   const [customerScan, setCustomerScan] = useState<BarcodeData | null>(null);
   const [autolivScan, setAutolivScan] = useState<BarcodeData | null>(null);
-  const [firstScanType, setFirstScanType] = useState<'customer' | 'autoliv' | null>(null);
   const [showCalendar, setShowCalendar] = useState(false);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
   const [showAuditLogs, setShowAuditLogs] = useState(false);
@@ -80,6 +79,10 @@ const DocAudit = () => {
     itemNumber: string;
     partDescription: string;
     quantity: number;
+    binQuantity?: number;
+    scannedQuantity?: number;
+    number_of_bins?: number;
+    scanned_bins_count?: number;
     status: string;
     scannedBy: string;
     time: string;
@@ -410,7 +413,6 @@ const DocAudit = () => {
     setValidatedBins({});
     setCustomerScan(null);
     setAutolivScan(null);
-    setFirstScanType(null);
   }, [selectedInvoices]);
   
   // Handle invoice QR scan - Randomly picks unscanned invoice
@@ -461,19 +463,6 @@ const DocAudit = () => {
     }
   }, [sharedInvoices, selectedInvoices]);
 
-  // Track which label was scanned first
-  useEffect(() => {
-    if (customerScan && !autolivScan) {
-      if (!firstScanType) {
-        setFirstScanType('customer');
-      }
-    } else if (autolivScan && !customerScan) {
-      if (!firstScanType) {
-        setFirstScanType('autoliv');
-      }
-    }
-  }, [customerScan, autolivScan, firstScanType]);
-
   // Auto-validate when both barcodes are scanned
   useEffect(() => {
     if (customerScan && autolivScan) {
@@ -501,133 +490,114 @@ const DocAudit = () => {
       return;
     }
     
-    const customerScannedFirst = firstScanType === 'customer';
-    const autolivScannedFirst = firstScanType === 'autoliv';
-    const barcodesMatch = customerScan.rawValue.trim() === autolivScan.rawValue.trim();
+    // Extract part numbers from barcodes
+    // Customer barcode part number should match customer_item
+    // Autoliv barcode part number should match part (item_number)
+    const customerPartNumber = customerScan.partCode?.trim() || null;
+    const autolivPartNumber = autolivScan.partCode?.trim() || null;
     
-    let shouldMatch = false;
-    if (customerScannedFirst && barcodesMatch) {
-      shouldMatch = true;
-    } else if (autolivScannedFirst) {
-      shouldMatch = false;
-    } else if (customerScannedFirst && !barcodesMatch) {
-      shouldMatch = false;
+    // Extract bin_quantity from barcode scan (quantity field in barcode)
+    const binQuantity = parseInt(customerScan.quantity || autolivScan.quantity || '0') || null;
+    
+    if (!customerPartNumber || !autolivPartNumber) {
+      toast.error("⚠️ Could not extract part numbers from barcodes!", {
+        description: "Please ensure both barcodes contain valid part numbers.",
+        duration: 4000,
+      });
+      setCustomerScan(null);
+      setAutolivScan(null);
+      return;
     }
     
-    if (shouldMatch) {
-      // Search through all selected invoices to find which one contains this customer item
-      let foundInvoice: InvoiceData | null = null;
-      let matchedInvoiceItem: UploadedRow | undefined;
-      let scannedCustomerItemValue: string | null = null;
+    // Search through all selected invoices to find matching invoice_item
+    // Match: customer_item = customerPartNumber AND part = autolivPartNumber
+    // Both must match the same invoice_item record
+    let foundInvoice: InvoiceData | null = null;
+    let matchedInvoiceItem: UploadedRow | undefined;
+    
+    for (const invoiceId of selectedInvoices) {
+      const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
+      const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
       
-      if (customerScannedFirst) {
-        // Try to match by customer item - search through all selected invoices
-        for (const invoiceId of selectedInvoices) {
-          const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
-          const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
-          
-          if (!invoice || !invoice.items) continue;
-          
-          const uniqueCustomerItems = getUniqueCustomerItems(invoice);
-          const invoiceBins = validatedBins[invoiceId] || [];
-          const scannedCustomerItems = new Set(invoiceBins.map(bin => bin.customerItem));
-          const unscannedCustomerItems = uniqueCustomerItems.filter(item => 
-            !scannedCustomerItems.has(item.customerItem)
-          );
-          
-          if (unscannedCustomerItems.length > 0) {
-            // This invoice has unscanned items - use the first unscanned item
-            const selectedCustomerItem = unscannedCustomerItems[0];
-            matchedInvoiceItem = invoice.items.find((item: UploadedRow) => {
-              const partNum = item.customerItem || item.part;
-              return partNum && partNum.trim() === selectedCustomerItem.customerItem;
-            });
-            
-            if (matchedInvoiceItem) {
-              foundInvoice = invoice;
-              scannedCustomerItemValue = selectedCustomerItem.customerItem;
-              break;
-            }
-          }
-        }
-      } else {
-        // Scanned Autoliv first - try to match by part code
-        const scannedPartCode = customerScan.partCode?.trim();
-        if (scannedPartCode) {
-          for (const invoiceId of selectedInvoices) {
-            const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
-            const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
-            
-            if (!invoice || !invoice.items) continue;
-            
-            matchedInvoiceItem = invoice.items.find((item: UploadedRow) => 
-              item.part && item.part.toString().trim() === scannedPartCode
-            );
-            
-            if (matchedInvoiceItem) {
-              foundInvoice = invoice;
-              scannedCustomerItemValue = matchedInvoiceItem.customerItem || matchedInvoiceItem.part;
-              break;
-            }
-          }
-        }
+      if (!invoice || !invoice.items) continue;
+      
+      // Find invoice_item where customer_item matches customer barcode part number
+      // AND part matches autoliv barcode part number
+      // Both must match the same invoice_item record
+      matchedInvoiceItem = invoice.items.find((item: UploadedRow) => {
+        const itemCustomerItem = item.customerItem?.toString().trim() || '';
+        const itemPart = item.part?.toString().trim() || '';
+        return itemCustomerItem === customerPartNumber && itemPart === autolivPartNumber;
+      });
+      
+      if (matchedInvoiceItem) {
+        foundInvoice = invoice;
+        break;
       }
+    }
+    
+    // Determine if it's a match or mismatch based on actual data
+    const isMatch = !!foundInvoice && !!matchedInvoiceItem;
+    
+    if (isMatch) {
+      // MATCH: Both barcodes match the same invoice_item
       
-      if (!foundInvoice || !matchedInvoiceItem) {
-        toast.error("⚠️ No matching item found!", {
-          description: "Could not find this customer item in any of the selected invoices or all items already scanned.",
-          duration: 4000,
-        });
-        setCustomerScan(null);
-        setAutolivScan(null);
-        setFirstScanType(null);
-        return;
-      }
-      
-      // Check if this specific customer item was already scanned for this invoice
-      const invoiceBins = validatedBins[foundInvoice.id] || [];
+      // Check if this specific invoice_item was already scanned (check by customer_item + part combination)
+      const invoiceBins = validatedBins[foundInvoice!.id] || [];
       const alreadyScanned = invoiceBins.some(bin => 
-        bin.customerItem === (matchedInvoiceItem.customerItem || matchedInvoiceItem.part)
+        bin.customerItem === (matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part) &&
+        bin.itemNumber === matchedInvoiceItem!.part
       );
       
       if (alreadyScanned) {
         toast.warning("⚠️ This item was already scanned for this invoice!", {
-          description: `Invoice: ${foundInvoice.id}`,
+          description: `Invoice: ${foundInvoice!.id}`,
           duration: 3000,
         });
         setCustomerScan(null);
         setAutolivScan(null);
-        setFirstScanType(null);
         return;
       }
       
       const newScannedItem = {
-        customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
-        itemNumber: matchedInvoiceItem.part || 'N/A',
-        partDescription: matchedInvoiceItem.partDescription || 'N/A',
-        quantity: matchedInvoiceItem.qty,
+        customerItem: matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part || 'N/A',
+        itemNumber: matchedInvoiceItem!.part || 'N/A',
+        partDescription: matchedInvoiceItem!.partDescription || 'N/A',
+        quantity: matchedInvoiceItem!.qty,
+        binQuantity: binQuantity || 0,
         status: 'matched',
         scannedBy: currentUser,
         time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
       };
       
-      const uniqueCustomerItems = getUniqueCustomerItems(foundInvoice);
+      const uniqueCustomerItems = getUniqueCustomerItems(foundInvoice!);
       const totalCustomerItems = uniqueCustomerItems.length;
       const newScannedCount = invoiceBins.length + 1;
       const isComplete = newScannedCount >= totalCustomerItems;
       
-      // Save scan to database immediately
+      // Save scan to database immediately with bin_quantity
       try {
-        await auditApi.recordScan(foundInvoice.id, {
+        const scanResult = await auditApi.recordScan(foundInvoice!.id, {
           customerBarcode: customerScan.rawValue,
           autolivBarcode: autolivScan?.rawValue || null,
-          customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
-          itemNumber: matchedInvoiceItem.part || 'N/A',
-          partDescription: matchedInvoiceItem.partDescription || 'N/A',
-          quantity: matchedInvoiceItem.qty || 0,
+          customerItem: matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part || 'N/A',
+          itemNumber: matchedInvoiceItem!.part || 'N/A',
+          partDescription: matchedInvoiceItem!.partDescription || 'N/A',
+          quantity: matchedInvoiceItem!.qty || 0,
+          binQuantity: binQuantity, // bin_quantity from barcode scan
+          binNumber: customerScan.binNumber || autolivScan.binNumber || null,
           status: 'matched',
           scanContext: 'doc-audit'
         });
+        
+        // Refresh invoice data to get updated bin tracking fields
+        if (scanResult?.matchedInvoiceItem) {
+          // Update matchedInvoiceItem with latest data from server
+          const updatedItem = scanResult.matchedInvoiceItem;
+          newScannedItem.binQuantity = updatedItem.number_of_bins ? 
+            Math.ceil(matchedInvoiceItem!.qty / (binQuantity || 1)) : 
+            (binQuantity || 0);
+        }
       } catch (error: any) {
         console.error('Error saving scan to database:', error);
         toast.error('Failed to save scan to database', {
@@ -644,29 +614,27 @@ const DocAudit = () => {
       }));
       
       // Update invoice audit status
-      updateInvoiceAudit(foundInvoice.id, {
+      updateInvoiceAudit(foundInvoice!.id, {
         scannedBins: newScannedCount,
         expectedBins: totalCustomerItems,
         auditComplete: isComplete
       }, currentUser);
       
-      toast.success(`✅ Item scanned for Invoice ${foundInvoice.id}!`, {
-        description: `${matchedInvoiceItem.customerItem || matchedInvoiceItem.part} | Progress: ${newScannedCount}/${totalCustomerItems}`,
+      toast.success(`✅ Item scanned for Invoice ${foundInvoice!.id}!`, {
+        description: `${matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part} | Bin Qty: ${binQuantity || 'N/A'} | Progress: ${newScannedCount}/${totalCustomerItems}`,
         duration: 3000,
       });
       
       setCustomerScan(null);
       setAutolivScan(null);
-      setFirstScanType(null);
     } else {
+      // MISMATCH: Barcodes don't match the same invoice_item
       toast.error("⚠️ Barcode Mismatch Detected!", {
-        description: autolivScannedFirst 
-          ? "Autoliv label was scanned first! Please scan Customer label first."
-          : "Barcodes do not match. Invoice has been blocked.",
+        description: `Customer item "${customerPartNumber}" and item number "${autolivPartNumber}" do not match the same invoice item. Invoice has been blocked.`,
         duration: 5000,
       });
       
-      // Block all selected invoices on mismatch (they can sort it out which one has the issue)
+      // Block all selected invoices on mismatch
       if (selectedInvoices.length > 0 && customerScan && autolivScan) {
         selectedInvoices.forEach(invoiceId => {
           const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
@@ -707,7 +675,6 @@ const DocAudit = () => {
 
       setCustomerScan(null);
       setAutolivScan(null);
-      setFirstScanType(null);
     }
   };
 
@@ -1324,18 +1291,64 @@ const DocAudit = () => {
                                 <th className="text-left p-2 font-semibold">Item Number</th>
                                 <th className="text-left p-2 font-semibold">Part Description</th>
                                 <th className="text-left p-2 font-semibold">Quantity</th>
+                                <th className="text-left p-2 font-semibold">Bin Quantity</th>
+                                <th className="text-left p-2 font-semibold">Scanned Quantity</th>
+                                <th className="text-left p-2 font-semibold">No. of Bins</th>
+                                <th className="text-left p-2 font-semibold">Scanned Bins</th>
                                 <th className="text-left p-2 font-semibold">Status</th>
                               </tr>
                             </thead>
                             <tbody>
                               {uniqueItems.map((item, index) => {
-                                const isScanned = invoiceBins.some(bin => bin.customerItem === item.customerItem);
+                                const scannedBin = invoiceBins.find(bin => 
+                                  bin.customerItem === item.customerItem && bin.itemNumber === item.itemNumber
+                                );
+                                const isScanned = !!scannedBin;
+                                
+                                // Get bin tracking data from invoice item if available
+                                const invoiceItem = invoice.items?.find((invItem: UploadedRow) => 
+                                  (invItem.customerItem || invItem.part) === item.customerItem &&
+                                  invItem.part === item.itemNumber
+                                );
+                                
+                                const binQuantity = scannedBin?.binQuantity || 
+                                  (invoiceItem as any)?.binQuantity || 
+                                  scannedBin?.binQuantity || 0;
+                                const scannedQuantity = scannedBin?.scannedQuantity || 
+                                  (invoiceItem as any)?.scanned_quantity || 0;
+                                const numberOfBins = scannedBin?.number_of_bins || 
+                                  (invoiceItem as any)?.number_of_bins || 0;
+                                const scannedBinsCount = scannedBin?.scanned_bins_count || 
+                                  (invoiceItem as any)?.scanned_bins_count || 0;
+                                
+                                const remainingQuantity = (item.quantity || 0) - scannedQuantity;
+                                
                                 return (
                                   <tr key={index} className={`border-t ${isScanned ? 'bg-green-100 dark:bg-green-950/40' : ''}`}>
                                     <td className="p-2 font-medium">{item.customerItem}</td>
                                     <td className="p-2">{item.itemNumber}</td>
                                     <td className="p-2 text-muted-foreground">{item.partDescription || 'N/A'}</td>
                                     <td className="p-2 font-semibold">{item.quantity || 0}</td>
+                                    <td className="p-2">{binQuantity || '-'}</td>
+                                    <td className="p-2">
+                                      {scannedQuantity > 0 ? (
+                                        <span className="font-semibold text-green-600 dark:text-green-400">
+                                          {scannedQuantity} / {item.quantity || 0}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground">-</span>
+                                      )}
+                                    </td>
+                                    <td className="p-2">{numberOfBins > 0 ? numberOfBins : '-'}</td>
+                                    <td className="p-2">
+                                      {numberOfBins > 0 ? (
+                                        <span className="font-semibold">
+                                          {scannedBinsCount} / {numberOfBins}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground">-</span>
+                                      )}
+                                    </td>
                                     <td className="p-2">
                                       {isScanned ? (
                                         <Badge variant="default" className="text-xs">✓ Scanned</Badge>
@@ -1458,9 +1471,6 @@ const DocAudit = () => {
                         }}
                         label={customerScan ? "Scan Again" : "Scan Customer Barcode"}
                         variant="default"
-                        matchValue={autolivScan?.rawValue || undefined}
-                        shouldMismatch={!!autolivScan}
-                        matchData={autolivScan || undefined}
                         disabled={selectedInvoices.some(invId => sharedInvoices.find(i => i.id === invId)?.blocked)}
                       />
                     </div>
@@ -1497,9 +1507,6 @@ const DocAudit = () => {
                         }}
                         label={autolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
                         variant="secondary"
-                        matchValue={customerScan?.rawValue || undefined}
-                        shouldMismatch={false}
-                        matchData={customerScan || undefined}
                       />
                     </div>
                   </div>
@@ -1512,7 +1519,6 @@ const DocAudit = () => {
                         onClick={() => {
                           setCustomerScan(null);
                           setAutolivScan(null);
-                          setFirstScanType(null);
                         }}
                         className="h-12"
                       >
@@ -1947,7 +1953,6 @@ const DocAudit = () => {
                 onScan={handleInvoiceQRScan}
                 label="Click to Scan Next Invoice QR"
                 variant="default"
-                scanButtonText="Scan this QR"
                 cameraGuideText="Position invoice QR here"
               />
               

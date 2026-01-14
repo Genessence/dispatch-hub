@@ -2,7 +2,23 @@
  * API Service for Dispatch Hub Backend
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Get API URL - use proxy in development, or configured URL
+const getApiUrl = () => {
+  // If VITE_API_URL is set, use it (allows overriding proxy)
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  
+  // In development, use relative URL to leverage Vite proxy
+  if (import.meta.env.DEV) {
+    return '';
+  }
+  
+  // Fallback for production
+  return 'http://localhost:3001';
+};
+
+const API_URL = getApiUrl();
 
 // Get auth token from localStorage
 const getAuthToken = (): string | null => {
@@ -206,6 +222,8 @@ export const auditApi = {
     itemNumber?: string;
     partDescription?: string;
     quantity?: number;
+    binQuantity?: number;
+    binNumber?: string;
     status?: string;
     scanContext?: 'doc-audit' | 'loading-dispatch';
   }) => {

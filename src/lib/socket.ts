@@ -6,10 +6,18 @@ import { io, Socket } from 'socket.io-client';
 
 // Get WebSocket URL - socket.io automatically handles protocol conversion (http -> ws)
 const getWsUrl = () => {
-  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-  // Socket.io client automatically converts http:// to ws:// or wss://
-  // Just ensure we have the base URL without /socket.io path
-  return apiUrl;
+  // If VITE_API_URL is set, use it
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  
+  // In development, use current origin (Vite proxy handles WebSocket)
+  if (import.meta.env.DEV) {
+    return window.location.origin;
+  }
+  
+  // Fallback
+  return 'http://localhost:3001';
 };
 
 const WS_URL = getWsUrl();

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Camera, X, ScanBarcode, Zap } from "lucide-react";
+import { Camera, X, ScanBarcode } from "lucide-react";
 import { toast } from "sonner";
 
 export interface BarcodeData {
@@ -18,14 +18,6 @@ interface BarcodeScannerProps {
   description?: string;
   isOpen: boolean;
   onClose: () => void;
-  matchValue?: string; // If provided, use this value to match
-  shouldMismatch?: boolean; // If true, generate different value
-  matchData?: BarcodeData; // The full barcode data to match (for keeping same values)
-  totalQuantity?: number; // Total quantity to be distributed across bins
-  binCapacity?: number; // Maximum capacity per bin
-  expectedBins?: number; // Number of bins to divide quantity into
-  currentBinIndex?: number; // Current bin being scanned (0-indexed)
-  scanButtonText?: string; // Custom text for the scan button
   cameraGuideText?: string; // Custom text for the camera guide
 }
 
@@ -35,33 +27,68 @@ export const BarcodeScanner = ({
   description = "Position the barcode within the frame", 
   isOpen, 
   onClose,
-  matchValue,
-  shouldMismatch = false,
-  matchData,
-  totalQuantity,
-  binCapacity,
-  expectedBins,
-  currentBinIndex,
-  scanButtonText = "Scan This Barcode",
   cameraGuideText = "Position barcode here"
 }: BarcodeScannerProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
-  const [barcodeDetected, setBarcodeDetected] = useState(false);
   const [cameraType, setCameraType] = useState<'front' | 'back'>('front');
-  const hasScannedRef = useRef(false); // Use ref for immediate check
-  const [hasScanned, setHasScanned] = useState(false); // For UI updates
+  const lastScannedBarcodeRef = useRef<string | null>(null);
+  const lastScanTimeRef = useRef<number>(0);
+  const scanningIntervalRef = useRef<number | null>(null);
+
+  // Parse barcode data from format: Part_code-{value},Quantity-{value},Bin_number-{value}
+  const parseBarcodeData = (rawValue: string): BarcodeData | null => {
+    try {
+      console.log("Parsing barcode:", rawValue);
+      
+      let partCode = "";
+      let quantity = "";
+      let binNumber = "";
+
+      // Parse format: Part_code-{value},Quantity-{value},Bin_number-{value}
+      // Example: Part_code-48150M69R20-C48,Quantity-3,Bin_number-2023919386007
+      
+      const partCodeMatch = rawValue.match(/Part_code-([^,]+)/);
+      const quantityMatch = rawValue.match(/Quantity-([^,]+)/);
+      const binNumberMatch = rawValue.match(/Bin_number-([^,]+)/);
+
+      if (partCodeMatch) {
+        partCode = partCodeMatch[1].trim();
+      }
+      if (quantityMatch) {
+        quantity = quantityMatch[1].trim();
+      }
+      if (binNumberMatch) {
+        binNumber = binNumberMatch[1].trim();
+      }
+
+      // Validate that we got at least partCode
+      if (!partCode) {
+        console.error("Failed to parse partCode from barcode:", rawValue);
+        return null;
+      }
+
+      return {
+        rawValue,
+        partCode,
+        quantity: quantity || "0",
+        binNumber: binNumber || ""
+      };
+    } catch (error) {
+      console.error("Error parsing barcode:", error);
+      return null;
+    }
+  };
 
   useEffect(() => {
     if (isOpen) {
       console.log('Scanner dialog opened');
       
       // Reset scan state when dialog opens
-      hasScannedRef.current = false;
-      setHasScanned(false);
-      setBarcodeDetected(false);
+      lastScannedBarcodeRef.current = null;
+      lastScanTimeRef.current = 0;
       
       if (!readerRef.current) {
         readerRef.current = new BrowserMultiFormatReader();
@@ -82,6 +109,8 @@ export const BarcodeScanner = ({
         clearTimeout(timer);
         stopScanning();
       };
+    } else {
+      stopScanning();
     }
   }, [isOpen]);
 
@@ -90,6 +119,18 @@ export const BarcodeScanner = ({
 
     try {
       setIsScanning(true);
+      
+      // Check if mediaDevices API is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        const isHTTPS = window.location.protocol === 'https:';
+        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        
+        if (!isHTTPS && !isLocalhost) {
+          throw new Error('HTTPS_REQUIRED');
+        } else {
+          throw new Error('CAMERA_API_NOT_AVAILABLE');
+        }
+      }
       
       // Detect if device is mobile
       const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
@@ -102,11 +143,12 @@ export const BarcodeScanner = ({
         userAgent: navigator.userAgent,
         screenWidth: window.innerWidth,
         isMobile: isMobile,
-        cameraToUse: isMobile ? 'back' : 'front'
+        cameraToUse: isMobile ? 'back' : 'front',
+        protocol: window.location.protocol,
+        hostname: window.location.hostname
       });
       
       // Request camera permission
-      // Try multiple approaches to ensure camera access
       let stream: MediaStream;
       
       if (isMobile) {
@@ -134,16 +176,6 @@ export const BarcodeScanner = ({
         // Desktop/Laptop: Request front camera (user-facing webcam)
         console.log('Requesting FRONT camera for laptop/desktop...');
         
-        // List available cameras
-        try {
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const videoDevices = devices.filter(device => device.kind === 'videoinput');
-          console.log('Available cameras:', videoDevices);
-        } catch (e) {
-          console.log('Could not enumerate devices:', e);
-        }
-        
-        // Try to get user-facing camera
         try {
           stream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
@@ -165,7 +197,6 @@ export const BarcodeScanner = ({
       
       setHasPermission(true);
       console.log(`✅ Camera permission granted! Stream active:`, stream.active);
-      console.log(`✅ Video tracks:`, stream.getVideoTracks());
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -174,30 +205,36 @@ export const BarcodeScanner = ({
         try {
           await videoRef.current.play();
           console.log('✅ Video element playing!');
+          
+          // Start continuous barcode scanning
+          startBarcodeScanning();
         } catch (playErr) {
           console.log('Auto-play might be blocked, trying manual play...', playErr);
           // Video will play once user interacts
         }
       }
-
-      // DO NOT start automatic barcode detection
-      // Camera is only for visual preview
-      // Scanning happens only via button press
-      console.log('Camera started for preview only (no automatic scanning)');
     } catch (err: any) {
       console.error("❌ Error starting scanner:", err);
-      console.error("Error name:", err.name);
-      console.error("Error message:", err.message);
       setHasPermission(false);
       setIsScanning(false);
       
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      if (err.message === 'HTTPS_REQUIRED') {
+        toast.error("HTTPS Required for Camera Access", {
+          description: "Mobile browsers require HTTPS for camera access. Please use a secure connection or access via localhost.",
+          duration: 10000
+        });
+      } else if (err.message === 'CAMERA_API_NOT_AVAILABLE') {
+        toast.error("Camera API Not Available", {
+          description: "Your browser doesn't support camera access. Please try a different browser or device.",
+          duration: 8000
+        });
+      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         toast.error("Camera access denied", {
           description: "Please click 'Allow' when browser asks for camera permission."
         });
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         toast.error("No camera found", {
-          description: "Please ensure your laptop has a working webcam."
+          description: "Please ensure your device has a working camera."
         });
       } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
         toast.error("Camera is in use", {
@@ -211,9 +248,90 @@ export const BarcodeScanner = ({
     }
   };
 
+  const startBarcodeScanning = () => {
+    if (!readerRef.current || !videoRef.current) {
+      console.error("Reader or video element not available");
+      return;
+    }
+
+    console.log("Starting continuous barcode scanning...");
+
+    // Use decodeFromVideoElement for continuous scanning
+    // This will scan every frame from the video element
+    readerRef.current.decodeFromVideoElement(
+      videoRef.current,
+      (result, error) => {
+        if (result) {
+          const rawValue = result.getText();
+          console.log("Barcode detected:", rawValue);
+
+          // Prevent duplicate scans (same barcode within 2 seconds)
+          const now = Date.now();
+          if (rawValue === lastScannedBarcodeRef.current && (now - lastScanTimeRef.current) < 2000) {
+            console.log("Duplicate scan ignored (same barcode within 2 seconds)");
+            return;
+          }
+
+          lastScannedBarcodeRef.current = rawValue;
+          lastScanTimeRef.current = now;
+
+          // Parse the barcode data
+          const parsedData = parseBarcodeData(rawValue);
+          
+          if (parsedData) {
+            console.log("Parsed barcode data:", parsedData);
+            
+            // Show success message
+            toast.success("Barcode scanned successfully!", {
+              description: `Part: ${parsedData.partCode}, Qty: ${parsedData.quantity}, Bin: ${parsedData.binNumber}`
+            });
+            
+            // Stop scanning
+            stopScanning();
+            
+            // Send the parsed barcode data to parent
+            onScan(parsedData);
+            
+            // Close the dialog immediately
+            onClose();
+          } else {
+            // Parsing failed - show error but keep scanning
+            toast.error("Failed to parse barcode", {
+              description: "Barcode format is invalid. Expected: Part_code-{value},Quantity-{value},Bin_number-{value}"
+            });
+            // Continue scanning
+          }
+        } else if (error) {
+          // Error during scanning - this is normal when no barcode is detected
+          // Only log if it's not a NotFoundException (which is expected)
+          if (error.name !== 'NotFoundException') {
+            console.log("Scanning error (expected when no barcode in frame):", error.name);
+          }
+          // Continue scanning
+        }
+      }
+    ).catch((err) => {
+      console.error("Error starting barcode scanning:", err);
+      toast.error("Failed to start barcode scanning", {
+        description: err.message || "Please try again"
+      });
+    });
+  };
+
   const stopScanning = () => {
-    console.log('Stopping camera...');
+    console.log('Stopping camera and scanning...');
     
+    // Stop barcode scanning
+    if (readerRef.current) {
+      try {
+        readerRef.current.reset();
+        console.log('Barcode reader reset');
+      } catch (err) {
+        console.log('Error resetting reader:', err);
+      }
+    }
+    
+    // Stop video stream
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => {
@@ -224,167 +342,21 @@ export const BarcodeScanner = ({
       console.log('Video stream stopped');
     }
     
-    // Reset reader by creating a new instance
-    if (readerRef.current) {
-      readerRef.current = null;
-      console.log('Reader reset');
+    // Clear scanning interval if any
+    if (scanningIntervalRef.current) {
+      clearInterval(scanningIntervalRef.current);
+      scanningIntervalRef.current = null;
     }
     
     setIsScanning(false);
-    setBarcodeDetected(false);
     setHasPermission(null);
-    hasScannedRef.current = false;
-    setHasScanned(false);
+    lastScannedBarcodeRef.current = null;
+    lastScanTimeRef.current = 0;
     console.log('Scanner state reset');
   };
   
   const handleClose = () => {
     stopScanning();
-    onClose();
-  };
-
-  // Calculate quantity for this bin based on total quantity, bin capacity, and current bin index
-  const calculateBinQuantity = (): string => {
-    if (totalQuantity && binCapacity && expectedBins && currentBinIndex !== undefined) {
-      // First bin: Fill to bin capacity (or totalQty if less than capacity)
-      if (currentBinIndex === 0) {
-        return Math.min(totalQuantity, binCapacity).toString();
-      }
-      
-      // Calculate remaining quantity after previous bins
-      const quantityAlreadyAllocated = Math.min(totalQuantity, binCapacity) + 
-        (currentBinIndex - 1) * Math.min(binCapacity, Math.floor((totalQuantity - Math.min(totalQuantity, binCapacity)) / (expectedBins - 1)));
-      
-      const remainingQuantity = totalQuantity - quantityAlreadyAllocated;
-      
-      // Last bin: All remaining quantity (up to bin capacity)
-      if (currentBinIndex === expectedBins - 1) {
-        return Math.min(remainingQuantity, binCapacity).toString();
-      }
-      
-      // Middle bins: Distribute remaining evenly, respecting bin capacity
-      const remainingBins = expectedBins - currentBinIndex;
-      const quantityForThisBin = Math.min(
-        Math.ceil(remainingQuantity / remainingBins),
-        binCapacity
-      );
-      
-      return quantityForThisBin.toString();
-    }
-    // Fallback to random quantity if no distribution data provided
-    return (Math.floor(Math.random() * 9) + 1).toString();
-  };
-
-  // Parse barcode data to extract Part Code, Quantity, and Bin Number
-  const parseBarcodeData = (rawValue: string): BarcodeData => {
-    console.log("Parsing barcode:", rawValue);
-    
-    // Try different parsing strategies
-    let partCode = "";
-    let quantity = "";
-    let binNumber = "";
-    
-    // Strategy 1: Delimited format (e.g., "PART123|50|BIN-001" or "PART123-50-BIN001")
-    if (rawValue.includes('|')) {
-      const parts = rawValue.split('|');
-      partCode = parts[0] || "";
-      quantity = parts[1] || "";
-      binNumber = parts[2] || "";
-    } 
-    else if (rawValue.includes('-') && rawValue.split('-').length >= 3) {
-      const parts = rawValue.split('-');
-      partCode = parts[0] || "";
-      quantity = parts[1] || "";
-      binNumber = parts.slice(2).join('-') || ""; // In case bin has multiple dashes
-    }
-    // Strategy 2: Fixed length positions (customize based on your barcode format)
-    else if (rawValue.length >= 15) {
-      partCode = rawValue.substring(0, 8).trim();
-      quantity = rawValue.substring(8, 12).trim();
-      binNumber = rawValue.substring(12).trim();
-    }
-    // Strategy 3: Generate demo data in correct format if real barcode doesn't match expected format
-    else {
-      // Generate demo values in correct format
-      // Part Code: 13 digits (e.g., 2023919386007)
-      const randomPart = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-      partCode = `202391938${randomPart}`;
-      
-      // Quantity: Use calculated bin quantity
-      quantity = calculateBinQuantity();
-      
-      // Bin Number: 11 characters (e.g., 76480M66T00)
-      const randomBin = Math.floor(Math.random() * 100).toString().padStart(2, '0');
-      binNumber = `76480M66T${randomBin}`;
-    }
-    
-    return {
-      rawValue,
-      partCode: partCode || `202391938${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
-      quantity: quantity || calculateBinQuantity(),
-      binNumber: binNumber || `76480M66T${Math.floor(Math.random() * 100).toString().padStart(2, '0')}`
-    };
-  };
-
-  const handleDemoScan = () => {
-    console.log("Scan button clicked!");
-    
-    // Prevent multiple scans using ref
-    if (hasScannedRef.current) {
-      console.log("Already scanned, ignoring duplicate scan");
-      return;
-    }
-    hasScannedRef.current = true;
-    setHasScanned(true);
-    
-    let rawBarcode: string;
-    let barcodeData: BarcodeData;
-    
-    // If we have matchData and should NOT mismatch, use the EXACT SAME data
-    if (matchData && !shouldMismatch) {
-      // Use the exact same data from the first scan to ensure they match
-      barcodeData = {
-        rawValue: matchData.rawValue,
-        partCode: matchData.partCode,
-        quantity: matchData.quantity,
-        binNumber: matchData.binNumber
-      };
-      console.log("Using EXACT matching data from first scan:", barcodeData);
-    }
-    // If we should mismatch, generate completely different values
-    else if (matchValue && shouldMismatch) {
-      const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
-      rawBarcode = randomBarcode.toString();
-      // Make sure it's actually different
-      while (rawBarcode === matchValue) {
-        const newRandom = Math.floor(Math.random() * 900000000000) + 100000000000;
-        rawBarcode = newRandom.toString();
-      }
-      console.log("Generated mismatching barcode:", rawBarcode);
-      barcodeData = parseBarcodeData(rawBarcode);
-    }
-    // First scan - generate new random value with unique data
-    else {
-      const randomBarcode = Math.floor(Math.random() * 900000000000) + 100000000000;
-      rawBarcode = randomBarcode.toString();
-      // Generate unique random values for each NEW scan
-      barcodeData = parseBarcodeData(rawBarcode);
-      console.log("Generated NEW barcode with unique values:", barcodeData);
-    }
-    
-    console.log("Final barcode data:", barcodeData);
-    
-    // Show success message
-    toast.success("Barcode scanned successfully!", {
-      description: `Part: ${barcodeData.partCode}, Qty: ${barcodeData.quantity}, Bin: ${barcodeData.binNumber}`
-    });
-    
-    // Send the parsed barcode data to parent
-    onScan(barcodeData);
-    
-    console.log("Calling onClose...");
-    
-    // Close the dialog immediately
     onClose();
   };
 
@@ -423,6 +395,14 @@ export const BarcodeScanner = ({
               </div>
             )}
             
+            {/* Scanning Indicator */}
+            {hasPermission && isScanning && (
+              <div className="absolute top-3 right-3 bg-green-600/80 backdrop-blur-sm px-3 py-1.5 rounded-full flex items-center gap-2 z-10">
+                <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                <span className="text-white text-xs font-medium">Scanning...</span>
+              </div>
+            )}
+            
             {/* Camera Preview Overlay - Simple guide */}
             <div className="absolute inset-0 pointer-events-none">
               {/* Barcode Guide Frame */}
@@ -453,7 +433,6 @@ export const BarcodeScanner = ({
                   <Camera className="h-12 w-12 mx-auto mb-3 opacity-50" />
                   <p className="font-medium mb-2">Camera Access Required</p>
                   <p className="text-sm opacity-75 mb-4">Please allow camera access in your browser settings</p>
-                  <p className="text-xs opacity-60">Or use the manual scan button below</p>
                 </div>
               </div>
             )}
@@ -469,32 +448,6 @@ export const BarcodeScanner = ({
             )}
           </div>
 
-          {/* Scan Button */}
-          <div className="bg-gradient-to-r from-primary/10 to-accent/10 border-2 border-primary/20 rounded-lg p-4 sm:p-6 text-center relative">
-            <div className="mb-3 sm:mb-4">
-              <div className="inline-flex items-center justify-center w-12 h-12 sm:w-16 sm:h-16 bg-primary/20 rounded-full mb-2 sm:mb-3">
-                <ScanBarcode className="h-6 w-6 sm:h-8 sm:w-8 text-primary animate-pulse" />
-              </div>
-              <h3 className="text-base sm:text-lg font-bold mb-2">Ready to Scan</h3>
-              <p className="text-xs sm:text-sm text-muted-foreground mb-3 sm:mb-4">
-                Point camera at barcode, then click the button below to capture
-              </p>
-            </div>
-            <button 
-              type="button"
-              onClick={handleDemoScan}
-              disabled={hasScanned}
-              className={`w-full h-12 sm:h-14 rounded-md font-semibold text-sm sm:text-base shadow-lg transition-all duration-200 flex items-center justify-center gap-2 ${
-                hasScanned 
-                  ? 'bg-green-600 text-white cursor-not-allowed' 
-                  : 'bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-xl cursor-pointer'
-              }`}
-            >
-              <Zap className="h-4 w-4 sm:h-5 sm:w-5" />
-              {hasScanned ? '✓ Scanned Successfully!' : scanButtonText}
-            </button>
-          </div>
-
           {/* Instructions */}
           <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 sm:p-4">
             <p className="text-xs sm:text-sm font-medium mb-2">📌 How it works:</p>
@@ -502,9 +455,9 @@ export const BarcodeScanner = ({
               <li>• <strong>Laptop/Desktop</strong>: Uses front camera (webcam)</li>
               <li>• <strong>Mobile</strong>: Uses back camera for better viewing</li>
               <li>• Browser will ask for camera permission on first use</li>
-              <li>• <strong>Camera is for preview only</strong> - no automatic scanning</li>
-              <li>• Point at barcode, then click "Scan This Barcode" button</li>
-              <li>• Demo values ensure consistent workflow for POC</li>
+              <li>• <strong>Automatic scanning</strong> - just point at barcode</li>
+              <li>• Scanner will detect barcode automatically and close</li>
+              <li>• If barcode format is invalid, scanner stays open for retry</li>
             </ul>
           </div>
 
@@ -532,15 +485,7 @@ interface BarcodeScanButtonProps {
   variant?: "default" | "outline" | "secondary" | "ghost";
   className?: string;
   disabled?: boolean;
-  matchValue?: string; // Pass to scanner for matching logic
-  shouldMismatch?: boolean; // Pass to scanner for mismatch logic
-  matchData?: BarcodeData; // Pass the full barcode data to match
-  totalQuantity?: number; // Total quantity to distribute
-  binCapacity?: number; // Maximum capacity per bin
-  expectedBins?: number; // Number of bins
-  currentBinIndex?: number; // Current bin being scanned
-  scanButtonText?: string; // Custom text for the scan button (defaults to "Scan This Barcode")
-  cameraGuideText?: string; // Custom text for the camera guide (defaults to "Position barcode here")
+  cameraGuideText?: string; // Custom text for the camera guide
 }
 
 export const BarcodeScanButton = ({ 
@@ -549,14 +494,6 @@ export const BarcodeScanButton = ({
   variant = "outline", 
   className = "", 
   disabled = false,
-  matchValue,
-  shouldMismatch = false,
-  matchData,
-  totalQuantity,
-  binCapacity,
-  expectedBins,
-  currentBinIndex,
-  scanButtonText,
   cameraGuideText
 }: BarcodeScanButtonProps) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -585,17 +522,8 @@ export const BarcodeScanButton = ({
         onScan={handleScan}
         title={label}
         description="Position the barcode within the frame to scan"
-        matchValue={matchValue}
-        shouldMismatch={shouldMismatch}
-        matchData={matchData}
-        totalQuantity={totalQuantity}
-        binCapacity={binCapacity}
-        expectedBins={expectedBins}
-        currentBinIndex={currentBinIndex}
-        scanButtonText={scanButtonText}
         cameraGuideText={cameraGuideText}
       />
     </>
   );
 };
-

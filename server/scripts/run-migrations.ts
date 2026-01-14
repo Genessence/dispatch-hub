@@ -33,7 +33,8 @@ async function runMigrations() {
     const migrationFiles = [
       '001_initial.sql',
       '002_enhance_validated_barcodes.sql',
-      '003_enhance_gatepass_invoices.sql'
+      '003_enhance_gatepass_invoices.sql',
+      '004_bin_quantity_tracking.sql'
     ];
 
     for (const migrationFile of migrationFiles) {

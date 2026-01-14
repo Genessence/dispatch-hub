@@ -64,7 +64,10 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           status: item.status,
           errorMessage: item.error_message,
           customerItem: item.customer_item,
-          partDescription: item.part_description
+          partDescription: item.part_description,
+          number_of_bins: item.number_of_bins || 0,
+          scanned_quantity: item.scanned_quantity || 0,
+          scanned_bins_count: item.scanned_bins_count || 0
         }))
       };
     }));
@@ -164,7 +167,10 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
           qty: item.qty,
           status: item.status,
           customerItem: item.customer_item,
-          partDescription: item.part_description
+          partDescription: item.part_description,
+          number_of_bins: item.number_of_bins || 0,
+          scanned_quantity: item.scanned_quantity || 0,
+          scanned_bins_count: item.scanned_bins_count || 0
         })),
         validatedBarcodes: barcodesResult.rows.map(b => ({
           customerBarcode: b.customer_barcode,

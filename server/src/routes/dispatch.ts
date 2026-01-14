@@ -146,8 +146,10 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
       // Save each loaded barcode to validated_barcodes table (if not already saved)
       // Try to match barcodes to invoices by customerItem or partCode
+      // Track bins by bin_number and update scanned_bins_count per invoice_item
       for (const barcode of loadedBarcodes) {
         let matchedInvoiceId: string | null = null;
+        let matchedInvoiceItemId: string | null = null;
         
         // Try to find matching invoice by customerItem or itemNumber
         if (barcode.customerItem || barcode.itemNumber) {
@@ -158,6 +160,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
             );
             if (itemsResult.rows.length > 0) {
               matchedInvoiceId = invoiceId;
+              matchedInvoiceItemId = itemsResult.rows[0].id;
               break;
             }
           }
@@ -173,19 +176,35 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           const customerName = invoice?.customer || 'Unknown';
           const customerCode = invoice?.bill_to || invoice?.billTo || null;
 
-          // Check if this scan already exists (avoid duplicates)
-          const existingScan = await client.query(
-            'SELECT id FROM validated_barcodes WHERE invoice_id = $1 AND customer_barcode = $2 AND scan_context = $3',
-            [matchedInvoiceId, barcode.customerBarcode || '', 'loading-dispatch']
-          );
+          // Check if this bin_number already scanned for this invoice_item (prevent duplicates)
+          let isDuplicate = false;
+          if (matchedInvoiceItemId && barcode.binNumber) {
+            const duplicateScan = await client.query(
+              `SELECT id FROM validated_barcodes 
+               WHERE invoice_item_id = $1 
+                 AND customer_barcode LIKE $2 
+                 AND scan_context = $3`,
+              [matchedInvoiceItemId, `%${barcode.binNumber}%`, 'loading-dispatch']
+            );
+            isDuplicate = duplicateScan.rows.length > 0;
+          }
+
+          // Check if this scan already exists by customer_barcode (fallback check)
+          if (!isDuplicate) {
+            const existingScan = await client.query(
+              'SELECT id FROM validated_barcodes WHERE invoice_id = $1 AND customer_barcode = $2 AND scan_context = $3',
+              [matchedInvoiceId, barcode.customerBarcode || '', 'loading-dispatch']
+            );
+            isDuplicate = existingScan.rows.length > 0;
+          }
 
           // Only insert if it doesn't exist
-          if (existingScan.rows.length === 0) {
+          if (!isDuplicate) {
             await client.query(
               `INSERT INTO validated_barcodes 
                (invoice_id, customer_barcode, autoliv_barcode, customer_item, item_number, part_description,
-                quantity, status, scanned_by, scan_context, customer_name, customer_code)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                quantity, bin_quantity, invoice_item_id, status, scanned_by, scan_context, customer_name, customer_code)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
               [
                 matchedInvoiceId,
                 barcode.customerBarcode || null,
@@ -194,6 +213,8 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
                 barcode.itemNumber || barcode.partCode || null,
                 null, // part_description not available in barcode
                 parseInt(barcode.quantity || '0') || 0,
+                parseInt(barcode.quantity || '0') || null, // bin_quantity from barcode
+                matchedInvoiceItemId, // invoice_item_id if matched
                 'matched',
                 req.user?.username || null,
                 'loading-dispatch',
@@ -201,6 +222,16 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
                 customerCode
               ]
             );
+
+            // Update scanned_bins_count for the matched invoice_item
+            if (matchedInvoiceItemId) {
+              await client.query(
+                `UPDATE invoice_items 
+                 SET scanned_bins_count = COALESCE(scanned_bins_count, 0) + 1
+                 WHERE id = $1`,
+                [matchedInvoiceItemId]
+              );
+            }
           }
         }
       }
@@ -395,6 +426,26 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     // Get customer code from first invoice
     const responseCustomerCode = invoiceDetailsResult.rows[0]?.bill_to || null;
 
+    // Calculate total number of bins across all invoice items
+    let totalNumberOfBins = 0;
+    try {
+      const binsResult = await query(
+        `SELECT SUM(number_of_bins) as total_bins 
+         FROM invoice_items 
+         WHERE invoice_id = ANY($1) AND number_of_bins IS NOT NULL`,
+        [invoiceIds]
+      );
+      totalNumberOfBins = parseInt(binsResult.rows[0]?.total_bins || '0') || 0;
+    } catch (binsError) {
+      console.warn('Failed to calculate total number of bins:', binsError);
+    }
+
+    // Get supply dates (delivery_date) from invoices
+    const supplyDates = invoiceDetailsResult.rows
+      .map(inv => inv.delivery_date)
+      .filter(Boolean)
+      .map((date: any) => date ? new Date(date).toISOString().slice(0, 10) : null);
+
     res.json({
       success: true,
       gatepassNumber,
@@ -404,6 +455,8 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       invoiceCount: invoiceIds.length,
       totalItems: loadedBarcodes.length,
       totalQuantity,
+      totalNumberOfBins, // Total number of bins across all items
+      supplyDates, // Array of supply dates (delivery_date) from invoices
       invoices
     });
   } catch (error: any) {

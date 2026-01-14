@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "db:migrate": "ts-node scripts/run-migrations.ts",
     "db:migrate:manual": "psql -d dispatch_hub -f migrations/001_initial.sql && psql -d dispatch_hub -f migrations/002_enhance_validated_barcodes.sql && psql -d dispatch_hub -f migrations/003_enhance_gatepass_invoices.sql",
-    "db:reset": "psql -c 'DROP DATABASE IF EXISTS dispatch_hub;' && psql -c 'CREATE DATABASE dispatch_hub;' && npm run db:migrate"
+    "db:reset": "ts-node scripts/reset-database.ts",
+    "db:reset:recreate": "psql -c 'DROP DATABASE IF EXISTS dispatch_hub;' && psql -c 'CREATE DATABASE dispatch_hub;' && npm run db:migrate"
   },
   "keywords": ["dispatch", "manufacturing", "websocket", "api"],
   "author": "",

@@ -24,10 +24,44 @@ import { setupSocketHandlers } from './websocket/socketHandler';
 const app = express();
 const httpServer = createServer(app);
 
-// Socket.IO setup with CORS
+// Socket.IO setup with CORS - allow both localhost and network IP
+const getCorsOrigins = () => {
+  const origins: (string | RegExp)[] = [];
+  // Add localhost
+  origins.push(process.env.FRONTEND_URL || 'http://localhost:8080');
+  // Add network IP
+  const localIP = process.env.LOCAL_IP || '192.168.1.8';
+  origins.push(`http://${localIP}:8080`);
+  // In development, allow any origin from the local network (192.168.x.x)
+  if (process.env.NODE_ENV === 'development') {
+    origins.push(/^http:\/\/192\.168\.\d+\.\d+:8080$/);
+  }
+  return origins;
+};
+
+// CORS origin checker function for more flexible matching
+const corsOriginChecker = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+  if (!origin) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    return callback(null, true);
+  }
+  
+  const allowedOrigins = getCorsOrigins();
+  const isAllowed = allowedOrigins.some(allowed => {
+    if (typeof allowed === 'string') {
+      return origin === allowed;
+    } else if (allowed instanceof RegExp) {
+      return allowed.test(origin);
+    }
+    return false;
+  });
+  
+  callback(null, isAllowed);
+};
+
 const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+    origin: (origin, callback) => corsOriginChecker(origin, callback),
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   }
@@ -36,11 +70,11 @@ const io = new SocketIOServer(httpServer, {
 // Make io accessible to routes
 app.set('io', io);
 
-const PORT = process.env.PORT || 3001;
+const PORT: number = Number(process.env.PORT) || 3001;
 
-// Middleware
+// Middleware - CORS configuration for mobile access
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+  origin: (origin, callback) => corsOriginChecker(origin, callback),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -102,17 +136,24 @@ const startServer = async () => {
       console.warn('⚠️ Database connection failed. Server will start but database features may not work.');
     }
 
-    httpServer.listen(PORT, () => {
+    // Listen on all network interfaces (0.0.0.0) to allow mobile access
+    const localIP = process.env.LOCAL_IP || '192.168.1.8'; // Default local IP, update if different
+    httpServer.listen({
+      port: PORT,
+      host: '0.0.0.0'
+    }, () => {
       console.log('');
       console.log('🚀 ==========================================');
       console.log(`🚀 Dispatch Hub Backend Server`);
       console.log('🚀 ==========================================');
-      console.log(`📡 Server:     http://localhost:${PORT}`);
-      console.log(`📡 Health:     http://localhost:${PORT}/api/health`);
-      console.log(`🔐 Login:      POST http://localhost:${PORT}/api/auth/login`);
-      console.log(`🔌 WebSocket:  ws://localhost:${PORT}`);
-      console.log(`📦 Database:   ${dbConnected ? '✅ Connected' : '❌ Disconnected'}`);
+      console.log(`📡 Server (Local):  http://localhost:${PORT}`);
+      console.log(`📡 Server (Network): http://${localIP}:${PORT}`);
+      console.log(`📡 Health:          http://${localIP}:${PORT}/api/health`);
+      console.log(`🔐 Login:           POST http://${localIP}:${PORT}/api/auth/login`);
+      console.log(`🔌 WebSocket:        ws://${localIP}:${PORT}`);
+      console.log(`📦 Database:        ${dbConnected ? '✅ Connected' : '❌ Disconnected'}`);
       console.log('🚀 ==========================================');
+      console.log(`📱 Mobile Access:   http://${localIP}:8080`);
       console.log('');
     });
   } catch (error) {

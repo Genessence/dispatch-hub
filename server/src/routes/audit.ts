@@ -211,6 +211,8 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
     itemNumber,
     partDescription,
     quantity,
+    binQuantity, // Quantity in each bin from barcode scan
+    binNumber, // Bin number from barcode scan
     status = 'matched',
     scanContext = 'doc-audit' // Default to doc-audit, can be 'loading-dispatch'
   } = req.body;
@@ -227,12 +229,70 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
     const customerName = invoice.customer || 'Unknown';
     const customerCode = invoice.bill_to || invoice.billTo || null;
 
+    let invoiceItemId: string | null = null;
+    let matchedInvoiceItem: any = null;
+
+    // For doc-audit: Match customer barcode part number with customer_item and autoliv barcode part number with part
+    if (scanContext === 'doc-audit' && customerBarcode && autolivBarcode) {
+      // Extract part numbers from barcodes (assuming they're in the barcode data)
+      // Customer barcode part number should match customer_item
+      // Autoliv barcode part number should match part (item_number)
+      const customerPartNumber = customerItem; // From request body, extracted from customer barcode
+      const autolivPartNumber = itemNumber; // From request body, extracted from autoliv barcode
+
+      // Find invoice_item where customer_item matches customer barcode part number
+      // AND part matches autoliv barcode part number
+      const itemMatchResult = await query(
+        `SELECT * FROM invoice_items 
+         WHERE invoice_id = $1 
+           AND customer_item = $2 
+           AND part = $3
+         LIMIT 1`,
+        [invoiceId, customerPartNumber, autolivPartNumber]
+      );
+
+      if (itemMatchResult.rows.length > 0) {
+        matchedInvoiceItem = itemMatchResult.rows[0];
+        invoiceItemId = matchedInvoiceItem.id;
+      } else {
+        // Try to match by customer_item only (fallback)
+        const fallbackResult = await query(
+          `SELECT * FROM invoice_items 
+           WHERE invoice_id = $1 
+             AND customer_item = $2
+           LIMIT 1`,
+          [invoiceId, customerPartNumber]
+        );
+        if (fallbackResult.rows.length > 0) {
+          matchedInvoiceItem = fallbackResult.rows[0];
+          invoiceItemId = matchedInvoiceItem.id;
+        }
+      }
+    } else if (scanContext === 'loading-dispatch' && customerBarcode) {
+      // For loading-dispatch: Match by customer_item from customer barcode
+      const customerPartNumber = customerItem;
+      if (customerPartNumber) {
+        const itemMatchResult = await query(
+          `SELECT * FROM invoice_items 
+           WHERE invoice_id = $1 
+             AND customer_item = $2
+           LIMIT 1`,
+          [invoiceId, customerPartNumber]
+        );
+        if (itemMatchResult.rows.length > 0) {
+          matchedInvoiceItem = itemMatchResult.rows[0];
+          invoiceItemId = matchedInvoiceItem.id;
+        }
+      }
+    }
+
     // Insert validated barcode with all fields including customer info and scan context
-    await query(
+    const insertResult = await query(
       `INSERT INTO validated_barcodes 
        (invoice_id, customer_barcode, autoliv_barcode, customer_item, item_number, part_description, 
-        quantity, status, scanned_by, scan_context, customer_name, customer_code)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        quantity, bin_quantity, invoice_item_id, status, scanned_by, scan_context, customer_name, customer_code)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING id`,
       [
         invoiceId, 
         customerBarcode || null, 
@@ -240,7 +300,9 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
         customerItem || null, 
         itemNumber || null, 
         partDescription || null, 
-        quantity || 0, 
+        quantity || 0,
+        binQuantity || null, // bin_quantity from barcode scan
+        invoiceItemId, // invoice_item_id if matched
         status, 
         req.user?.username || null,
         scanContext, // 'doc-audit' or 'loading-dispatch'
@@ -248,6 +310,31 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
         customerCode
       ]
     );
+
+    // Update invoice_item bin tracking fields for doc-audit scans
+    if (scanContext === 'doc-audit' && matchedInvoiceItem && binQuantity) {
+      const totalQty = matchedInvoiceItem.qty || 0;
+      const currentScannedQuantity = matchedInvoiceItem.scanned_quantity || 0;
+      const currentScannedBinsCount = matchedInvoiceItem.scanned_bins_count || 0;
+      
+      // Calculate number_of_bins: ceil(total_qty / bin_quantity) - if remainder exists, add one more bin
+      const numberOfBins = Math.ceil(totalQty / binQuantity);
+      
+      // Update scanned_quantity: total_qty - remaining_qty
+      // Remaining quantity decreases with each scan, so scanned_quantity increases
+      const newScannedQuantity = Math.min(currentScannedQuantity + binQuantity, totalQty);
+      const newScannedBinsCount = currentScannedBinsCount + 1;
+
+      // Update invoice_item with bin tracking data
+      await query(
+        `UPDATE invoice_items 
+         SET number_of_bins = COALESCE(number_of_bins, $1),
+             scanned_quantity = $2,
+             scanned_bins_count = $3
+         WHERE id = $4`,
+        [numberOfBins, newScannedQuantity, newScannedBinsCount, invoiceItemId]
+      );
+    }
 
     // Update invoice scanned_bins count only for doc-audit scans
     if (scanContext === 'doc-audit') {
@@ -262,6 +349,8 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
     io.emit('audit:scan', { 
       invoiceId,
       customerItem,
+      invoiceItemId,
+      binQuantity,
       scannedBy: req.user?.username,
       scanContext
     });
@@ -271,7 +360,18 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
       message: 'Scan recorded',
       scanContext,
       customerName,
-      customerCode
+      customerCode,
+      invoiceItemId,
+      binQuantity,
+      matchedInvoiceItem: matchedInvoiceItem ? {
+        id: matchedInvoiceItem.id,
+        customerItem: matchedInvoiceItem.customer_item,
+        part: matchedInvoiceItem.part,
+        qty: matchedInvoiceItem.qty,
+        number_of_bins: matchedInvoiceItem.number_of_bins,
+        scanned_quantity: matchedInvoiceItem.scanned_quantity,
+        scanned_bins_count: matchedInvoiceItem.scanned_bins_count
+      } : null
     });
   } catch (error: any) {
     console.error('Record scan error:', error);

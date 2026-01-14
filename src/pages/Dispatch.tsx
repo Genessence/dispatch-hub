@@ -84,6 +84,8 @@ const Dispatch = () => {
   const [gatepassDetails, setGatepassDetails] = useState<{
     customerCode?: string | null;
     dispatchDate?: string;
+    totalNumberOfBins?: number;
+    supplyDates?: string[];
     invoices?: Array<{
       id: string;
       deliveryDate?: string | null;
@@ -215,6 +217,22 @@ const Dispatch = () => {
       return;
     }
 
+    // Check if this bin_number was already scanned (prevent duplicate bin scans)
+    const binNumber = dispatchCustomerScan.binNumber;
+    if (binNumber) {
+      const duplicateBin = loadedBarcodes.find(pair => 
+        pair.binNumber === binNumber
+      );
+      if (duplicateBin) {
+        toast.error("⚠️ Bin Already Scanned!", {
+          description: `Bin number ${binNumber} has already been scanned.`,
+        });
+        setDispatchCustomerScan(null);
+        return;
+      }
+    }
+
+    // Also check by customer barcode (fallback)
     const alreadyLoaded = loadedBarcodes.find(pair => 
       pair.customerBarcode === dispatchCustomerScan.rawValue
     );
@@ -244,22 +262,16 @@ const Dispatch = () => {
       }
     }
     
-    // If no match by part code, try to match by customer item
+    // If no match by part code, try to match by customer item (from customer barcode)
     if (!matchedInvoiceItem && selectedInvoices.length > 0) {
-      for (const invoiceId of selectedInvoices) {
-        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-        if (invoice && invoice.items) {
-          const uniqueCustomerItems = getUniqueCustomerItems(invoice);
-          const loadedCustomerItems = new Set(
-            loadedBarcodes.map(pair => pair.customerItem).filter(Boolean)
-          );
-          const unloadedCustomerItem = uniqueCustomerItems.find(item => 
-            !loadedCustomerItems.has(item.customerItem)
-          );
-          
-          if (unloadedCustomerItem) {
+      const customerItemFromBarcode = dispatchCustomerScan.partCode?.trim();
+      if (customerItemFromBarcode) {
+        for (const invoiceId of selectedInvoices) {
+          const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+          if (invoice && invoice.items) {
+            // Match by customer_item (customer barcode part number should match customer_item)
             matchedInvoiceItem = invoice.items.find((item: UploadedRow) => 
-              item.customerItem && item.customerItem.trim() === unloadedCustomerItem.customerItem
+              item.customerItem && item.customerItem.trim() === customerItemFromBarcode
             );
             if (matchedInvoiceItem) {
               matchedInvoiceId = invoiceId;
@@ -284,7 +296,7 @@ const Dispatch = () => {
       actualQuantity: matchedInvoiceItem?.qty || undefined
     };
     
-    // Save scan to database immediately
+    // Save scan to database immediately with bin_number and bin_quantity
     if (invoiceIdToUse) {
       try {
         await auditApi.recordScan(invoiceIdToUse, {
@@ -294,6 +306,8 @@ const Dispatch = () => {
           itemNumber: matchedInvoiceItem?.part || dispatchCustomerScan.partCode || 'N/A',
           partDescription: matchedInvoiceItem?.partDescription || 'N/A',
           quantity: matchedInvoiceItem?.qty || parseInt(dispatchCustomerScan.quantity || '0') || 0,
+          binQuantity: parseInt(dispatchCustomerScan.quantity || '0') || null, // bin_quantity from barcode
+          binNumber: dispatchCustomerScan.binNumber || null, // bin_number from barcode
           status: 'matched',
           scanContext: 'loading-dispatch'
         });
@@ -381,6 +395,8 @@ const Dispatch = () => {
         const gatepassData = {
           customerCode: result.customerCode || null,
           dispatchDate: result.dispatchDate,
+          totalNumberOfBins: result.totalNumberOfBins || 0,
+          supplyDates: result.supplyDates || [],
           invoices: result.invoices || []
         };
         
@@ -576,16 +592,31 @@ const Dispatch = () => {
     
     const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
     
+    // Get total number of bins from gatepassDetails (from API response) or calculate from invoice items
+    const totalNumberOfBins = gatepassDetails?.totalNumberOfBins || 0;
+    
+    // Get supply dates (delivery_date from invoices) - use first supply date or from gatepassDetails
+    const supplyDates = gatepassDetails?.supplyDates || 
+      selectedInvoiceData.map(inv => inv.deliveryDate).filter(Boolean);
+    const supplyDate = supplyDates && supplyDates.length > 0 ? 
+      (typeof supplyDates[0] === 'string' ? 
+        new Date(supplyDates[0]).toISOString().slice(0, 10) : 
+        new Date(supplyDates[0]).toISOString().slice(0, 10)) : 
+      null;
+    
     // Create compact QR data - only essential information
     // Using short field names to reduce size
     const qrData = {
       gp: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`, // gatepass number
       v: vehicleNumber, // vehicle
       cc: customerCode, // customer code
-      dt: dispatchDateCompact, // dispatch date/time
+      dt: dispatchDateCompact, // dispatch date/time (actual dispatch date)
+      sd: supplyDate, // supply date (delivery_date from doc audit)
       by: currentUser, // authorized by
       inv: invoiceDetails, // invoices (compact format)
       invIds: selectedInvoices, // invoice IDs array
+      invCount: selectedInvoices.length, // number of invoices
+      binCount: totalNumberOfBins, // total number of bins
       sum: { // summary
         items: loadedBarcodes.length,
         inv: selectedInvoices.length,
@@ -1441,12 +1472,6 @@ const Dispatch = () => {
                             }}
                             label={dispatchCustomerScan ? "Scan Again" : "Scan Customer Barcode"}
                             variant="default"
-                            matchValue={getNextUnscannedBarcodePair()?.customerBarcode}
-                            shouldMismatch={false}
-                            totalQuantity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.totalQty : undefined}
-                            binCapacity={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.binCapacity : undefined}
-                            expectedBins={selectedInvoices.length > 0 ? sharedInvoices.find(inv => selectedInvoices.includes(inv.id))?.expectedBins : undefined}
-                            currentBinIndex={loadedBarcodes.length}
                           />
                         </div>
                       </div>
@@ -1852,7 +1877,6 @@ const Dispatch = () => {
                 onScan={handleInvoiceQRScan}
                 label="Click to Scan Next Invoice QR"
                 variant="default"
-                scanButtonText="Scan this QR"
                 cameraGuideText="Position invoice QR here"
               />
               
