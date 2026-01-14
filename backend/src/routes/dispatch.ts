@@ -42,7 +42,7 @@ router.get('/ready', authenticateToken, async (req: AuthRequest, res: Response) 
 
     res.json({
       success: true,
-      invoices: invoices.map(inv => ({
+      invoices: invoices.map((inv: any) => ({
         id: inv.id,
         customer: inv.customer,
         billTo: inv.bill_to,
@@ -377,7 +377,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       );
       
       // Log what we got from the database
-      console.log('📊 Invoice details from database:', invoiceDetailsResult.rows.map(inv => ({
+      console.log('📊 Invoice details from database:', invoiceDetailsResult.rows.map((inv: any) => ({
         id: inv.id,
         delivery_date: inv.delivery_date,
         delivery_time: inv.delivery_time,
@@ -401,7 +401,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       }
     }
     
-    const invoices = invoiceDetailsResult.rows.map(inv => {
+    const invoices = invoiceDetailsResult.rows.map((inv: any) => {
       const deliveryDate = inv.delivery_date ? new Date(inv.delivery_date) : null;
       const isOnTime = deliveryDate ? dispatchDate <= deliveryDate : null;
       const status = isOnTime === null ? 'unknown' : (isOnTime ? 'on-time' : 'late');
@@ -508,7 +508,7 @@ router.get('/gatepasses', authenticateToken, async (req: AuthRequest, res: Respo
 
     res.json({
       success: true,
-      gatepasses: result.rows.map(gp => ({
+      gatepasses: result.rows.map((gp: any) => ({
         id: gp.id,
         gatepassNumber: gp.gatepass_number,
         vehicleNumber: gp.vehicle_number,
@@ -579,7 +579,7 @@ router.get('/gatepass/:number', authenticateToken, async (req: AuthRequest, res:
         customer: gatepass.customer,
         customerCode: gatepass.customer_code || null,
         dispatchDate: gatepass.dispatch_date || gatepass.created_at || null,
-        invoices: invoicesResult.rows.map(inv => {
+        invoices: invoicesResult.rows.map((inv: any) => {
           const deliveryDate = inv.delivery_date ? new Date(inv.delivery_date) : null;
           const isOnTime = deliveryDate && dispatchDate ? dispatchDate <= deliveryDate : null;
           const status = isOnTime === null ? 'unknown' : (isOnTime ? 'on-time' : 'late');

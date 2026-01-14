@@ -116,7 +116,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     res.json({
       success: true,
       scheduleData: {
-        items: result.rows.map(item => ({
+        items: result.rows.map((item: any) => ({
           id: item.id,
           customerCode: item.customer_code,
           customerPart: item.customer_part,
@@ -160,7 +160,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     const allScheduleItems: any[] = [];
 
     // Parse each sheet
-    workbook.SheetNames.forEach((sheetName) => {
+    workbook.SheetNames.forEach((sheetName: string) => {
       // Skip generic sheet names
       if (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2') {
         return;

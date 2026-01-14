@@ -1,4 +1,5 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction, Application } from 'express';
+import { Express } from 'express-serve-static-core';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dispatch-hub-super-secret-jwt-key-2024-change-in-production';
@@ -11,6 +12,10 @@ export interface UserPayload {
 
 export interface AuthRequest extends Request {
   user?: UserPayload;
+  query: Request['query'];
+  params: Request['params'];
+  file?: Express.Multer.File;
+  app: Application & { get: (key: string) => any };
 }
 
 /**

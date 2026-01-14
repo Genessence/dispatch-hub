@@ -18,7 +18,7 @@ interface AuthenticatedSocket extends Socket {
  */
 export const setupSocketHandlers = (io: SocketIOServer) => {
   // Authentication middleware for sockets
-  io.use((socket: AuthenticatedSocket, next) => {
+  io.use((socket: AuthenticatedSocket, next: (err?: Error) => void) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.split(' ')[1];
     
     if (token) {
@@ -93,12 +93,12 @@ export const setupSocketHandlers = (io: SocketIOServer) => {
     });
 
     // Handle disconnection
-    socket.on('disconnect', (reason) => {
+    socket.on('disconnect', (reason: string) => {
       console.log(`🔌 Socket disconnected: ${socket.id} (${username}) - ${reason}`);
     });
 
     // Handle errors
-    socket.on('error', (error) => {
+    socket.on('error', (error: Error) => {
       console.error(`❌ Socket error for ${socket.id}:`, error);
     });
   });

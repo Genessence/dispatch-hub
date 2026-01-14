@@ -28,7 +28,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
     res.json({
       success: true,
-      logs: result.rows.map(log => ({
+      logs: result.rows.map((log: any) => ({
         id: log.id,
         user: log.user_name,
         action: log.action,
@@ -56,7 +56,7 @@ router.get('/upload', authenticateToken, async (req: AuthRequest, res: Response)
 
     res.json({
       success: true,
-      logs: result.rows.map(log => ({
+      logs: result.rows.map((log: any) => ({
         id: log.id,
         user: log.user_name,
         action: log.action,
@@ -83,7 +83,7 @@ router.get('/audit', authenticateToken, async (req: AuthRequest, res: Response) 
 
     res.json({
       success: true,
-      logs: result.rows.map(log => ({
+      logs: result.rows.map((log: any) => ({
         id: log.id,
         user: log.user_name,
         action: log.action,
@@ -111,7 +111,7 @@ router.get('/dispatch', authenticateToken, async (req: AuthRequest, res: Respons
 
     res.json({
       success: true,
-      logs: result.rows.map(log => ({
+      logs: result.rows.map((log: any) => ({
         id: log.id,
         user: log.user_name,
         action: log.action,

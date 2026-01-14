@@ -15,7 +15,7 @@ const pool = new Pool({
   connectionString,
   max: 20, // Maximum number of clients in the pool
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 10000, // Increased timeout for RDS connections
+  connectionTimeoutMillis: 30000, // Increased timeout for RDS connections (30 seconds)
   // SSL configuration for AWS RDS - RDS uses self-signed certificates
   ...(isRDS && {
     ssl: {
@@ -77,8 +77,32 @@ export const checkConnection = async (): Promise<boolean> => {
   try {
     await pool.query('SELECT NOW()');
     return true;
-  } catch (error) {
-    console.error('❌ Database connection check failed:', error);
+  } catch (error: any) {
+    console.error('❌ Database connection check failed:');
+    console.error('   Full error:', error);
+    if (error.code) {
+      console.error(`   Error Code: ${error.code}`);
+    }
+    if (error.message) {
+      console.error(`   Error Message: ${error.message}`);
+    }
+    if (error.code === '28P01') {
+      console.error('   💡 Password authentication failed - check DATABASE_URL credentials');
+      console.error('   💡 Make sure special characters in password are URL-encoded (@ → %40)');
+    } else if (error.code === 'ECONNREFUSED') {
+      console.error('   💡 Connection refused - check if database server is running');
+    } else if (error.code === 'ENOTFOUND') {
+      console.error('   💡 Database host not found - check DATABASE_URL host');
+    } else if (error.code === '3D000') {
+      console.error('   💡 Database does not exist - create the database first');
+    } else if (error.code === 'ETIMEDOUT' || error.code === 'ETIMEOUT' || error.message?.includes('timeout')) {
+      console.error('   💡 Connection timeout - AWS RDS Security Group is likely blocking your IP');
+      console.error('   💡 Add your IP to the RDS Security Group inbound rules (PostgreSQL port 5432)');
+    }
+    // Show connection string with password hidden but show format
+    const masked = connectionString.replace(/:([^:@]+)@/, ':****@');
+    console.error('   Connection string (masked):', masked);
+    console.error('   Connection string format: postgresql://username:password@host:port/database');
     return false;
   }
 };

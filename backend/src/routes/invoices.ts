@@ -56,7 +56,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       );
       return {
         ...invoice,
-        items: itemsResult.rows.map(item => ({
+        items: itemsResult.rows.map((item: any) => ({
           invoice: item.invoice_id,
           customer: invoice.customer,
           part: item.part,
@@ -74,7 +74,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
     res.json({
       success: true,
-      invoices: invoices.map(inv => ({
+      invoices: invoices.map((inv: any) => ({
         id: inv.id,
         customer: inv.customer,
         billTo: inv.bill_to,
@@ -103,9 +103,26 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
         items: inv.items
       }))
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Get invoices error:', error);
-    res.status(500).json({ error: 'Failed to fetch invoices' });
+    console.error('Error details:', {
+      code: error?.code,
+      message: error?.message,
+      stack: error?.stack
+    });
+    
+    // Check if it's a database connection error
+    if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND' || error?.message?.includes('connect')) {
+      res.status(503).json({ 
+        error: 'Database connection failed',
+        message: 'Unable to connect to database. Please check database configuration.'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to fetch invoices',
+        message: error?.message || 'An unexpected error occurred'
+      });
+    }
   }
 });
 
@@ -160,7 +177,7 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
         uploadedAt: invoice.uploaded_at,
         auditedBy: invoice.audited_by,
         dispatchedBy: invoice.dispatched_by,
-        items: itemsResult.rows.map(item => ({
+        items: itemsResult.rows.map((item: any) => ({
           invoice: item.invoice_id,
           customer: invoice.customer,
           part: item.part,
@@ -172,7 +189,7 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
           scanned_quantity: item.scanned_quantity || 0,
           scanned_bins_count: item.scanned_bins_count || 0
         })),
-        validatedBarcodes: barcodesResult.rows.map(b => ({
+        validatedBarcodes: barcodesResult.rows.map((b: any) => ({
           customerBarcode: b.customer_barcode,
           autolivBarcode: b.autoliv_barcode
         }))
@@ -263,7 +280,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     // Calculate expected bins based on unique customer items
     invoiceMap.forEach((invoice) => {
       const items = allItems.filter(item => item.invoiceId === invoice.id);
-      const uniqueCustomerItems = new Set(items.map(item => item.customerItem).filter(Boolean));
+      const uniqueCustomerItems = new Set(items.map((item: any) => item.customerItem).filter(Boolean));
       invoice.expectedBins = uniqueCustomerItems.size;
     });
 

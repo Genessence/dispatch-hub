@@ -49,7 +49,11 @@ async function runMigrations() {
       
       try {
         const sql = fs.readFileSync(migrationPath, 'utf8');
+        
+        // Execute the entire SQL file as-is (PostgreSQL can handle multi-statement files)
+        // Split by semicolon only for complex multi-statement scenarios
         await client.query(sql);
+        
         console.log(`✅ Successfully ran ${migrationFile}`);
       } catch (error: any) {
         // Ignore errors for columns that already exist (IF NOT EXISTS)
@@ -57,14 +61,59 @@ async function runMigrations() {
           console.log(`⚠️  Migration ${migrationFile} had some conflicts (columns may already exist), continuing...`);
         } else {
           console.error(`❌ Error running ${migrationFile}:`, error.message);
+          console.error(`   Full error:`, error);
           throw error;
         }
       }
     }
 
+    // Verify tables were created
+    console.log('\n🔍 Verifying tables...');
+    const tablesResult = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+    
+    if (tablesResult.rows.length > 0) {
+      console.log(`✅ Found ${tablesResult.rows.length} table(s):`);
+      tablesResult.rows.forEach(row => {
+        console.log(`   - ${row.table_name}`);
+      });
+    } else {
+      console.log('⚠️  No tables found - migrations may have failed');
+    }
+    
+    // Verify users table exists and has default users
+    console.log('\n🔍 Verifying users table...');
+    try {
+      const usersResult = await client.query('SELECT COUNT(*) as count FROM users');
+      const userCount = parseInt(usersResult.rows[0].count);
+      console.log(`✅ Users table exists with ${userCount} user(s)`);
+      
+      if (userCount === 0) {
+        console.log('⚠️  No users found - default users may need to be created');
+      } else {
+        const userList = await client.query('SELECT username, role FROM users');
+        console.log('   Users:');
+        userList.rows.forEach((user: any) => {
+          console.log(`     - ${user.username} (${user.role})`);
+        });
+      }
+    } catch (userError: any) {
+      console.error('❌ Error checking users table:', userError.message);
+    }
+    
     console.log('\n✅ All migrations completed successfully!');
+    console.log('💡 Your database is ready! You can now start the backend server.');
+    console.log('💡 Default login credentials:');
+    console.log('   Username: admin, Password: pass123');
+    console.log('   Username: user, Password: pass123');
   } catch (error: any) {
-    console.error('❌ Migration failed:', error.message);
+    console.error('\n❌ Migration failed:', error.message);
+    console.error('   Error Code:', error.code || 'N/A');
+    console.error('   Full error:', error);
     process.exit(1);
   } finally {
     await client.end();

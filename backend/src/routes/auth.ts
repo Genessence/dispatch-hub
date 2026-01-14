@@ -69,11 +69,26 @@ router.post('/login', async (req: Request, res: Response) => {
         role: user.role
       }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Login error:', error);
-    res.status(500).json({ 
-      error: 'Internal server error' 
+    console.error('Error details:', {
+      code: error?.code,
+      message: error?.message,
+      stack: error?.stack
     });
+    
+    // Check if it's a database connection error
+    if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND' || error?.message?.includes('connect')) {
+      res.status(503).json({ 
+        error: 'Database connection failed',
+        message: 'Unable to connect to database. Please check database configuration.'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Internal server error',
+        message: error?.message || 'An unexpected error occurred'
+      });
+    }
   }
 });
 
