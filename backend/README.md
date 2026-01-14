@@ -133,7 +133,7 @@ The server will start on `http://localhost:3001`
 ## Folder Structure
 
 ```
-server/
+backend/
 ├── migrations/           # SQL migration files
 ├── src/
 │   ├── config/          # Database configuration

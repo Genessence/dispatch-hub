@@ -38,16 +38,16 @@ else
 fi
 
 # Backend .env
-if [ ! -f server/.env ]; then
-    cat > server/.env << EOF
+if [ ! -f backend/.env ]; then
+    cat > backend/.env << EOF
 # Backend Environment Variables
 LOCAL_IP=$LOCAL_IP
 FRONTEND_URL=http://localhost:8080
 PORT=3001
 EOF
-    echo "✅ Created server/.env (backend)"
+    echo "✅ Created backend/.env (backend)"
 else
-    echo "⚠️  server/.env already exists, skipping..."
+    echo "⚠️  backend/.env already exists, skipping..."
 fi
 
 echo ""
@@ -58,7 +58,7 @@ echo "   1. Make sure your phone is on the same WiFi network"
 echo "   2. Open browser and go to: http://$LOCAL_IP:8080"
 echo ""
 echo "🚀 To start the servers:"
-echo "   Terminal 1: cd server && npm run dev"
-echo "   Terminal 2: npm run dev"
+echo "   Terminal 1: cd backend && npm run dev"
+echo "   Terminal 2: cd frontend && npm run dev"
 echo ""
 

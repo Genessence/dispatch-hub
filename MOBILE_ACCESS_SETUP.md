@@ -38,9 +38,9 @@ Or check:
 
 ### Backend Configuration
 
-1. Navigate to the server directory:
+1. Navigate to the backend directory:
    ```bash
-   cd server
+   cd backend
    ```
 
 2. Copy the example environment file:
@@ -48,7 +48,7 @@ Or check:
    cp .env.example .env
    ```
 
-3. Update `server/.env` with your local IP:
+3. Update `backend/.env` with your local IP:
    ```env
    LOCAL_IP=192.168.1.8
    FRONTEND_URL=http://localhost:8080
@@ -59,7 +59,7 @@ Or check:
 
 ### Terminal 1 - Backend Server
 ```bash
-cd server
+cd backend
 npm run dev
 ```
 
@@ -72,6 +72,7 @@ You should see output like:
 
 ### Terminal 2 - Frontend Server
 ```bash
+cd frontend
 npm run dev
 ```
 
