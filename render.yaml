@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: dispatch-hub-backend
+    env: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Database connection - Set this in Render dashboard or use Render PostgreSQL
+      - key: DATABASE_URL
+        sync: false  # Set this manually in Render dashboard
+      # JWT Secret - IMPORTANT: Change this to a secure random string in production
+      - key: JWT_SECRET
+        sync: false  # Set this manually in Render dashboard
+      # Optional: JWT expiration time (defaults to 24h if not set)
+      - key: JWT_EXPIRES_IN
+        value: 24h
+      # Frontend URL - Update this with your actual frontend URL
+      - key: FRONTEND_URL
+        sync: false  # Set this manually in Render dashboard (e.g., https://your-frontend.vercel.app)
+
