@@ -413,7 +413,7 @@ router.get('/:invoiceId/scans', authenticateToken, async (req: AuthRequest, res:
 
     res.json({
       success: true,
-      scans: result.rows.map(scan => ({
+      scans: result.rows.map((scan: any) => ({
         id: scan.id,
         customerBarcode: scan.customer_barcode,
         autolivBarcode: scan.autoliv_barcode,

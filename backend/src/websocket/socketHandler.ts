@@ -25,7 +25,7 @@ export const setupSocketHandlers = (io: SocketIOServer) => {
       try {
         const decoded = jwt.verify(token, JWT_SECRET) as UserPayload;
         socket.user = decoded;
-      } catch (err) {
+      } catch (err: unknown) {
         // Token invalid, but we'll still allow connection for public events
         console.log('Socket: Invalid token, connecting as anonymous');
       }

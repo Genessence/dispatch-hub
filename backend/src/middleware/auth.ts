@@ -1,5 +1,4 @@
-import { Request, Response, NextFunction, Application } from 'express';
-import { Express } from 'express-serve-static-core';
+import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dispatch-hub-super-secret-jwt-key-2024-change-in-production';
@@ -12,10 +11,6 @@ export interface UserPayload {
 
 export interface AuthRequest extends Request {
   user?: UserPayload;
-  query: Request['query'];
-  params: Request['params'];
-  file?: Express.Multer.File;
-  app: Application & { get: (key: string) => any };
 }
 
 /**
@@ -30,7 +25,7 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
     return;
   }
 
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+  jwt.verify(token, JWT_SECRET, (err: jwt.VerifyErrors | null, decoded: jwt.JwtPayload | string | undefined) => {
     if (err) {
       if (err.name === 'TokenExpiredError') {
         res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
@@ -53,7 +48,7 @@ export const optionalAuth = (req: AuthRequest, res: Response, next: NextFunction
   const token = authHeader && authHeader.split(' ')[1];
 
   if (token) {
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, (err: jwt.VerifyErrors | null, decoded: jwt.JwtPayload | string | undefined) => {
       if (!err) {
         req.user = decoded as UserPayload;
       }

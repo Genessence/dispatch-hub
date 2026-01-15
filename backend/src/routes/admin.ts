@@ -91,7 +91,7 @@ router.get('/exceptions', async (req: AuthRequest, res: Response) => {
 
     res.json({
       success: true,
-      alerts: result.rows.map(alert => ({
+      alerts: result.rows.map((alert: any) => ({
         id: alert.id,
         user: alert.user_name,
         customer: alert.customer,
@@ -217,7 +217,7 @@ router.get('/master-data', async (req: AuthRequest, res: Response) => {
       masterData: {
         customers: customers.rows,
         scheduleSummary: scheduleSummary.rows,
-        users: users.rows.map(u => ({
+        users: users.rows.map((u: any) => ({
           id: u.id,
           username: u.username,
           role: u.role,
@@ -241,7 +241,7 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
 
     res.json({
       success: true,
-      users: result.rows.map(u => ({
+      users: result.rows.map((u: any) => ({
         id: u.id,
         username: u.username,
         role: u.role,

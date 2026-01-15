@@ -22,14 +22,14 @@ router.get('/ready', authenticateToken, async (req: AuthRequest, res: Response) 
     `);
 
     // Get items for each invoice
-    const invoices = await Promise.all(result.rows.map(async (invoice) => {
+    const invoices = await Promise.all(result.rows.map(async (invoice: any) => {
       const itemsResult = await query(
         'SELECT * FROM invoice_items WHERE invoice_id = $1',
         [invoice.id]
       );
       return {
         ...invoice,
-        items: itemsResult.rows.map(item => ({
+        items: itemsResult.rows.map((item: any) => ({
           invoice: item.invoice_id,
           customer: invoice.customer,
           part: item.part,
@@ -42,7 +42,7 @@ router.get('/ready', authenticateToken, async (req: AuthRequest, res: Response) 
 
     res.json({
       success: true,
-      invoices: invoices.map((inv: any) => ({
+      invoices: invoices.map((inv) => ({
         id: inv.id,
         customer: inv.customer,
         billTo: inv.bill_to,
@@ -325,7 +325,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           [
             gatepassNumber,
             vehicleNumber,
-            customers.rows.map(c => c.customer).join(', '),
+            customers.rows.map((c: any) => c.customer).join(', '),
             customerCode,
             invoiceIds,
             loadedBarcodes.length,
@@ -345,7 +345,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
             [
               gatepassNumber,
               vehicleNumber,
-              customers.rows.map(c => c.customer).join(', '),
+              customers.rows.map((c: any) => c.customer).join(', '),
               invoiceIds,
               loadedBarcodes.length,
               totalQuantity,
@@ -442,7 +442,7 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
     // Get supply dates (delivery_date) from invoices
     const supplyDates = invoiceDetailsResult.rows
-      .map(inv => inv.delivery_date)
+      .map((inv: any) => inv.delivery_date)
       .filter(Boolean)
       .map((date: any) => date ? new Date(date).toISOString().slice(0, 10) : null);
 

@@ -49,7 +49,7 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     const result = await query(queryText, params);
 
     // Get items for each invoice
-    const invoices = await Promise.all(result.rows.map(async (invoice) => {
+    const invoices = await Promise.all(result.rows.map(async (invoice: any) => {
       const itemsResult = await query(
         'SELECT * FROM invoice_items WHERE invoice_id = $1',
         [invoice.id]
