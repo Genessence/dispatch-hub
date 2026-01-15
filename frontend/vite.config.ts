@@ -2,7 +2,6 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
-import fs from "fs";
 
 // Check if HTTPS should be enabled (via environment variable)
 const enableHTTPS = process.env.VITE_HTTPS === 'true';
