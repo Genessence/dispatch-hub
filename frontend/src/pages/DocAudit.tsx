@@ -47,12 +47,13 @@ const DocAudit = () => {
     getAuditLogs,
     addMismatchAlert,
     selectedCustomer,
-    selectedSite
+    selectedSite,
+    getInvoicesWithSchedule
   } = useSession();
 
   // Route guard: Check if customer and site are selected
   useEffect(() => {
-    if (!selectedCustomer || selectedCustomer.length === 0 || !selectedSite) {
+    if (!selectedCustomer || !selectedSite) {
       toast.error("Please select a customer and site before accessing doc audit");
       navigate("/select-customer-site");
     }
@@ -96,40 +97,15 @@ const DocAudit = () => {
     return `${year}-${month}-${day}`;
   };
 
-  // Get invoices with schedule data
+  // Get invoices with schedule data - use context method which filters by selected customer code
   const invoicesWithSchedule = useMemo(() => {
-    if (!scheduleData || !sharedInvoices.length) {
-      console.log('=== DOC AUDIT DEBUG: invoicesWithSchedule ===');
-      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
-      console.log('sharedInvoices.length:', sharedInvoices.length);
-      return [];
-    }
-    
-    const scheduledCustomerCodes = new Set(
-      scheduleData.items.map(item => String(item.customerCode))
-    );
-    
-    const matched = sharedInvoices.filter(
-      inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)) && !inv.dispatchedBy
-    );
+    const matched = getInvoicesWithSchedule().filter(inv => !inv.dispatchedBy);
     
     console.log('=== DOC AUDIT DEBUG: invoicesWithSchedule ===');
-    console.log('Total sharedInvoices:', sharedInvoices.length);
-    console.log('Scheduled customer codes:', Array.from(scheduledCustomerCodes));
-    console.log('Matched invoices:', matched.length);
-    console.log('Sample invoice billTo:', sharedInvoices[0]?.billTo);
-    
-    // Check if items exist in sharedInvoices
-    if (sharedInvoices.length > 0) {
-      console.log('First sharedInvoice has items?', !!sharedInvoices[0]?.items);
-      console.log('First sharedInvoice items length:', sharedInvoices[0]?.items?.length);
-      if (sharedInvoices[0]?.items && sharedInvoices[0].items.length > 0) {
-        console.log('First invoice first item:', sharedInvoices[0].items[0]);
-      }
-    }
+    console.log('Total invoices from getInvoicesWithSchedule:', matched.length);
     
     return matched;
-  }, [sharedInvoices, scheduleData]);
+  }, [getInvoicesWithSchedule]);
 
   // Get available delivery dates
   const availableDeliveryDates = useMemo(() => {
@@ -214,55 +190,11 @@ const DocAudit = () => {
     return Array.from(dates).sort();
   }, [scheduleData, invoicesWithSchedule]);
 
-  // Get available unloading locations for selected date
-  const availableUnloadingLocs = useMemo(() => {
-    if (!selectedDeliveryDate || !scheduleData || !invoicesWithSchedule.length) {
-      console.log('=== DOC AUDIT DEBUG: availableUnloadingLocs ===');
-      console.log('selectedDeliveryDate:', selectedDeliveryDate);
-      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
-      console.log('invoicesWithSchedule.length:', invoicesWithSchedule.length);
-      return [];
-    }
-    
-    const locs = new Set<string>();
-    const customerItemsSet = new Set<string>();
-    
-    invoicesWithSchedule.forEach(invoice => {
-      invoice.items?.forEach((item: any) => {
-        const partNum = item.customerItem || item.part;
-        if (partNum) {
-          customerItemsSet.add(String(partNum).trim());
-        }
-      });
-    });
-    
-    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
-    scheduleData.items.forEach(item => {
-      if (item.deliveryDate && item.unloadingLoc && item.partNumber) {
-        const itemDate = formatDateAsLocalString(item.deliveryDate);
-        if (itemDate === selectedDate && customerItemsSet.has(String(item.partNumber).trim())) {
-          locs.add(item.unloadingLoc);
-        }
-      }
-    });
-    
-    console.log('=== DOC AUDIT DEBUG: availableUnloadingLocs ===');
-    console.log('Selected date:', selectedDate);
-    console.log('Customer items:', Array.from(customerItemsSet).slice(0, 5));
-    console.log('Schedule items with date+unloadingLoc+partNumber:', scheduleData.items.filter(i => 
-      i.deliveryDate && i.unloadingLoc && i.partNumber
-    ).length);
-    console.log('Available unloading locations:', Array.from(locs).sort());
-    
-    return Array.from(locs).sort();
-  }, [selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
-
-  // Get available delivery times for selected date and unloading location(s)
+  // Get available delivery times for selected date (Step 2 - NEW ORDER)
   const availableDeliveryTimes = useMemo(() => {
-    if (!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || !scheduleData || !invoicesWithSchedule.length) {
+    if (!selectedDeliveryDate || !scheduleData || !invoicesWithSchedule.length) {
       console.log('=== DOC AUDIT DEBUG: availableDeliveryTimes ===');
       console.log('selectedDeliveryDate:', selectedDeliveryDate);
-      console.log('selectedUnloadingLocs.length:', selectedUnloadingLocs.length);
       console.log('scheduleData:', scheduleData ? 'exists' : 'null');
       console.log('invoicesWithSchedule.length:', invoicesWithSchedule.length);
       return [];
@@ -282,11 +214,9 @@ const DocAudit = () => {
     
     const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
     scheduleData.items.forEach(item => {
-      if (item.deliveryDate && item.deliveryTime && item.partNumber && item.unloadingLoc) {
+      if (item.deliveryDate && item.deliveryTime && item.partNumber) {
         const itemDate = formatDateAsLocalString(item.deliveryDate);
-        if (itemDate === selectedDate 
-            && selectedUnloadingLocs.includes(item.unloadingLoc)
-            && customerItemsSet.has(String(item.partNumber).trim())) {
+        if (itemDate === selectedDate && customerItemsSet.has(String(item.partNumber).trim())) {
           times.add(item.deliveryTime);
         }
       }
@@ -294,30 +224,83 @@ const DocAudit = () => {
     
     console.log('=== DOC AUDIT DEBUG: availableDeliveryTimes ===');
     console.log('Selected date:', selectedDate);
-    console.log('Selected unloading locs:', selectedUnloadingLocs);
     console.log('Customer items:', Array.from(customerItemsSet).slice(0, 5));
-    console.log('Schedule items with date+time+partNumber+unloadingLoc:', scheduleData.items.filter(i => 
-      i.deliveryDate && i.deliveryTime && i.partNumber && i.unloadingLoc
+    console.log('Schedule items with date+time+partNumber:', scheduleData.items.filter(i => 
+      i.deliveryDate && i.deliveryTime && i.partNumber
     ).length);
-    console.log('Matching items for date+location:', scheduleData.items.filter(i => {
-      if (!i.deliveryDate || !i.deliveryTime || !i.partNumber || !i.unloadingLoc) return false;
+    console.log('Matching items for date:', scheduleData.items.filter(i => {
+      if (!i.deliveryDate || !i.deliveryTime || !i.partNumber) return false;
       const itemDate = formatDateAsLocalString(i.deliveryDate);
       return itemDate === selectedDate 
-        && selectedUnloadingLocs.includes(i.unloadingLoc)
         && customerItemsSet.has(String(i.partNumber).trim());
     }).length);
     console.log('Available times:', Array.from(times).sort());
     
     return Array.from(times).sort();
-  }, [selectedDeliveryDate, selectedUnloadingLocs, scheduleData, invoicesWithSchedule]);
+  }, [selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
 
-  // Get filtered invoices based on selections
+  // Get available unloading locations (Unloading Doc) for selected date and time (Step 3 - NEW ORDER)
+  const availableUnloadingLocs = useMemo(() => {
+    if (!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || !scheduleData || !invoicesWithSchedule.length) {
+      console.log('=== DOC AUDIT DEBUG: availableUnloadingLocs ===');
+      console.log('selectedDeliveryDate:', selectedDeliveryDate);
+      console.log('selectedDeliveryTimes.length:', selectedDeliveryTimes.length);
+      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
+      console.log('invoicesWithSchedule.length:', invoicesWithSchedule.length);
+      return [];
+    }
+    
+    const locs = new Set<string>();
+    const customerItemsSet = new Set<string>();
+    
+    invoicesWithSchedule.forEach(invoice => {
+      invoice.items?.forEach((item: any) => {
+        const partNum = item.customerItem || item.part;
+        if (partNum) {
+          customerItemsSet.add(String(partNum).trim());
+        }
+      });
+    });
+    
+    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
+    scheduleData.items.forEach(item => {
+      if (item.deliveryDate && item.deliveryTime && item.unloadingLoc && item.partNumber) {
+        const itemDate = formatDateAsLocalString(item.deliveryDate);
+        if (itemDate === selectedDate 
+            && selectedDeliveryTimes.includes(item.deliveryTime)
+            && customerItemsSet.has(String(item.partNumber).trim())) {
+          locs.add(item.unloadingLoc);
+        }
+      }
+    });
+    
+    console.log('=== DOC AUDIT DEBUG: availableUnloadingLocs ===');
+    console.log('Selected date:', selectedDate);
+    console.log('Selected times:', selectedDeliveryTimes);
+    console.log('Customer items:', Array.from(customerItemsSet).slice(0, 5));
+    console.log('Schedule items with date+time+unloadingLoc+partNumber:', scheduleData.items.filter(i => 
+      i.deliveryDate && i.deliveryTime && i.unloadingLoc && i.partNumber
+    ).length);
+    console.log('Matching items for date+time:', scheduleData.items.filter(i => {
+      if (!i.deliveryDate || !i.deliveryTime || !i.unloadingLoc || !i.partNumber) return false;
+      const itemDate = formatDateAsLocalString(i.deliveryDate);
+      return itemDate === selectedDate 
+        && selectedDeliveryTimes.includes(i.deliveryTime)
+        && customerItemsSet.has(String(i.partNumber).trim());
+    }).length);
+    console.log('Available unloading locations:', Array.from(locs).sort());
+    
+    return Array.from(locs).sort();
+  }, [selectedDeliveryDate, selectedDeliveryTimes, scheduleData, invoicesWithSchedule]);
+
+
+  // Get filtered invoices based on selections (Date → Time → Unloading Doc)
   const invoices = useMemo(() => {
-    if (!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0 || !scheduleData) {
+    if (!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0 || !scheduleData) {
       console.log('=== DOC AUDIT DEBUG: invoices (filtered) ===');
       console.log('selectedDeliveryDate:', selectedDeliveryDate);
-      console.log('selectedUnloadingLocs.length:', selectedUnloadingLocs.length);
       console.log('selectedDeliveryTimes.length:', selectedDeliveryTimes.length);
+      console.log('selectedUnloadingLocs.length:', selectedUnloadingLocs.length);
       console.log('scheduleData:', scheduleData ? 'exists' : 'null');
       return [];
     }
@@ -337,8 +320,8 @@ const DocAudit = () => {
       if (!item.deliveryDate || !item.deliveryTime || !item.partNumber || !item.unloadingLoc) return false;
       const itemDate = formatDateAsLocalString(item.deliveryDate);
       return itemDate === selectedDate 
-        && selectedUnloadingLocs.includes(item.unloadingLoc)
         && selectedDeliveryTimes.includes(item.deliveryTime)
+        && selectedUnloadingLocs.includes(item.unloadingLoc)
         && customerItemsSet.has(String(item.partNumber).trim());
     });
     
@@ -353,8 +336,8 @@ const DocAudit = () => {
     
     console.log('=== DOC AUDIT DEBUG: invoices (filtered) ===');
     console.log('Selected date:', selectedDate);
-    console.log('Selected unloading locs:', selectedUnloadingLocs);
     console.log('Selected times:', selectedDeliveryTimes);
+    console.log('Selected unloading locs:', selectedUnloadingLocs);
     console.log('Customer items from invoices:', Array.from(customerItemsSet).slice(0, 10));
     console.log('Matching schedule items:', matchingScheduleItems.length);
     console.log('Matching part numbers:', Array.from(matchingPartNumbers).slice(0, 10));
@@ -364,7 +347,7 @@ const DocAudit = () => {
     }
     
     return filtered.sort((a, b) => a.id.localeCompare(b.id));
-  }, [selectedDeliveryDate, selectedUnloadingLocs, selectedDeliveryTimes, invoicesWithSchedule, scheduleData]);
+  }, [selectedDeliveryDate, selectedDeliveryTimes, selectedUnloadingLocs, invoicesWithSchedule, scheduleData]);
 
   // Get all selected invoices
   const selectedInvoiceObjects = invoices.filter(inv => selectedInvoices.includes(inv.id));
@@ -724,10 +707,10 @@ const DocAudit = () => {
           </div>
         )}
         
-        {scheduleData && invoices.length === 0 && selectedDeliveryDate && selectedUnloadingLocs.length > 0 && selectedDeliveryTimes.length > 0 && (
+        {scheduleData && invoices.length === 0 && selectedDeliveryDate && selectedDeliveryTimes.length > 0 && selectedUnloadingLocs.length > 0 && (
           <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
             <p className="text-sm font-medium">
-              ⚠️ No invoices match the selected criteria. Try different delivery date, unloading location, or times.
+              ⚠️ No invoices match the selected criteria. Try different delivery date, delivery time, or unloading doc.
             </p>
           </div>
         )}
@@ -740,7 +723,7 @@ const DocAudit = () => {
               </p>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
-              <p>• Select delivery date, unloading location, and time to filter invoices</p>
+              <p>• Select delivery date, delivery time, and unloading doc to filter invoices</p>
               <p>• Select multiple invoices to audit them sequentially</p>
               <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
               <p>• Current user: <strong>{currentUser}</strong></p>
@@ -751,12 +734,12 @@ const DocAudit = () => {
           </div>
         )}
         
-        {/* Selection Fields: Delivery Date, Unloading Location, Delivery Times */}
+        {/* Selection Fields: Delivery Date, Delivery Time, Unloading Doc */}
         {scheduleData && (
           <Card className="mb-6 border-2 border-primary">
             <CardHeader>
               <CardTitle>Configure Dispatch Details</CardTitle>
-              <CardDescription>Select delivery date, unloading location, and delivery time(s) before selecting invoices</CardDescription>
+              <CardDescription>Select delivery date, delivery time(s), and unloading doc before selecting invoices</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
@@ -772,8 +755,8 @@ const DocAudit = () => {
                       const [year, month, day] = value.split('-').map(Number);
                       const date = new Date(year, month - 1, day);
                       setSelectedDeliveryDate(date);
-                      setSelectedUnloadingLocs([]);
                       setSelectedDeliveryTimes([]);
+                      setSelectedUnloadingLocs([]);
                       setSelectedInvoices([]);
                     }}
                   >
@@ -807,94 +790,13 @@ const DocAudit = () => {
                   )}
                 </div>
 
-                {/* Step 2: UNLOADING LOC Selection */}
+                {/* Step 2: Delivery Time Selection */}
                 {selectedDeliveryDate && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm font-medium flex items-center gap-2">
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                        Step 2: UNLOADING LOC <span className="text-destructive">*</span>
-                      </Label>
-                      {availableUnloadingLocs.length > 1 && (
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedUnloadingLocs([...availableUnloadingLocs]);
-                              setSelectedDeliveryTimes([]);
-                              setSelectedInvoices([]);
-                            }}
-                            className="h-7 text-xs"
-                          >
-                            Select All
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedUnloadingLocs([]);
-                              setSelectedDeliveryTimes([]);
-                              setSelectedInvoices([]);
-                            }}
-                            className="h-7 text-xs"
-                          >
-                            Deselect All
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                    
-                    {availableUnloadingLocs.length === 0 ? (
-                      <div className="p-4 bg-muted rounded-lg text-center">
-                        <p className="text-sm text-muted-foreground">
-                          No unloading locations available for the selected date
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 p-4 bg-muted/50 rounded-lg border-2 border-muted">
-                        {availableUnloadingLocs.map(loc => (
-                          <div key={loc} className="flex items-center space-x-2">
-                            <Checkbox
-                              id={`loc-${loc}`}
-                              checked={selectedUnloadingLocs.includes(loc)}
-                              onCheckedChange={() => {
-                                if (selectedUnloadingLocs.includes(loc)) {
-                                  setSelectedUnloadingLocs(prev => prev.filter(l => l !== loc));
-                                } else {
-                                  setSelectedUnloadingLocs(prev => [...prev, loc]);
-                                }
-                                setSelectedDeliveryTimes([]);
-                                setSelectedInvoices([]);
-                              }}
-                            />
-                            <label
-                              htmlFor={`loc-${loc}`}
-                              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
-                            >
-                              {loc}
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    
-                    {selectedUnloadingLocs.length === 0 && availableUnloadingLocs.length > 0 && (
-                      <p className="text-xs text-destructive">⚠️ Please select at least one unloading location</p>
-                    )}
-                  </div>
-                )}
-
-                {/* Step 3: Delivery Time Selection */}
-                {selectedDeliveryDate && selectedUnloadingLocs.length > 0 && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm font-medium flex items-center gap-2">
                         <Clock className="h-4 w-4" />
-                        Step 3: Delivery Time(s) <span className="text-destructive">*</span>
+                        Step 2: Delivery Time(s) <span className="text-destructive">*</span>
                       </Label>
                       {availableDeliveryTimes.length > 1 && (
                         <div className="flex gap-2">
@@ -903,6 +805,7 @@ const DocAudit = () => {
                             size="sm"
                             onClick={() => {
                               setSelectedDeliveryTimes([...availableDeliveryTimes]);
+                              setSelectedUnloadingLocs([]);
                               setSelectedInvoices([]);
                             }}
                             className="h-7 text-xs"
@@ -914,6 +817,7 @@ const DocAudit = () => {
                             size="sm"
                             onClick={() => {
                               setSelectedDeliveryTimes([]);
+                              setSelectedUnloadingLocs([]);
                               setSelectedInvoices([]);
                             }}
                             className="h-7 text-xs"
@@ -927,7 +831,7 @@ const DocAudit = () => {
                     {availableDeliveryTimes.length === 0 ? (
                       <div className="p-4 bg-muted rounded-lg text-center">
                         <p className="text-sm text-muted-foreground">
-                          No delivery times available for the selected date and location(s)
+                          No delivery times available for the selected date
                         </p>
                       </div>
                     ) : (
@@ -943,6 +847,7 @@ const DocAudit = () => {
                                 } else {
                                   setSelectedDeliveryTimes(prev => [...prev, time]);
                                 }
+                                setSelectedUnloadingLocs([]);
                                 setSelectedInvoices([]);
                               }}
                             />
@@ -959,6 +864,84 @@ const DocAudit = () => {
                     
                     {selectedDeliveryTimes.length === 0 && availableDeliveryTimes.length > 0 && (
                       <p className="text-xs text-destructive">⚠️ Please select at least one delivery time</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Step 3: Unloading Doc Selection */}
+                {selectedDeliveryDate && selectedDeliveryTimes.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium flex items-center gap-2">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        Step 3: Unloading Doc <span className="text-destructive">*</span>
+                      </Label>
+                      {availableUnloadingLocs.length > 1 && (
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedUnloadingLocs([...availableUnloadingLocs]);
+                              setSelectedInvoices([]);
+                            }}
+                            className="h-7 text-xs"
+                          >
+                            Select All
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setSelectedUnloadingLocs([]);
+                              setSelectedInvoices([]);
+                            }}
+                            className="h-7 text-xs"
+                          >
+                            Deselect All
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {availableUnloadingLocs.length === 0 ? (
+                      <div className="p-4 bg-muted rounded-lg text-center">
+                        <p className="text-sm text-muted-foreground">
+                          No unloading docs available for the selected date and time(s)
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 p-4 bg-muted/50 rounded-lg border-2 border-muted">
+                        {availableUnloadingLocs.map(loc => (
+                          <div key={loc} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`loc-${loc}`}
+                              checked={selectedUnloadingLocs.includes(loc)}
+                              onCheckedChange={() => {
+                                if (selectedUnloadingLocs.includes(loc)) {
+                                  setSelectedUnloadingLocs(prev => prev.filter(l => l !== loc));
+                                } else {
+                                  setSelectedUnloadingLocs(prev => [...prev, loc]);
+                                }
+                                setSelectedInvoices([]);
+                              }}
+                            />
+                            <label
+                              htmlFor={`loc-${loc}`}
+                              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                            >
+                              {loc}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    
+                    {selectedUnloadingLocs.length === 0 && availableUnloadingLocs.length > 0 && (
+                      <p className="text-xs text-destructive">⚠️ Please select at least one unloading doc</p>
                     )}
                   </div>
                 )}
@@ -989,11 +972,11 @@ const DocAudit = () => {
                   <Badge variant={selectedDeliveryDate ? "default" : "outline"}>
                     Delivery Date: {selectedDeliveryDate ? selectedDeliveryDate.toLocaleDateString() : "Not selected"}
                   </Badge>
-                  <Badge variant={selectedUnloadingLocs.length > 0 ? "default" : "outline"}>
-                    Unloading LOC: {selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} selected` : "Not selected"}
-                  </Badge>
                   <Badge variant={selectedDeliveryTimes.length > 0 ? "default" : "outline"}>
                     Delivery Time(s): {selectedDeliveryTimes.length > 0 ? `${selectedDeliveryTimes.length} selected` : "Not selected"}
+                  </Badge>
+                  <Badge variant={selectedUnloadingLocs.length > 0 ? "default" : "outline"}>
+                    Unloading Doc: {selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} selected` : "Not selected"}
                   </Badge>
                 </div>
               </div>
@@ -1007,12 +990,12 @@ const DocAudit = () => {
             <CardTitle>Step 4: Select Invoice(s)</CardTitle>
             <CardDescription>
               Scan invoice QR codes or manually select invoices to audit
-              {selectedDeliveryDate && selectedUnloadingLocs.length > 0 && selectedDeliveryTimes.length > 0 && (
+              {selectedDeliveryDate && selectedDeliveryTimes.length > 0 && selectedUnloadingLocs.length > 0 && (
                 <span className="block mt-1 text-success text-sm font-medium">
                   ✅ All filters applied - Invoice selection is now enabled
                 </span>
               )}
-              {(!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0) && (
+              {(!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0) && (
                 <span className="block mt-1 text-destructive text-sm font-medium">
                   ⚠️ Please complete all filter selections above first
                 </span>
@@ -1023,7 +1006,7 @@ const DocAudit = () => {
             {invoices.length === 0 ? (
               <div className="p-4 bg-muted rounded-lg text-center">
                 <p className="text-sm text-muted-foreground">
-                  {!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0
+                  {!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0
                     ? "Please complete the filter selections above to see invoices"
                     : "No invoices matching your selections"}
                 </p>
@@ -1034,7 +1017,7 @@ const DocAudit = () => {
                 <div className="relative">
                   <Button
                     onClick={() => setShowInvoiceQRScanner(true)}
-                    disabled={!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0}
+                    disabled={!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0}
                     className="w-full h-16 text-lg font-bold bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 shadow-lg hover:shadow-xl transition-all duration-200"
                   >
                     <ScanBarcode className="h-8 w-8 mr-3" />
@@ -1050,8 +1033,8 @@ const DocAudit = () => {
                   <p className="text-xs text-blue-700 dark:text-blue-300">
                     📅 {invoices.length} invoice(s) available | 
                     {selectedDeliveryDate && ` ${selectedDeliveryDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
-                    {selectedUnloadingLocs.length > 0 && ` | 📍 ${selectedUnloadingLocs.length} location(s)`}
                     {selectedDeliveryTimes.length > 0 && ` | ⏰ ${selectedDeliveryTimes.length} time(s)`}
+                    {selectedUnloadingLocs.length > 0 && ` | 📍 ${selectedUnloadingLocs.length} unloading doc(s)`}
                     {selectedInvoices.length > 0 && (
                       <span className="block mt-1 font-semibold text-blue-900 dark:text-blue-100">
                         ✅ {selectedInvoices.length} invoice(s) selected for audit
@@ -1068,7 +1051,7 @@ const DocAudit = () => {
                       <Button
                         variant="outline"
                         className="w-full h-12 justify-between text-base"
-                        disabled={!selectedDeliveryDate || selectedUnloadingLocs.length === 0 || selectedDeliveryTimes.length === 0}
+                        disabled={!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0}
                       >
                         <span className="text-muted-foreground">
                           {selectedInvoices.length > 0 
@@ -1660,7 +1643,7 @@ const DocAudit = () => {
                             </div>
                             <Button
                               onClick={() => {
-                                // Get UNLOADING LOC - use first selected if multiple
+                                // Get Unloading Doc - use first selected if multiple
                                 const unloadingLocValue = selectedUnloadingLocs.length > 0 
                                   ? selectedUnloadingLocs[0] 
                                   : undefined;

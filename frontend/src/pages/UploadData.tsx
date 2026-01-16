@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { ScheduleItem, InvoiceData } from "@/contexts/SessionContext";
 import { invoicesApi, scheduleApi } from "@/lib/api";
+import { getCustomerCode } from "@/lib/customerCodes";
 
 interface UploadedRow {
   invoice: string;
@@ -35,7 +36,8 @@ const UploadData = () => {
   const {
     currentUser,
     refreshData,
-    getUploadLogs
+    getUploadLogs,
+    selectedCustomer
   } = useSession();
 
   const [file, setFile] = useState<File | null>(null);
@@ -47,6 +49,21 @@ const UploadData = () => {
   const [processedInvoices, setProcessedInvoices] = useState<InvoiceData[]>([]);
   const [parsedScheduleItems, setParsedScheduleItems] = useState<ScheduleItem[]>([]);
   const [showUploadLogs, setShowUploadLogs] = useState(false);
+
+  // Debug: Log when uploadedData changes to verify state updates
+  useEffect(() => {
+    if (uploadedData.length > 0) {
+      const matchedCount = uploadedData.filter(r => r.status === 'valid-matched').length;
+      const unmatchedCount = uploadedData.filter(r => r.status === 'valid-unmatched').length;
+      const errorCount = uploadedData.filter(r => r.status === 'error').length;
+      console.log('📊 [useEffect] uploadedData state changed:', {
+        total: uploadedData.length,
+        matched: matchedCount,
+        unmatched: unmatchedCount,
+        error: errorCount
+      });
+    }
+  }, [uploadedData]);
 
   // Helper function to convert Excel date serial number to Date
   const excelDateToJSDate = (serial: number): Date => {
@@ -456,22 +473,50 @@ const UploadData = () => {
           const getColumnValue = (row: any, variations: string[]): string => {
             for (const variation of variations) {
               if (row[variation] !== undefined && row[variation] !== '') {
-                return row[variation];
+                // Convert to string to handle numbers from Excel
+                return String(row[variation]);
               }
               const rowKeys = Object.keys(row);
               const matchedKey = rowKeys.find(key => 
                 key.toLowerCase().trim() === variation.toLowerCase().trim()
               );
               if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') {
-                return row[matchedKey];
+                // Convert to string to handle numbers from Excel
+                return String(row[matchedKey]);
               }
             }
             return '';
           };
           
+          // Helper to parse numeric value from quantity columns
+          const parseQuantity = (value: any): number | null => {
+            if (value === null || value === undefined || value === '') {
+              return null;
+            }
+            if (typeof value === 'number') {
+              return isNaN(value) ? null : value;
+            }
+            if (typeof value === 'string') {
+              const trimmed = value.trim();
+              if (!trimmed) return null;
+              const parsed = parseFloat(trimmed);
+              return isNaN(parsed) ? null : parsed;
+            }
+            return null;
+          };
+          
+          const isSingleSheet = workbook.SheetNames.length === 1;
+          
+          // Track filtering statistics
+          let totalRowsProcessed = 0;
+          let rowsFilteredOut = 0; // Rows where quantity === quantityDispatched
+          let rowsExcludedMissingColumns = 0; // Rows with both columns missing
+          
           // Parse each sheet
           workbook.SheetNames.forEach((sheetName) => {
-            if (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2') {
+            // Skip generic sheet names only if there are multiple sheets
+            // If it's a single sheet, process it regardless of name
+            if (!isSingleSheet && (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2')) {
               return;
             }
             
@@ -487,15 +532,66 @@ const UploadData = () => {
               if (!jsonData || jsonData.length === 0) {
                 return;
               }
+
+              // Check first 5 rows to see if PART NUMBER column exists
+              const firstFiveRows = jsonData.slice(0, Math.min(5, jsonData.length));
+              let partNumberColumnExists = false;
+              
+              for (const checkRow of firstFiveRows) {
+                const partNumCheck = getColumnValue(checkRow, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']);
+                if (partNumCheck && partNumCheck.trim() !== '') {
+                  partNumberColumnExists = true;
+                  break;
+                }
+              }
+
+              if (!partNumberColumnExists) {
+                console.warn(`PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Treating partNumber as null for all rows.`);
+              }
               
               jsonData.forEach((row: any) => {
-                const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
+                totalRowsProcessed++;
+                
+                // Customer Code removed - schedule no longer contains customer code column
                 const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
-                const partNumber = getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '';
+                // Only extract PART NUMBER if column was found in first 5 rows, otherwise use empty string
+                const partNumber = partNumberColumnExists ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
                 const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
                 const description = getColumnValue(row, ['Description', 'description']) || '';
                 const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
                 const bin = parseInt(getColumnValue(row, ['Bin', 'bin']) || '0') || 0;
+                
+                // Extract Quantity and Quantity Dispatched columns
+                const quantityStr = getColumnValue(row, ['Quantity', 'quantity', 'Qty', 'qty', 'QUANTITY']);
+                const quantityDispatchedStr = getColumnValue(row, [
+                  'Quantity Dispatched', 'QuantityDispatched', 'quantity dispatched', 
+                  'Qty Dispatched', 'QtyDispatched', 'QUANTITY DISPATCHED'
+                ]);
+                
+                // Parse numeric values
+                const quantity = parseQuantity(quantityStr);
+                const quantityDispatched = parseQuantity(quantityDispatchedStr);
+                
+                // Filtering logic for schedule:
+                // Exclude row ONLY if:
+                //   quantity !== null AND quantity === quantityDispatched (already dispatched)
+                // Include row if:
+                //   * quantityDispatched is empty/null (not yet dispatched, needs to be dispatched)
+                //   * quantity is null/empty/zero BUT has PART NUMBER (for validation purposes)
+                //   * Both columns missing BUT has PART NUMBER (for validation purposes)
+                //   * Quantity exists but quantityDispatched is empty (needs to be dispatched)
+                //   * Quantities are not equal (partially dispatched)
+                
+                // Exclude if quantity equals quantityDispatched (quantity must exist and equal dispatched)
+                if (quantity !== null && quantity === quantityDispatched) {
+                    rowsFilteredOut++;
+                  console.log(`Row filtered out: Quantity (${quantity}) equals Quantity Dispatched (${quantityDispatched}) - already dispatched for part ${partNumber || customerPart}`);
+                    return; // Skip this row
+                  }
+                
+                // Include all other cases - continue processing
+                // Note: We include rows that have PART NUMBER (even if quantity is null/zero/empty)
+                // This is because for validation, we only need PART NUMBER, not quantity
                 
                 const deliveryDateTime = getColumnValue(row, [
                   'SUPPLY DATE',
@@ -564,20 +660,25 @@ const UploadData = () => {
                   'LOCATION'
                 ]);
                 
-                if (customerCode) {
+                // Include row if it has PART NUMBER (customer code no longer required)
+                if (partNumber) {
+                  // Normalize partNumber - ensure it's a string and trimmed
+                  const normalizedPartNumber = String(partNumber).trim();
+                  
                   allScheduleItems.push({
-                    customerCode: customerCode.toString(),
-                    customerPart: customerPart.toString(),
-                    partNumber: partNumber ? partNumber.toString() : undefined,
-                    qadPart: qadPart.toString(),
-                    description: description.toString(),
+                    customerCode: undefined, // Customer code removed from schedule
+                    customerPart: customerPart.toString().trim(),
+                    partNumber: normalizedPartNumber,
+                    qadPart: qadPart.toString().trim(),
+                    description: description.toString().trim(),
                     snp,
                     bin,
                     sheetName,
                     deliveryDate,
-                    deliveryTime: timeStr ? timeStr.toString() : undefined,
-                    plant: plant ? plant.toString() : undefined,
-                    unloadingLoc: unloadingLoc ? unloadingLoc.toString() : undefined
+                    deliveryTime: timeStr ? timeStr.toString().trim() : undefined,
+                    plant: plant ? plant.toString().trim() : undefined,
+                    unloadingLoc: unloadingLoc ? unloadingLoc.toString().trim() : undefined,
+                    quantity: quantity !== null ? Math.round(quantity) : undefined
                   });
                 }
               });
@@ -588,12 +689,15 @@ const UploadData = () => {
           
           // Debug logging for schedule parsing
           console.log('=== SCHEDULE PARSING DEBUG ===');
-          console.log('Total schedule items:', allScheduleItems.length);
+          console.log('Total rows processed:', totalRowsProcessed);
+          console.log('Total schedule items imported:', allScheduleItems.length);
+          console.log('Rows filtered out (quantity matched):', rowsFilteredOut);
+          console.log('Rows excluded (missing columns):', rowsExcludedMissingColumns);
           console.log('Items with deliveryDate:', allScheduleItems.filter(i => i.deliveryDate).length);
           console.log('Items with deliveryTime:', allScheduleItems.filter(i => i.deliveryTime).length);
           console.log('Items with partNumber:', allScheduleItems.filter(i => i.partNumber).length);
           console.log('Sample schedule items:', allScheduleItems.slice(0, 3));
-          console.log('Customer codes:', [...new Set(allScheduleItems.map(i => i.customerCode))]);
+          // Customer codes removed from schedule - no longer logged
           console.log('Part numbers (first 10):', [...new Set(allScheduleItems.map(i => i.partNumber).filter(Boolean))].slice(0, 10));
           if (allScheduleItems.length > 0) {
             const sampleWithDate = allScheduleItems.find(i => i.deliveryDate);
@@ -632,6 +736,18 @@ const UploadData = () => {
       return;
     }
 
+    // Check if customer is selected
+    if (!selectedCustomer) {
+      toast.error("Please select a customer first from the Customer Selection page");
+      return;
+    }
+
+    const selectedCustomerCode = getCustomerCode(selectedCustomer);
+    if (!selectedCustomerCode) {
+      toast.error("Invalid customer selected. Please select a valid MSIL customer.");
+      return;
+    }
+
     const loadingToast = toast.loading("Parsing files...", {
       duration: 0
     });
@@ -653,13 +769,96 @@ const UploadData = () => {
         timeoutPromise
       ]) as [{ rows: UploadedRow[], invoices: InvoiceData[] }, ScheduleItem[]];
       
-      setUploadedData(invoiceResult.rows);
-      setProcessedInvoices(invoiceResult.invoices);
-      setParsedScheduleItems(scheduleItems);
+      // Invoice customer code validation removed - use all invoices
+      // Schedule customer code validation removed - schedule no longer contains customer code
+      
+      // No filtering - use all invoices and schedule items
+      const validInvoices = invoiceResult.invoices;
+      const validScheduleItems = scheduleItems;
+      
+      // Store parsed data
+      setProcessedInvoices(validInvoices);
+      setParsedScheduleItems(validScheduleItems);
+      
+      // Helper function to normalize values for comparison
+      const normalizeValue = (value: any): string => {
+        if (value === null || value === undefined) return '';
+        return String(value).trim();
+      };
+      
+      // ============================================
+      // VALIDATION - Happens immediately on "Continue to Validation"
+      // ============================================
+      console.log('\n\n🔵 ============================================');
+      console.log('🔵 VALIDATION - STARTING (On Continue to Validation)');
+      console.log('🔵 ============================================');
+      
+      // Build schedule PART NUMBERS set
+      const schedulePartNumbers = new Set<string>();
+      validScheduleItems.forEach(item => {
+        const partNumber = normalizeValue(item.partNumber);
+        if (partNumber) {
+          schedulePartNumbers.add(partNumber);
+        }
+      });
+      
+      console.log('Schedule PART NUMBERS:', schedulePartNumbers.size);
+      console.log('Invoice rows to validate:', invoiceResult.rows.length);
+      
+      // Validate all invoice items immediately
+      const validatedData = invoiceResult.rows.map((row, index) => {
+        const customerItem = normalizeValue(row.customerItem);
+        
+        // Check if customer_item is missing
+        if (!customerItem) {
+          return {
+            ...row,
+            status: 'error' as const,
+            errorMessage: 'Missing Customer Item'
+          };
+        }
+        
+        // Global matching: Check if Customer Item matches any PART NUMBER in schedule
+        const exactMatch = schedulePartNumbers.has(customerItem);
+        
+        if (exactMatch) {
+          console.log(`[MATCHED] Row ${index + 1} - Invoice ${row.invoice} - CustomerItem: "${customerItem}" ✅ MATCHED`);
+          return {
+            ...row,
+            status: 'valid-matched' as const,
+            errorMessage: undefined
+          };
+        } else {
+          console.log(`[UNMATCHED] Row ${index + 1} - Invoice ${row.invoice} - CustomerItem: "${customerItem}" ❌ NOT FOUND`);
+          return {
+            ...row,
+            status: 'valid-unmatched' as const,
+            errorMessage: undefined
+          };
+        }
+      });
+      
+      // Update state with validated data
+      setUploadedData(validatedData);
+      
+      // Move to validate stage to show results
       setUploadStage('validate');
       
+      // Log validation summary
+      const matchedCount = validatedData.filter(r => r.status === 'valid-matched').length;
+      const unmatchedCount = validatedData.filter(r => r.status === 'valid-unmatched').length;
+      const errorCount = validatedData.filter(r => r.status === 'error').length;
+      
+      console.log('\n=== VALIDATION SUMMARY ===');
+      console.log(`Matched: ${matchedCount}, Unmatched: ${unmatchedCount}, Errors: ${errorCount}`);
+      console.log('🔵 ============================================');
+      console.log('🔵 VALIDATION - COMPLETED');
+      console.log('🔵 ============================================\n');
+      
       toast.dismiss(loadingToast);
-      toast.success("Files parsed successfully!");
+      toast.success(`Validation complete!`, {
+        description: `Matched: ${matchedCount}, Unmatched: ${unmatchedCount}, Errors: ${errorCount}`
+      });
     } catch (error: any) {
       toast.dismiss(loadingToast);
       toast.error(`Failed to parse files: ${error.message || 'Unknown error'}`);
@@ -703,15 +902,27 @@ const UploadData = () => {
     });
 
     try {
+      // Check if customer is selected
+      if (!selectedCustomer) {
+        toast.error("Please select a customer first from the Customer Selection page");
+        return;
+      }
+
+      const selectedCustomerCode = getCustomerCode(selectedCustomer);
+      if (!selectedCustomerCode) {
+        toast.error("Invalid customer selected. Please select a valid MSIL customer.");
+        return;
+      }
+
       // Upload schedule file first
-      const scheduleResult = await scheduleApi.upload(scheduleFile);
+      const scheduleResult = await scheduleApi.upload(scheduleFile, selectedCustomerCode);
       console.log('Schedule upload result:', scheduleResult);
       if (scheduleResult.success) {
         toast.success(`Schedule uploaded: ${scheduleResult.itemCount || 0} items`);
       }
       
       // Upload invoice file
-      const invoiceResult = await invoicesApi.upload(file);
+      const invoiceResult = await invoicesApi.upload(file, selectedCustomerCode);
       console.log('Invoice upload result:', invoiceResult);
       if (invoiceResult.success) {
         toast.success(`Invoices uploaded: ${invoiceResult.invoiceCount || 0} invoices`);
@@ -719,30 +930,73 @@ const UploadData = () => {
 
       // Refresh data from backend (this will trigger WebSocket update to all devices)
       await refreshData();
-
+      
+      // Check if upload was successful
+      if (!scheduleResult.success) {
+        toast.error('Schedule upload failed. Please try again.');
+        toast.dismiss(loadingToast);
+        return;
+      }
+      
+      if (!invoiceResult.success) {
+        toast.error('Invoice upload failed. Please try again.');
+        toast.dismiss(loadingToast);
+        return;
+      }
+      
+      // Get validation results from uploaded data
+      const matchedCount = uploadedData.filter(r => r.status === 'valid-matched').length;
+      const unmatchedCount = uploadedData.filter(r => r.status === 'valid-unmatched').length;
+      const errorCount = uploadedData.filter(r => r.status === 'error').length;
+      
+      console.log('=== UPLOAD COMPLETE ===');
+      console.log(`Schedule items uploaded: ${scheduleResult.itemCount || 0}`);
+      console.log(`Invoices uploaded: ${invoiceResult.invoiceCount || 0}`);
+      console.log(`Invoice items: ${invoiceResult.itemCount || 0}`);
+      console.log(`Matched items: ${matchedCount}`);
+      console.log(`Unmatched items: ${unmatchedCount}`);
+      console.log(`Error items: ${errorCount}`);
+      
+      // Move to complete stage to show success page
       setUploadStage('complete');
+      
       toast.dismiss(loadingToast);
-      toast.success(`Data imported successfully by ${currentUser}!`, {
-        description: "Invoices are now available for all users to audit"
+      toast.success(`Data imported successfully!`, {
+        description: `Schedule: ${scheduleResult.itemCount || 0} items, Invoices: ${invoiceResult.invoiceCount || 0} invoices (${matchedCount} matched, ${unmatchedCount} unmatched)`
       });
     } catch (error: any) {
+      console.error('\n❌ ============================================');
+      console.error('❌ UPLOAD ERROR - CAUGHT IN OUTER TRY-CATCH');
+      console.error('❌ ============================================');
+      console.error('Error:', error);
+      console.error('Error message:', error?.message);
+      console.error('Error stack:', error?.stack);
       toast.dismiss(loadingToast);
-      toast.error(`Upload failed: ${error.message || 'Unknown error'}`);
-      console.error('Upload error:', error);
+      toast.error(`Upload failed: ${error?.message || 'Unknown error'}`);
       // Keep preview data visible so user can retry - don't clear uploadedData, processedInvoices, or parsedScheduleItems
       // Don't change uploadStage - stay on 'validate' stage so user can see preview and try again
     }
   };
 
   // Calculate validation results
-  const scheduledCustomerCodes = new Set(parsedScheduleItems.map(item => String(item.customerCode)));
-  const matchedInvoicesCount = processedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo))).length;
+  // Note: Schedule no longer has customer codes, so invoice matching is based on PART NUMBER matching only
+  const matchedInvoicesCount = processedInvoices.filter(inv => {
+    // An invoice is considered "matched" if it has at least one item with valid-matched status
+    return uploadedData.some(row => 
+      row.invoice === inv.id && row.status === 'valid-matched'
+    );
+  }).length;
   const unmatchedInvoicesCount = processedInvoices.length - matchedInvoicesCount;
+  
+  // Count matched and unmatched items based on PART NUMBER matching
+  const matchedItemsCount = uploadedData.filter(row => row.status === 'valid-matched').length;
+  const unmatchedItemsCount = uploadedData.filter(row => row.status === 'valid-unmatched').length;
   
   const validationResults = {
     total: uploadedData.length,
     valid: uploadedData.filter(row => row.status === 'valid-matched' || row.status === 'valid-unmatched').length,
-    matchedItems: uploadedData.filter(row => row.status === 'valid-matched').length,
+    matchedItems: matchedItemsCount,
+    unmatchedItems: unmatchedItemsCount,
     errors: uploadedData.filter(row => row.status === 'error').length,
     warnings: uploadedData.filter(row => row.status === 'warning').length,
     invoiceCount: processedInvoices.length,
@@ -1082,7 +1336,7 @@ const UploadData = () => {
                   
                   {/* Schedule Matching Summary */}
                   <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                    <h4 className="font-semibold text-blue-700 dark:text-blue-300 mb-3">Schedule Matching</h4>
+                    <h4 className="font-semibold text-blue-700 dark:text-blue-300 mb-3">Schedule Matching (Customer Item ↔ PART NUMBER)</h4>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       <div>
                         <p className="text-xl font-bold text-foreground">{validationResults.invoiceCount}</p>
@@ -1093,16 +1347,16 @@ const UploadData = () => {
                         <p className="text-xs text-muted-foreground">Schedule Items</p>
                       </div>
                       <div>
-                        <p className="text-xl font-bold text-green-600">{validationResults.matchedInvoices}</p>
-                        <p className="text-xs text-muted-foreground">Matched Invoices</p>
+                        <p className="text-xl font-bold text-green-600">{validationResults.matchedItems}</p>
+                        <p className="text-xs text-muted-foreground">Matched Items</p>
                       </div>
                       <div>
-                        <p className="text-xl font-bold text-orange-600">{validationResults.unmatchedInvoices}</p>
-                        <p className="text-xs text-muted-foreground">Unmatched Invoices</p>
+                        <p className="text-xl font-bold text-orange-600">{validationResults.unmatchedItems}</p>
+                        <p className="text-xs text-muted-foreground">Unmatched Items</p>
                       </div>
                     </div>
                     <p className="text-xs text-muted-foreground mt-2">
-                      Matched invoices will be available in Doc Audit. Only audited invoices can be dispatched.
+                      Items are matched when Customer Item (invoice) exactly matches PART NUMBER (schedule) for the same customer code. Matched items will be available in Doc Audit.
                     </p>
                   </div>
 
@@ -1125,12 +1379,14 @@ const UploadData = () => {
                           uploadedData.map((row, i) => {
                             const invoice = processedInvoices.find(inv => inv.id === row.invoice);
                             const customerCode = invoice?.billTo || '-';
-                            const isInvoiceMatched = invoice?.billTo && scheduledCustomerCodes.has(String(invoice.billTo));
                             
-                            let statusText: string = row.status;
-                            if (row.status === 'error' || row.status === 'warning') {
-                              statusText = row.status;
-                            } else if (isInvoiceMatched) {
+                            // Determine status text based on validation status
+                            let statusText: string;
+                            if (row.status === 'error') {
+                              statusText = 'error';
+                            } else if (row.status === 'warning') {
+                              statusText = 'warning';
+                            } else if (row.status === 'valid-matched') {
                               statusText = 'matched';
                             } else {
                               statusText = 'unmatched';
@@ -1146,8 +1402,8 @@ const UploadData = () => {
                               <td className="p-3">{row.qty}</td>
                               <td className="p-3">
                                 <Badge variant={
-                                  (row.status === 'valid-matched' || row.status === 'valid-unmatched') && isInvoiceMatched ? 'default' : 
-                                  (row.status === 'valid-matched' || row.status === 'valid-unmatched') && !isInvoiceMatched ? 'outline' :
+                                  row.status === 'valid-matched' ? 'default' : 
+                                  row.status === 'valid-unmatched' ? 'outline' :
                                   row.status === 'error' ? 'destructive' : 
                                   'secondary'
                                 }>

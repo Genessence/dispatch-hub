@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
+import { validateInvoiceItemsAgainstSchedule } from '../utils/validation';
 
 const router = Router();
 
@@ -81,6 +82,23 @@ const getColumnValue = (row: any, variations: string[]): string => {
   return '';
 };
 
+// Helper to parse numeric value from quantity columns
+const parseQuantity = (value: any): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return isNaN(value) ? null : value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = parseFloat(trimmed);
+    return isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
 /**
  * GET /api/schedule
  * Get all schedule items
@@ -129,7 +147,8 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           deliveryDate: item.delivery_date,
           deliveryTime: item.delivery_time,
           plant: item.plant,
-          unloadingLoc: item.unloading_loc
+          unloadingLoc: item.unloading_loc,
+          quantity: item.quantity
         })),
         uploadedAt: metadata.uploaded_at,
         uploadedBy: metadata.uploaded_by
@@ -151,6 +170,9 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    // Get customer code from request body (FormData)
+    const expectedCustomerCode = req.body.customerCode as string | undefined;
+
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: false, raw: false });
     
     if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
@@ -158,11 +180,18 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     }
 
     const allScheduleItems: any[] = [];
+    const isSingleSheet = workbook.SheetNames.length === 1;
+    
+    // Track filtering statistics
+    let totalRowsProcessed = 0;
+    let rowsFilteredOut = 0; // Rows where quantity === quantityDispatched
+    let rowsExcludedMissingColumns = 0; // Rows with both columns missing
 
     // Parse each sheet
     workbook.SheetNames.forEach((sheetName: string) => {
-      // Skip generic sheet names
-      if (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2') {
+      // Skip generic sheet names only if there are multiple sheets
+      // If it's a single sheet, process it regardless of name
+      if (!isSingleSheet && (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2')) {
         return;
       }
 
@@ -175,6 +204,8 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         if (!jsonData || jsonData.length === 0) return;
 
         jsonData.forEach((row: any) => {
+          totalRowsProcessed++;
+          
           const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
           const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
           const partNumber = getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '';
@@ -182,6 +213,42 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
           const description = getColumnValue(row, ['Description', 'description']) || '';
           const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
           const bin = parseInt(getColumnValue(row, ['Bin', 'bin']) || '0') || 0;
+          
+          // Extract Quantity and Quantity Dispatched columns
+          const quantityStr = getColumnValue(row, ['Quantity', 'quantity', 'Qty', 'qty', 'QUANTITY']);
+          const quantityDispatchedStr = getColumnValue(row, [
+            'Quantity Dispatched', 'QuantityDispatched', 'quantity dispatched', 
+            'Qty Dispatched', 'QtyDispatched', 'QUANTITY DISPATCHED'
+          ]);
+          
+          // Parse numeric values
+          const quantity = parseQuantity(quantityStr);
+          const quantityDispatched = parseQuantity(quantityDispatchedStr);
+          
+          // Filtering logic:
+          // - If BOTH columns are missing: Exclude row (treat as invalid)
+          // - If either column is missing: Include row (assume not fully dispatched)
+          // - If both present and equal: Exclude row
+          // - If both present and not equal: Include row
+          
+          if (quantity === null && quantityDispatched === null) {
+            // Both columns missing - exclude row
+            rowsExcludedMissingColumns++;
+            console.warn(`Row excluded: Both Quantity and Quantity Dispatched columns missing for part ${partNumber || customerPart}`);
+            return; // Skip this row
+          }
+          
+          if (quantity !== null && quantityDispatched !== null) {
+            // Both present - compare numeric values
+            if (quantity === quantityDispatched) {
+              // Quantities match - exclude row
+              rowsFilteredOut++;
+              console.log(`Row filtered out: Quantity (${quantity}) equals Quantity Dispatched (${quantityDispatched}) for part ${partNumber || customerPart}`);
+              return; // Skip this row
+            }
+            // Quantities don't match - include row (continue processing)
+          }
+          // If either column is missing, include row (assume not fully dispatched)
           
           const deliveryDateTime = getColumnValue(row, [
             'SUPPLY DATE', 'Supply Date', 'SupplyDate', 'supply date',
@@ -217,11 +284,13 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
             'unloading location', 'unload location', 'location', 'LOCATION'
           ]);
           
-          if (customerCode) {
+          // Schedule files no longer contain customer code - include all items with part number
+          // Only require part number to be present for the item to be valid
+          if (partNumber) {
             allScheduleItems.push({
-              customerCode: customerCode.toString(),
+              customerCode: customerCode ? customerCode.toString() : null, // Nullable now - migration 007 has been applied
               customerPart: customerPart.toString(),
-              partNumber: partNumber ? partNumber.toString() : null,
+              partNumber: partNumber.toString(),
               qadPart: qadPart.toString(),
               description: description.toString(),
               snp,
@@ -230,7 +299,8 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
               deliveryDate,
               deliveryTime: timeStr,
               plant: plant ? plant.toString() : null,
-              unloadingLoc: unloadingLoc ? unloadingLoc.toString() : null
+              unloadingLoc: unloadingLoc ? unloadingLoc.toString() : null,
+              quantity: quantity !== null ? Math.round(quantity) : null // Store as integer
             });
           }
         });
@@ -239,34 +309,73 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       }
     });
 
+    // Customer code validation removed - schedule files no longer contain customer codes
+    // Schedule items are matched globally by PART NUMBER only
+    // No need to validate customer codes since they don't exist in schedule files
+
     // Insert into database using transaction
+    let validationStats;
     await transaction(async (client) => {
       // Clear existing schedule
       await client.query('DELETE FROM schedule_items');
 
       // Insert new items
-      for (const item of allScheduleItems) {
-        await client.query(
-          `INSERT INTO schedule_items 
-           (customer_code, customer_part, part_number, qad_part, description, snp, bin, sheet_name, delivery_date, delivery_time, plant, unloading_loc, uploaded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-          [
-            item.customerCode, item.customerPart, item.partNumber, item.qadPart,
-            item.description, item.snp, item.bin, item.sheetName,
-            item.deliveryDate, item.deliveryTime, item.plant, item.unloadingLoc,
-            req.user?.username
-          ]
-        );
+      console.log(`Inserting ${allScheduleItems.length} schedule items into database...`);
+      for (let i = 0; i < allScheduleItems.length; i++) {
+        const item = allScheduleItems[i];
+        try {
+          await client.query(
+            `INSERT INTO schedule_items 
+             (customer_code, customer_part, part_number, qad_part, description, snp, bin, sheet_name, delivery_date, delivery_time, plant, unloading_loc, uploaded_by, quantity)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            [
+              item.customerCode || null, // Nullable - migration 007 applied
+              item.customerPart || '',
+              item.partNumber || null,
+              item.qadPart || '',
+              item.description || '',
+              item.snp || 0,
+              item.bin || 0,
+              item.sheetName || '',
+              item.deliveryDate || null,
+              item.deliveryTime || null,
+              item.plant || null,
+              item.unloadingLoc || null,
+              req.user?.username || 'unknown',
+              item.quantity || null
+            ]
+          );
+        } catch (insertError: any) {
+          console.error(`Error inserting item ${i + 1}:`, insertError);
+          console.error('Item data:', {
+            customerCode: item.customerCode,
+            partNumber: item.partNumber,
+            customerPart: item.customerPart
+          });
+          throw insertError;
+        }
       }
+      console.log(`✅ Successfully inserted ${allScheduleItems.length} schedule items`);
 
-      // Log the upload
+      // Re-validate all existing invoice items against the newly uploaded schedule
+      validationStats = await validateInvoiceItemsAgainstSchedule(client);
+
+      // Log the upload with filtering statistics
+      const logDetails = [
+        `Total rows processed: ${totalRowsProcessed}`,
+        `Rows imported: ${allScheduleItems.length}`,
+        `Rows filtered out (quantity matched): ${rowsFilteredOut}`,
+        `Rows excluded (missing columns): ${rowsExcludedMissingColumns}`,
+        `Validation: ${validationStats.matchedCount} matched, ${validationStats.unmatchedCount} unmatched, ${validationStats.errorCount} errors`
+      ].join(' | ');
+
       await client.query(
         `INSERT INTO logs (user_name, action, details, log_type)
          VALUES ($1, $2, $3, 'upload')`,
         [
           req.user?.username,
           `Uploaded schedule with ${allScheduleItems.length} item(s)`,
-          `Customer codes: ${[...new Set(allScheduleItems.map(i => i.customerCode))].join(', ')}`
+          logDetails
         ]
       );
     });
@@ -283,11 +392,39 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       success: true,
       message: `Uploaded ${allScheduleItems.length} schedule items`,
       itemCount: allScheduleItems.length,
-      customerCodes: [...new Set(allScheduleItems.map(i => i.customerCode))]
+      filteringStats: {
+        totalRowsProcessed,
+        rowsImported: allScheduleItems.length,
+        rowsFilteredOut,
+        rowsExcludedMissingColumns
+      },
+      validationStats: validationStats || {
+        matchedCount: 0,
+        unmatchedCount: 0,
+        errorCount: 0
+      }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Upload schedule error:', error);
-    res.status(500).json({ error: 'Failed to upload schedule' });
+    console.error('Error details:', {
+      message: error?.message,
+      code: error?.code,
+      constraint: error?.constraint,
+      detail: error?.detail
+    });
+    
+    // Provide more specific error message
+    let errorMessage = 'Failed to upload schedule';
+    if (error?.code === '23502') {
+      errorMessage = 'Database constraint violation: customer_code cannot be null. Please run migration 007_make_schedule_customer_code_nullable.sql';
+    } else if (error?.message) {
+      errorMessage = error.message;
+    }
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error?.detail : undefined
+    });
   }
 });
 

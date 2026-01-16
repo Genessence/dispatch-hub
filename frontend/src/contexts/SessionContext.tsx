@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 import { invoicesApi, scheduleApi, auditApi, logsApi } from "@/lib/api";
+import { getCustomerCode } from "@/lib/customerCodes";
 import { 
   initSocket, 
   disconnectSocket, 
@@ -12,7 +13,7 @@ import {
 
 // Schedule data from the schedule file (each row from each sheet)
 export interface ScheduleItem {
-  customerCode: string;
+  customerCode?: string; // Optional - schedule files no longer contain customer code
   customerPart: string;
   partNumber?: string;
   qadPart: string;
@@ -24,6 +25,7 @@ export interface ScheduleItem {
   deliveryTime?: string;
   plant?: string;
   unloadingLoc?: string;
+  quantity?: number;
 }
 
 export interface ScheduleData {
@@ -127,9 +129,9 @@ interface SessionContextType {
   getScheduleForCustomer: (customerCode: string) => ScheduleItem[];
   getInvoicesWithSchedule: () => InvoiceData[];
   getScheduledDispatchableInvoices: () => InvoiceData[];
-  selectedCustomer: string[];
+  selectedCustomer: string | null;
   selectedSite: string | null;
-  setSelectedCustomer: (customers: string[]) => void;
+  setSelectedCustomer: (customer: string | null) => void;
   setSelectedSite: (site: string) => void;
   refreshData: () => Promise<void>;
   isLoading: boolean;
@@ -142,16 +144,20 @@ const STORAGE_KEYS = {
   SELECTED_SITE: 'dispatch-hub-selected-site',
 };
 
-// Helper to parse stored customer data
-const parseStoredCustomers = (stored: string | null): string[] => {
-  if (!stored) return [];
+// Helper to parse stored customer data (now single string, but handle legacy array format)
+const parseStoredCustomer = (stored: string | null): string | null => {
+  if (!stored) return null;
   try {
     const parsed = JSON.parse(stored);
-    if (Array.isArray(parsed)) return parsed;
-    if (typeof parsed === 'string') return [parsed];
-    return [];
+    // Handle legacy array format - take first element if array
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed[0] || null;
+    }
+    if (typeof parsed === 'string') return parsed;
+    return null;
   } catch {
-    return stored ? [stored] : [];
+    // If not JSON, treat as plain string (legacy format)
+    return stored || null;
   }
 };
 
@@ -186,11 +192,11 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   const [mismatchAlerts, setMismatchAlerts] = useState<MismatchAlert[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const [selectedCustomer, setSelectedCustomerState] = useState<string[]>(() => {
+  const [selectedCustomer, setSelectedCustomerState] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
-      return parseStoredCustomers(localStorage.getItem(STORAGE_KEYS.SELECTED_CUSTOMER));
+      return parseStoredCustomer(localStorage.getItem(STORAGE_KEYS.SELECTED_CUSTOMER));
     }
-    return [];
+    return null;
   });
 
   const [selectedSite, setSelectedSiteState] = useState<string | null>(() => {
@@ -203,8 +209,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   // Persist selections to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      if (selectedCustomer.length > 0) {
-        localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER, JSON.stringify(selectedCustomer));
+      if (selectedCustomer) {
+        localStorage.setItem(STORAGE_KEYS.SELECTED_CUSTOMER, selectedCustomer);
       } else {
         localStorage.removeItem(STORAGE_KEYS.SELECTED_CUSTOMER);
       }
@@ -345,8 +351,8 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [refreshData]);
 
-  const setSelectedCustomer = (customers: string[]) => {
-    setSelectedCustomerState(customers);
+  const setSelectedCustomer = (customer: string | null) => {
+    setSelectedCustomerState(customer);
   };
 
   const setSelectedSite = (site: string) => {
@@ -496,21 +502,41 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
   }, [scheduleData]);
 
   const getInvoicesWithSchedule = useCallback((): InvoiceData[] => {
-    if (!scheduleData) return [];
-    const scheduledCustomerCodes = new Set(scheduleData.items.map(item => String(item.customerCode)));
+    if (!scheduleData || !selectedCustomer) return [];
+    const selectedCustomerCode = getCustomerCode(selectedCustomer);
+    if (!selectedCustomerCode) return [];
+    
+    // Filter schedule items by selected customer code
+    const scheduledCustomerCodes = new Set(
+      scheduleData.items
+        .filter(item => String(item.customerCode) === selectedCustomerCode)
+        .map(item => String(item.customerCode))
+    );
+    
+    // Filter invoices that match the selected customer code
     return sharedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)));
-  }, [scheduleData, sharedInvoices]);
+  }, [scheduleData, sharedInvoices, selectedCustomer]);
 
   const getScheduledDispatchableInvoices = useCallback((): InvoiceData[] => {
-    if (!scheduleData) return [];
-    const scheduledCustomerCodes = new Set(scheduleData.items.map(item => String(item.customerCode)));
+    if (!scheduleData || !selectedCustomer) return [];
+    const selectedCustomerCode = getCustomerCode(selectedCustomer);
+    if (!selectedCustomerCode) return [];
+    
+    // Filter schedule items by selected customer code
+    const scheduledCustomerCodes = new Set(
+      scheduleData.items
+        .filter(item => String(item.customerCode) === selectedCustomerCode)
+        .map(item => String(item.customerCode))
+    );
+    
+    // Filter invoices that match the selected customer code and are dispatchable
     return sharedInvoices.filter(inv => 
       inv.billTo && 
       scheduledCustomerCodes.has(String(inv.billTo)) && 
       inv.auditComplete && 
       !inv.dispatchedBy
     );
-  }, [scheduleData, sharedInvoices]);
+  }, [scheduleData, sharedInvoices, selectedCustomer]);
 
   return (
     <SessionContext.Provider

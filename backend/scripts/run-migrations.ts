@@ -34,7 +34,10 @@ async function runMigrations() {
       '001_initial.sql',
       '002_enhance_validated_barcodes.sql',
       '003_enhance_gatepass_invoices.sql',
-      '004_bin_quantity_tracking.sql'
+      '004_bin_quantity_tracking.sql',
+      '005_add_schedule_quantity.sql',
+      '006_add_schedule_customer_part_index.sql',
+      '007_make_schedule_customer_code_nullable.sql'
     ];
 
     for (const migrationFile of migrationFiles) {

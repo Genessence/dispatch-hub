@@ -25,7 +25,7 @@ const Dashboard = () => {
 
   // Route guard: Check if customer and site are selected
   useEffect(() => {
-    if (!selectedCustomer || selectedCustomer.length === 0 || !selectedSite) {
+    if (!selectedCustomer || !selectedSite) {
       toast.error("Please select a customer and site before accessing the dashboard");
       navigate("/select-customer-site");
     }

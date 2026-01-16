@@ -23,19 +23,24 @@ async function resetDatabase() {
     await client.connect();
     console.log('✅ Connected to database');
 
-    // Disable foreign key checks temporarily (PostgreSQL doesn't need this, but we'll handle CASCADE)
     console.log('\n🗑️  Truncating all tables...');
     
-    // Truncate tables in correct order (respecting foreign keys)
-    await client.query('TRUNCATE TABLE mismatch_alerts CASCADE');
-    await client.query('TRUNCATE TABLE validated_barcodes CASCADE');
-    await client.query('TRUNCATE TABLE invoice_items CASCADE');
-    await client.query('TRUNCATE TABLE invoices CASCADE');
-    await client.query('TRUNCATE TABLE schedule_items CASCADE');
-    await client.query('TRUNCATE TABLE gatepasses CASCADE');
-    await client.query('TRUNCATE TABLE logs CASCADE');
-    await client.query('TRUNCATE TABLE user_selections CASCADE');
-    await client.query('TRUNCATE TABLE users CASCADE');
+    // Truncate all tables in a single atomic operation with RESTART IDENTITY
+    // CASCADE handles foreign key constraints automatically
+    // RESTART IDENTITY resets any sequences/auto-increment counters
+    await client.query(`
+      TRUNCATE TABLE 
+        mismatch_alerts,
+        validated_barcodes,
+        invoice_items,
+        invoices,
+        schedule_items,
+        gatepasses,
+        logs,
+        user_selections,
+        users
+      RESTART IDENTITY CASCADE;
+    `);
     
     console.log('✅ All tables truncated');
 

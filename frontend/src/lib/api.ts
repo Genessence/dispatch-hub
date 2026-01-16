@@ -127,9 +127,12 @@ export const invoicesApi = {
     return fetchWithAuth(`/api/invoices/${id}`);
   },
 
-  upload: async (file: File) => {
+  upload: async (file: File, customerCode?: string) => {
     const formData = new FormData();
     formData.append('file', file);
+    if (customerCode) {
+      formData.append('customerCode', customerCode);
+    }
 
     const token = getAuthToken();
     const response = await fetch(`${API_URL}/api/invoices/upload`, {
@@ -169,9 +172,12 @@ export const scheduleApi = {
     return fetchWithAuth(`/api/schedule${query}`);
   },
 
-  upload: async (file: File) => {
+  upload: async (file: File, customerCode?: string) => {
     const formData = new FormData();
     formData.append('file', file);
+    if (customerCode) {
+      formData.append('customerCode', customerCode);
+    }
 
     const token = getAuthToken();
     const response = await fetch(`${API_URL}/api/schedule/upload`, {

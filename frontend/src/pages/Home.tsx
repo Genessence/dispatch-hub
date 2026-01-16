@@ -58,7 +58,7 @@ const Home = () => {
 
   // Route guard: Check if customer and site are selected
   useEffect(() => {
-    if (!selectedCustomer || selectedCustomer.length === 0 || !selectedSite) {
+    if (!selectedCustomer || !selectedSite) {
       toast.error("Please select a customer and site first");
       navigate("/select-customer-site");
     }
@@ -226,15 +226,14 @@ const Home = () => {
                   <h2 className="text-lg font-semibold text-blue-900 dark:text-blue-100">Menu</h2>
                 </div>
                 <div className="flex flex-wrap gap-1 mt-2">
-                  {selectedCustomer.map((customer) => (
+                  {selectedCustomer && (
                     <Badge 
-                      key={customer} 
                       variant="secondary" 
                       className="text-xs bg-blue-200 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300"
                     >
-                      {customer}
+                      {selectedCustomer}
                     </Badge>
-                  ))}
+                  )}
                 </div>
                 <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
                   Facility: {selectedSite}
@@ -426,15 +425,14 @@ const Home = () => {
             <div>
               <p className="text-sm font-medium">Customers</p>
               <div className="flex flex-wrap gap-1 mt-1">
-                {selectedCustomer.map((customer) => (
+                {selectedCustomer && (
                   <Badge 
-                    key={customer} 
                     variant="secondary" 
                     className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
                   >
-                    {customer}
+                    {selectedCustomer}
                   </Badge>
-                ))}
+                )}
               </div>
             </div>
             <div>

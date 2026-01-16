@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
+import { validateInvoiceItemsAgainstSchedule } from '../utils/validation';
 
 const router = Router();
 
@@ -211,6 +212,9 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    // Get customer code from request body (FormData)
+    const expectedCustomerCode = req.body.customerCode as string | undefined;
+
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: false, raw: false });
     
     if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
@@ -226,6 +230,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
 
     const invoiceMap = new Map<string, any>();
     const allItems: any[] = [];
+    const foundCustomerCodes = new Set<string>();
 
     jsonData.forEach((row: any, index: number) => {
       const invoiceNum = row['Invoice Number'] || row['Invoice'] || row['invoice'] || `INV-${index + 1}`;
@@ -236,6 +241,11 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       const part = row['Item Number'] || row['Part'] || row['part'] || row['Part Code'] || 'Unknown Part';
       const customerItem = row['Customer Item'] || row['CustomerItem'] || row['customer item'] || '';
       const partDescription = row['Part Description'] || row['Description'] || '';
+
+      // Track customer codes found
+      if (billTo && String(billTo).trim()) {
+        foundCustomerCodes.add(String(billTo).trim());
+      }
 
       let status = 'valid-unmatched';
       let errorMessage = '';
@@ -249,6 +259,10 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       } else if (isNaN(qty)) {
         status = 'error';
         errorMessage = 'Invalid quantity';
+      } else if (!customerItem || customerItem.toString().trim() === '') {
+        // Missing customer_item is a validation error per requirements
+        status = 'error';
+        errorMessage = 'Missing Customer Item';
       }
 
       if (!invoiceMap.has(invoiceNum.toString())) {
@@ -277,6 +291,30 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       });
     });
 
+    // Validate customer code if provided
+    if (expectedCustomerCode) {
+      const mismatchedCodes = Array.from(foundCustomerCodes).filter(
+        code => String(code).trim() !== String(expectedCustomerCode).trim()
+      );
+      
+      if (mismatchedCodes.length > 0) {
+        return res.status(400).json({ 
+          error: `Invoice contains data for different customer codes. Only data for customer code ${expectedCustomerCode} is allowed. Found: ${mismatchedCodes.join(', ')}` 
+        });
+      }
+
+      // Also validate all invoices have the expected customer code
+      const mismatchedInvoices = Array.from(invoiceMap.values()).filter(
+        invoice => invoice.billTo && String(invoice.billTo).trim() !== String(expectedCustomerCode).trim()
+      );
+
+      if (mismatchedInvoices.length > 0) {
+        return res.status(400).json({ 
+          error: `Invoice contains data for different customer codes. Only data for customer code ${expectedCustomerCode} is allowed. Found invoices with codes: ${mismatchedInvoices.map(inv => inv.billTo).join(', ')}` 
+        });
+      }
+    }
+
     // Calculate expected bins based on unique customer items
     invoiceMap.forEach((invoice) => {
       const items = allItems.filter(item => item.invoiceId === invoice.id);
@@ -285,6 +323,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     });
 
     // Insert into database using transaction
+    let validationStats;
     await transaction(async (client) => {
       for (const [invoiceId, invoice] of invoiceMap) {
         // Check if invoice already exists
@@ -312,6 +351,9 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         }
       }
 
+      // Validate invoice items against schedule items
+      validationStats = await validateInvoiceItemsAgainstSchedule(client);
+
       // Log the upload
       await client.query(
         `INSERT INTO logs (user_name, action, details, log_type)
@@ -332,7 +374,12 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       success: true,
       message: `Uploaded ${invoiceMap.size} invoices`,
       invoiceCount: invoiceMap.size,
-      itemCount: allItems.length
+      itemCount: allItems.length,
+      validationStats: validationStats || {
+        matchedCount: 0,
+        unmatchedCount: 0,
+        errorCount: 0
+      }
     });
   } catch (error) {
     console.error('Upload invoices error:', error);

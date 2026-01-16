@@ -66,7 +66,7 @@ const Dispatch = () => {
 
   // Route guard
   useEffect(() => {
-    if (!selectedCustomer || selectedCustomer.length === 0 || !selectedSite) {
+    if (!selectedCustomer || !selectedSite) {
       toast.error("Please select a customer and site before accessing dispatch");
       navigate("/select-customer-site");
     }
