@@ -930,7 +930,7 @@ const UploadData = () => {
 
       // Refresh data from backend (this will trigger WebSocket update to all devices)
       await refreshData();
-      
+
       // Check if upload was successful
       if (!scheduleResult.success) {
         toast.error('Schedule upload failed. Please try again.');

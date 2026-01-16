@@ -324,11 +324,11 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       for (let i = 0; i < allScheduleItems.length; i++) {
         const item = allScheduleItems[i];
         try {
-          await client.query(
-            `INSERT INTO schedule_items 
-             (customer_code, customer_part, part_number, qad_part, description, snp, bin, sheet_name, delivery_date, delivery_time, plant, unloading_loc, uploaded_by, quantity)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-            [
+        await client.query(
+          `INSERT INTO schedule_items 
+           (customer_code, customer_part, part_number, qad_part, description, snp, bin, sheet_name, delivery_date, delivery_time, plant, unloading_loc, uploaded_by, quantity)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          [
               item.customerCode || null, // Nullable - migration 007 applied
               item.customerPart || '',
               item.partNumber || null,
@@ -343,8 +343,8 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
               item.unloadingLoc || null,
               req.user?.username || 'unknown',
               item.quantity || null
-            ]
-          );
+          ]
+        );
         } catch (insertError: any) {
           console.error(`Error inserting item ${i + 1}:`, insertError);
           console.error('Item data:', {

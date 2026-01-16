@@ -506,15 +506,10 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     const selectedCustomerCode = getCustomerCode(selectedCustomer);
     if (!selectedCustomerCode) return [];
     
-    // Filter schedule items by selected customer code
-    const scheduledCustomerCodes = new Set(
-      scheduleData.items
-        .filter(item => String(item.customerCode) === selectedCustomerCode)
-        .map(item => String(item.customerCode))
-    );
-    
-    // Filter invoices that match the selected customer code
-    return sharedInvoices.filter(inv => inv.billTo && scheduledCustomerCodes.has(String(inv.billTo)));
+    // Schedule items no longer have customer codes (they're all NULL after migration 007)
+    // Filter invoices by selected customer's billTo only
+    // The matching between schedule PART NUMBER and invoice Customer Item is done in DocAudit
+    return sharedInvoices.filter(inv => inv.billTo && String(inv.billTo) === String(selectedCustomerCode));
   }, [scheduleData, sharedInvoices, selectedCustomer]);
 
   const getScheduledDispatchableInvoices = useCallback((): InvoiceData[] => {
@@ -522,17 +517,11 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     const selectedCustomerCode = getCustomerCode(selectedCustomer);
     if (!selectedCustomerCode) return [];
     
-    // Filter schedule items by selected customer code
-    const scheduledCustomerCodes = new Set(
-      scheduleData.items
-        .filter(item => String(item.customerCode) === selectedCustomerCode)
-        .map(item => String(item.customerCode))
-    );
-    
-    // Filter invoices that match the selected customer code and are dispatchable
+    // Schedule items no longer have customer codes (they're all NULL after migration 007)
+    // Filter invoices by selected customer's billTo only
     return sharedInvoices.filter(inv => 
       inv.billTo && 
-      scheduledCustomerCodes.has(String(inv.billTo)) && 
+      String(inv.billTo) === String(selectedCustomerCode) && 
       inv.auditComplete && 
       !inv.dispatchedBy
     );
