@@ -2,14 +2,18 @@ import { useState, useRef, useEffect } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Camera, X, ScanBarcode } from "lucide-react";
+import { Camera, X, ScanBarcode, Keyboard, Settings } from "lucide-react";
 import { toast } from "sonner";
+import { useScannerPreferences } from "@/hooks/useScannerPreferences";
+import { ScannerPreferencesDialog } from "./ScannerPreferencesDialog";
 
 export interface BarcodeData {
   rawValue: string;
   partCode: string;
   quantity: string;
   binNumber: string;
+  binQuantity?: string; // Bin quantity extracted from QR (for validation)
+  qrType?: 'autoliv' | 'customer'; // Type of QR code scanned
 }
 
 interface BarcodeScannerProps {
@@ -29,6 +33,7 @@ export const BarcodeScanner = ({
   onClose,
   cameraGuideText = "Position barcode here"
 }: BarcodeScannerProps) => {
+  // Camera-related refs and state
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -38,18 +43,148 @@ export const BarcodeScanner = ({
   const lastScanTimeRef = useRef<number>(0);
   const scanningIntervalRef = useRef<number | null>(null);
 
-  // Parse barcode data from format: Part_code-{value},Quantity-{value},Bin_number-{value}
+  // Scanner mode refs and state
+  const { preferences, loading: prefsLoading } = useScannerPreferences();
+  const [scanMode, setScanMode] = useState<'scanner' | 'camera'>('scanner');
+  const [scannerInput, setScannerInput] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showPreferences, setShowPreferences] = useState(false);
+  
+  // Scanner input handling refs
+  const scannerInputRef = useRef<string>('');
+  const scannerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastKeyTimeRef = useRef<number>(0);
+  const hiddenInputRef = useRef<HTMLInputElement>(null);
+
+  // Detect if device is mobile or laptop/desktop
+  const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
+    || (window.innerWidth < 768 && ('ontouchstart' in window));
+
+  // Parse Autoliv QR code format
+  // Example: [)>0612SA16S1V123456SR22281225173P641704700HQ83QPCEH281225R20075D2512280941LAM2005
+  // Part Number: Between first P and Q → 641704700H
+  // Bin Quantity: Single digit immediately after that Q → 8
+  const parseAutolivQR = (rawValue: string): BarcodeData | null => {
+    try {
+      console.log("Parsing Autoliv QR:", rawValue);
+      
+      // Find the first occurrence of P followed by Q
+      const pIndex = rawValue.indexOf('P');
+      if (pIndex === -1) {
+        console.error("No 'P' found in Autoliv QR");
+        return null;
+      }
+
+      // Find Q after P
+      const qIndex = rawValue.indexOf('Q', pIndex);
+      if (qIndex === -1) {
+        console.error("No 'Q' found after 'P' in Autoliv QR");
+        return null;
+      }
+
+      // Extract part number between P and Q
+      const partCode = rawValue.substring(pIndex + 1, qIndex).trim();
+      
+      // Extract bin quantity (single digit after Q)
+      const binQuantity = rawValue.substring(qIndex + 1, qIndex + 2).trim();
+
+      if (!partCode) {
+        console.error("Failed to extract part code from Autoliv QR");
+        return null;
+      }
+
+      if (!binQuantity || !/^\d$/.test(binQuantity)) {
+        console.error("Failed to extract valid bin quantity (single digit) from Autoliv QR");
+        return null;
+      }
+
+      return {
+        rawValue,
+        partCode,
+        quantity: binQuantity, // Use binQuantity as quantity for consistency
+        binNumber: "", // Not available in Autoliv format
+        binQuantity: binQuantity,
+        qrType: 'autoliv'
+      };
+    } catch (error) {
+      console.error("Error parsing Autoliv QR:", error);
+      return null;
+    }
+  };
+
+  // Parse Customer QR code format (multi-line)
+  // Part Code: Line 2 (second line) → 84940M69R13-BHE
+  // Bin Quantity: Line 3 (third line, single digit) → 8
+  const parseCustomerQR = (rawValue: string): BarcodeData | null => {
+    try {
+      console.log("Parsing Customer QR:", rawValue);
+      
+      // Split by newlines (handle both \n and \r\n)
+      const lines = rawValue.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+      
+      if (lines.length < 3) {
+        console.error("Customer QR must have at least 3 lines, got:", lines.length);
+        return null;
+      }
+
+      // Part code is on line 2 (index 1)
+      const partCode = lines[1].trim();
+      
+      // Bin quantity is on line 3 (index 2), should be a single digit
+      const binQuantity = lines[2].trim();
+
+      if (!partCode) {
+        console.error("Failed to extract part code from Customer QR (line 2)");
+        return null;
+      }
+
+      if (!binQuantity || !/^\d$/.test(binQuantity)) {
+        console.error("Failed to extract valid bin quantity (single digit) from Customer QR (line 3)");
+        return null;
+      }
+
+      return {
+        rawValue,
+        partCode,
+        quantity: binQuantity, // Use binQuantity as quantity for consistency
+        binNumber: "", // Not available in customer format
+        binQuantity: binQuantity,
+        qrType: 'customer'
+      };
+    } catch (error) {
+      console.error("Error parsing Customer QR:", error);
+      return null;
+    }
+  };
+
+  // Detect QR type and parse accordingly
   const parseBarcodeData = (rawValue: string): BarcodeData | null => {
     try {
-      console.log("Parsing barcode:", rawValue);
+      console.log("Parsing barcode/QR:", rawValue);
       
+      // Check if it's Autoliv QR format (contains P and Q pattern)
+      if (rawValue.includes('P') && rawValue.includes('Q')) {
+        const autolivResult = parseAutolivQR(rawValue);
+        if (autolivResult) {
+          return autolivResult;
+        }
+      }
+
+      // Check if it's Customer QR format (multi-line with at least 3 lines)
+      const lines = rawValue.split(/\r?\n/).filter(line => line.trim().length > 0);
+      if (lines.length >= 3) {
+        const customerResult = parseCustomerQR(rawValue);
+        if (customerResult) {
+          return customerResult;
+        }
+      }
+
+      // Fallback: Try old format (Part_code-{value},Quantity-{value},Bin_number-{value})
+      // This maintains backward compatibility
       let partCode = "";
       let quantity = "";
       let binNumber = "";
 
-      // Parse format: Part_code-{value},Quantity-{value},Bin_number-{value}
-      // Example: Part_code-48150M69R20-C48,Quantity-3,Bin_number-2023919386007
-      
       const partCodeMatch = rawValue.match(/Part_code-([^,]+)/);
       const quantityMatch = rawValue.match(/Quantity-([^,]+)/);
       const binNumberMatch = rawValue.match(/Bin_number-([^,]+)/);
@@ -66,7 +201,7 @@ export const BarcodeScanner = ({
 
       // Validate that we got at least partCode
       if (!partCode) {
-        console.error("Failed to parse partCode from barcode:", rawValue);
+        console.error("Failed to parse any known QR/barcode format:", rawValue);
         return null;
       }
 
@@ -74,7 +209,8 @@ export const BarcodeScanner = ({
         rawValue,
         partCode,
         quantity: quantity || "0",
-        binNumber: binNumber || ""
+        binNumber: binNumber || "",
+        binQuantity: quantity || undefined
       };
     } catch (error) {
       console.error("Error parsing barcode:", error);
@@ -82,9 +218,273 @@ export const BarcodeScanner = ({
     }
   };
 
+  // Initialize scan mode from preferences when dialog opens
+  // IMPORTANT: On laptop/desktop, ALWAYS use scanner mode (never camera)
+  // On mobile, use preferences or default to camera
   useEffect(() => {
     if (isOpen) {
-      console.log('Scanner dialog opened');
+      // Force scanner mode on laptop/desktop - NEVER open camera
+      if (!isMobileDevice) {
+        console.log('Laptop/Desktop detected - forcing scanner mode (camera disabled)');
+        setScanMode('scanner');
+      } else {
+        // Mobile device - use preferences or default to camera
+        if (!prefsLoading && preferences) {
+          setScanMode(preferences.defaultScanMode);
+        } else if (!prefsLoading) {
+          setScanMode('camera'); // Default to camera on mobile
+        }
+      }
+      // Reset scanner state
+      scannerInputRef.current = '';
+      setScannerInput('');
+      lastScannedBarcodeRef.current = null;
+      lastScanTimeRef.current = 0;
+      setIsProcessing(false);
+    }
+  }, [isOpen, prefsLoading, preferences, isMobileDevice]);
+
+  // Handle scanner input from wired scanner
+  const handleScannerInput = (e: KeyboardEvent) => {
+    try {
+      // Only process if scanner mode is active and dialog is open
+      if (scanMode !== 'scanner' || !isOpen) {
+        return;
+      }
+
+      // Use default preferences if not loaded yet (for immediate scanner use)
+      const effectivePrefs = preferences || {
+        defaultScanMode: 'scanner' as const,
+        scannerSuffix: 'Enter' as const,
+        autoTimeoutMs: 150,
+        duplicateScanThresholdMs: 2000,
+        showRealtimeDisplay: true
+      };
+
+      const now = Date.now();
+      const timeSinceLastKey = now - lastKeyTimeRef.current;
+      lastKeyTimeRef.current = now;
+
+      // If Enter key is pressed, process the accumulated input
+      if (e.key === 'Enter' || e.keyCode === 13) {
+        console.log('Enter key detected - processing scan:', scannerInputRef.current);
+        e.preventDefault();
+        e.stopPropagation();
+        
+        const scannedValue = scannerInputRef.current.trim();
+        
+        if (scannedValue.length > 0) {
+          processScannedInput(scannedValue);
+        } else {
+          console.warn('Enter pressed but no input accumulated');
+        }
+        return;
+      }
+
+      // Handle Tab key (if scanner sends Tab)
+      if (e.key === 'Tab' && effectivePrefs.scannerSuffix === 'Tab') {
+        e.preventDefault();
+        e.stopPropagation();
+        const scannedValue = scannerInputRef.current.trim();
+        if (scannedValue.length > 0) {
+          processScannedInput(scannedValue);
+        }
+        return;
+      }
+
+      // Handle regular character input
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // Log first few characters for debugging Zebra scanner
+        if (scannerInputRef.current.length < 5) {
+          console.log('Scanner character received:', e.key, '| KeyCode:', e.keyCode, '| Total length:', scannerInputRef.current.length + 1);
+        }
+        
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Check max length to prevent memory issues
+        if (scannerInputRef.current.length >= 10000) {
+          console.warn("Scanner input too long, resetting");
+          scannerInputRef.current = '';
+          setScannerInput('');
+          toast.error("Scan too long", {
+            description: "The scanned data is too long. Please check your scanner.",
+            duration: 3000
+          });
+          return;
+        }
+        
+        // Accumulate characters
+        scannerInputRef.current += e.key;
+        setScannerInput(scannerInputRef.current);
+        
+        // Clear timeout if exists
+        if (scannerTimeoutRef.current) {
+          clearTimeout(scannerTimeoutRef.current);
+        }
+        
+        // Set timeout to auto-process if no suffix comes (for scanners without suffix)
+        const suffix = effectivePrefs.scannerSuffix;
+        const timeout = effectivePrefs.autoTimeoutMs;
+        
+        if (suffix === 'None' || suffix === 'Tab') {
+          scannerTimeoutRef.current = setTimeout(() => {
+            if (scannerInputRef.current.trim().length > 0) {
+              processScannedInput(scannerInputRef.current.trim());
+            }
+          }, timeout);
+        }
+      }
+    } catch (error) {
+      console.error("Error handling scanner input:", error);
+      // Don't show toast here to avoid spam, just log
+    }
+  };
+
+  // Process scanned input
+  const processScannedInput = (scannedValue: string) => {
+    try {
+      // Clear timeout
+      if (scannerTimeoutRef.current) {
+        clearTimeout(scannerTimeoutRef.current);
+        scannerTimeoutRef.current = null;
+      }
+
+      // Validate input
+      if (!scannedValue || scannedValue.trim().length === 0) {
+        console.warn("Empty scan detected, ignoring");
+        scannerInputRef.current = '';
+        setScannerInput('');
+        return;
+      }
+
+      // Check for maximum length to prevent memory issues
+      if (scannedValue.length > 10000) {
+        toast.error("Scan too long", {
+          description: "The scanned data is too long. Please check your scanner."
+        });
+        scannerInputRef.current = '';
+        setScannerInput('');
+        return;
+      }
+
+      console.log("Barcode scanned from wired scanner:", scannedValue);
+      
+      // Prevent duplicate scans
+      const now = Date.now();
+      const timeSinceLastScan = now - lastScanTimeRef.current;
+      const effectivePrefs = preferences || {
+        defaultScanMode: 'scanner' as const,
+        scannerSuffix: 'Enter' as const,
+        autoTimeoutMs: 150,
+        duplicateScanThresholdMs: 2000,
+        showRealtimeDisplay: true
+      };
+      const threshold = effectivePrefs.duplicateScanThresholdMs;
+      
+      if (scannedValue === lastScannedBarcodeRef.current && timeSinceLastScan < threshold) {
+        console.log("Duplicate scan ignored");
+        toast.info("Duplicate scan ignored", {
+          description: "Same barcode scanned too quickly. Please wait before scanning again.",
+          duration: 2000
+        });
+        scannerInputRef.current = '';
+        setScannerInput('');
+        return;
+      }
+
+      lastScannedBarcodeRef.current = scannedValue;
+      lastScanTimeRef.current = now;
+      setIsProcessing(true);
+
+      // Parse the barcode data
+      const parsedData = parseBarcodeData(scannedValue);
+      
+      if (parsedData) {
+        console.log("Parsed barcode data:", parsedData);
+        
+        const qrTypeLabel = parsedData.qrType === 'autoliv' ? 'Autoliv QR' : 
+                           parsedData.qrType === 'customer' ? 'Customer QR' : 'Barcode';
+        const description = parsedData.binQuantity 
+          ? `Part: ${parsedData.partCode}, Bin Qty: ${parsedData.binQuantity}`
+          : `Part: ${parsedData.partCode}, Qty: ${parsedData.quantity}`;
+        
+        toast.success(`${qrTypeLabel} scanned successfully!`, {
+          description: description
+        });
+        
+        // Reset scanner state
+        scannerInputRef.current = '';
+        setScannerInput('');
+        setIsProcessing(false);
+        
+        // Send the parsed barcode data to parent
+        onScan(parsedData);
+        
+        // Close the dialog
+        onClose();
+      } else {
+        // Parsing failed
+        toast.error("Failed to parse QR code", {
+          description: "QR code format is invalid. Please ensure you're scanning the correct QR code type (Customer or Autoliv).",
+          duration: 5000
+        });
+        scannerInputRef.current = '';
+        setScannerInput('');
+        setIsProcessing(false);
+      }
+    } catch (error) {
+      console.error("Error processing scanned input:", error);
+      toast.error("Error processing scan", {
+        description: error instanceof Error ? error.message : "An unexpected error occurred. Please try again.",
+        duration: 5000
+      });
+      scannerInputRef.current = '';
+      setScannerInput('');
+      setIsProcessing(false);
+    }
+  };
+
+  // Setup keyboard listener for scanner mode
+  useEffect(() => {
+    if (isOpen && scanMode === 'scanner') {
+      console.log('Setting up scanner mode - keyboard listener active');
+      
+      // Focus hidden input field when dialog opens in scanner mode
+      const timer = setTimeout(() => {
+        if (hiddenInputRef.current) {
+          hiddenInputRef.current.focus();
+          console.log('Hidden input focused for scanner');
+        }
+      }, 100);
+
+      // Add global keyboard listener (capture phase to intercept before other handlers)
+      // This will capture ALL keyboard input including from Zebra scanner
+      const handleKeyDown = (e: KeyboardEvent) => {
+        handleScannerInput(e);
+      };
+      
+      window.addEventListener('keydown', handleKeyDown, true);
+      console.log('Keyboard listener added for scanner mode');
+      
+      return () => {
+        clearTimeout(timer);
+        window.removeEventListener('keydown', handleKeyDown, true);
+        if (scannerTimeoutRef.current) {
+          clearTimeout(scannerTimeoutRef.current);
+          scannerTimeoutRef.current = null;
+        }
+        scannerInputRef.current = '';
+        setScannerInput('');
+        console.log('Keyboard listener removed');
+      };
+    }
+  }, [isOpen, scanMode]);
+
+  // Camera mode useEffect - ONLY for mobile devices
+  useEffect(() => {
+    if (isOpen && scanMode === 'camera' && isMobileDevice) {
+      console.log('Scanner dialog opened in camera mode (mobile device)');
       
       // Reset scan state when dialog opens
       lastScannedBarcodeRef.current = null;
@@ -109,10 +509,21 @@ export const BarcodeScanner = ({
         clearTimeout(timer);
         stopScanning();
       };
-    } else {
+    } else if (isOpen && scanMode === 'scanner') {
+      // Reset scanner state when in scanner mode
+      console.log('Scanner mode active - camera will NOT start');
+      // Ensure camera is stopped if it was running
+      stopScanning();
+      scannerInputRef.current = '';
+      setScannerInput('');
+      lastScannedBarcodeRef.current = null;
+      lastScanTimeRef.current = 0;
+      setIsProcessing(false);
+    } else if (!isOpen) {
+      // Dialog closed - stop everything
       stopScanning();
     }
-  }, [isOpen]);
+  }, [isOpen, scanMode, isMobileDevice]);
 
   const startScanning = async () => {
     if (!videoRef.current || isScanning) return;
@@ -281,9 +692,15 @@ export const BarcodeScanner = ({
           if (parsedData) {
             console.log("Parsed barcode data:", parsedData);
             
-            // Show success message
-            toast.success("Barcode scanned successfully!", {
-              description: `Part: ${parsedData.partCode}, Qty: ${parsedData.quantity}, Bin: ${parsedData.binNumber}`
+            // Show success message with QR type-specific info
+            const qrTypeLabel = parsedData.qrType === 'autoliv' ? 'Autoliv QR' : 
+                               parsedData.qrType === 'customer' ? 'Customer QR' : 'Barcode';
+            const description = parsedData.binQuantity 
+              ? `Part: ${parsedData.partCode}, Bin Qty: ${parsedData.binQuantity}`
+              : `Part: ${parsedData.partCode}, Qty: ${parsedData.quantity}`;
+            
+            toast.success(`${qrTypeLabel} scanned successfully!`, {
+              description: description
             });
             
             // Stop scanning
@@ -296,8 +713,8 @@ export const BarcodeScanner = ({
             onClose();
           } else {
             // Parsing failed - show error but keep scanning
-            toast.error("Failed to parse barcode", {
-              description: "Barcode format is invalid. Expected: Part_code-{value},Quantity-{value},Bin_number-{value}"
+            toast.error("Failed to parse QR code", {
+              description: "QR code format is invalid. Please ensure you're scanning the correct QR code type."
             });
             // Continue scanning
           }
@@ -356,24 +773,194 @@ export const BarcodeScanner = ({
   };
   
   const handleClose = () => {
-    stopScanning();
+    if (scanMode === 'camera') {
+      stopScanning();
+    }
+    scannerInputRef.current = '';
+    setScannerInput('');
+    if (scannerTimeoutRef.current) {
+      clearTimeout(scannerTimeoutRef.current);
+      scannerTimeoutRef.current = null;
+    }
     onClose();
   };
 
-  return (
-    <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto w-[95vw] sm:w-full" onEscapeKeyDown={handleClose}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
-            <ScanBarcode className="h-4 w-4 sm:h-5 sm:w-5" />
-            <span className="truncate">{title}</span>
-          </DialogTitle>
-          <DialogDescription className="text-xs sm:text-sm">{description}</DialogDescription>
-        </DialogHeader>
+  const handleModeChange = (mode: 'scanner' | 'camera') => {
+    // Prevent switching to camera mode on laptop/desktop
+    if (mode === 'camera' && !isMobileDevice) {
+      toast.warning("Camera mode disabled", {
+        description: "Camera mode is only available on mobile devices. Please use wired scanner on laptop/desktop.",
+        duration: 3000
+      });
+      return;
+    }
 
-        <div className="space-y-4 sm:space-y-6">
-          {/* Real Camera View */}
-          <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+    if (mode === 'camera' && scanMode === 'scanner') {
+      // Switching to camera mode (mobile only)
+      setScanMode('camera');
+      scannerInputRef.current = '';
+      setScannerInput('');
+      if (scannerTimeoutRef.current) {
+        clearTimeout(scannerTimeoutRef.current);
+        scannerTimeoutRef.current = null;
+      }
+      // Start camera after a delay
+      setTimeout(() => {
+        if (videoRef.current) {
+          startScanning();
+        }
+      }, 100);
+    } else if (mode === 'scanner' && scanMode === 'camera') {
+      // Switching to scanner mode
+      stopScanning();
+      setScanMode('scanner');
+      // Focus hidden input
+      setTimeout(() => {
+        if (hiddenInputRef.current) {
+          hiddenInputRef.current.focus();
+        }
+      }, 100);
+    }
+  };
+
+  return (
+    <>
+      <Dialog open={isOpen} onOpenChange={handleClose}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto w-[95vw] sm:w-full" onEscapeKeyDown={handleClose}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
+              <ScanBarcode className="h-4 w-4 sm:h-5 sm:w-5" />
+              <span className="truncate">{title}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-8 w-8 p-0"
+                onClick={() => setShowPreferences(true)}
+                title="Scanner Settings"
+              >
+                <Settings className="h-4 w-4" />
+              </Button>
+            </DialogTitle>
+            <DialogDescription className="text-xs sm:text-sm">{description}</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 sm:space-y-6">
+            {/* Mode Selector - Only show on mobile, hide on laptop/desktop */}
+            {isMobileDevice && (
+              <div className="flex gap-2 p-2 bg-gray-100 dark:bg-gray-800 rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('scanner')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md font-medium transition-all ${
+                    scanMode === 'scanner'
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
+                  }`}
+                >
+                  <Keyboard className="h-4 w-4" />
+                  Wired Scanner
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('camera')}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-md font-medium transition-all ${
+                    scanMode === 'camera'
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-600'
+                  }`}
+                >
+                  <Camera className="h-4 w-4" />
+                  Camera
+                </button>
+              </div>
+            )}
+            
+            {/* Info banner for laptop/desktop */}
+            {!isMobileDevice && (
+              <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                  💡 Using Wired Scanner Mode
+                </p>
+                <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                  Camera mode is disabled on laptop/desktop. Connect your Zebra scanner and scan the QR code.
+                </p>
+              </div>
+            )}
+
+            {/* Scanner Mode UI */}
+            {scanMode === 'scanner' && (
+              <div className="space-y-4">
+                <div className={`relative bg-blue-50 dark:bg-blue-950 border-2 rounded-lg p-8 text-center transition-all ${
+                  isProcessing 
+                    ? 'border-green-500 dark:border-green-600 bg-green-50 dark:bg-green-950' 
+                    : scannerInput.length > 0
+                    ? 'border-blue-400 dark:border-blue-600'
+                    : 'border-blue-300 dark:border-blue-700 border-dashed'
+                }`}>
+                  <Keyboard className={`h-16 w-16 mx-auto mb-4 ${
+                    isProcessing ? 'text-green-500 animate-pulse' : 'text-blue-500'
+                  }`} />
+                  <h3 className="text-lg font-semibold mb-2">
+                    {isProcessing ? 'Processing...' : scannerInput.length > 0 ? 'Scanning...' : 'Ready to Scan'}
+                  </h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    {isProcessing 
+                      ? 'Validating barcode...'
+                      : scannerInput.length > 0
+                      ? 'Point your wired scanner at the QR code and scan'
+                      : 'Point your wired scanner at the QR code and scan'
+                    }
+                  </p>
+                  <input
+                    ref={hiddenInputRef}
+                    type="text"
+                    autoFocus
+                    className="sr-only"
+                    readOnly
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      // Log for debugging
+                      console.log('Hidden input keydown:', e.key, e.keyCode);
+                      // Don't prevent default - let it bubble to global listener
+                    }}
+                    onFocus={() => {
+                      console.log('Hidden input focused - ready for scanner input');
+                    }}
+                  />
+                  <div className={`w-full px-4 py-4 text-center text-lg font-mono border-2 rounded-lg transition-all ${
+                    isProcessing
+                      ? 'border-green-400 bg-green-50 dark:bg-green-900/30'
+                      : scannerInput.length > 0
+                      ? 'border-blue-400 bg-white dark:bg-gray-900 focus-within:ring-2 focus-within:ring-blue-500'
+                      : 'border-blue-300 bg-white dark:bg-gray-900'
+                  }`}>
+                    {scannerInput || (
+                      <span className="text-muted-foreground">Scanning will appear here...</span>
+                    )}
+                  </div>
+                  {scannerInput.length > 0 && !isProcessing && (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {scannerInput.length} character{scannerInput.length !== 1 ? 's' : ''} scanned
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg p-3 sm:p-4">
+                  <p className="text-xs sm:text-sm font-medium mb-2">📌 Scanner Mode:</p>
+                  <ul className="text-[10px] sm:text-xs text-muted-foreground space-y-1">
+                    <li>• Connect your wired USB barcode scanner</li>
+                    <li>• Point scanner at QR code and pull trigger</li>
+                    <li>• Scanner will automatically detect and process</li>
+                    <li>• Works with both Customer and Autoliv QR codes</li>
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {/* Camera Mode UI */}
+            {scanMode === 'camera' && (
+              <>
+                <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
             <video
               ref={videoRef}
               autoPlay
@@ -448,33 +1035,41 @@ export const BarcodeScanner = ({
             )}
           </div>
 
-          {/* Instructions */}
-          <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 sm:p-4">
-            <p className="text-xs sm:text-sm font-medium mb-2">📌 How it works:</p>
-            <ul className="text-[10px] sm:text-xs text-muted-foreground space-y-1">
-              <li>• <strong>Laptop/Desktop</strong>: Uses front camera (webcam)</li>
-              <li>• <strong>Mobile</strong>: Uses back camera for better viewing</li>
-              <li>• Browser will ask for camera permission on first use</li>
-              <li>• <strong>Automatic scanning</strong> - just point at barcode</li>
-              <li>• Scanner will detect barcode automatically and close</li>
-              <li>• If barcode format is invalid, scanner stays open for retry</li>
-            </ul>
-          </div>
+                <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 sm:p-4">
+                  <p className="text-xs sm:text-sm font-medium mb-2">📌 Camera Mode:</p>
+                  <ul className="text-[10px] sm:text-xs text-muted-foreground space-y-1">
+                    <li>• <strong>Laptop/Desktop</strong>: Uses front camera (webcam)</li>
+                    <li>• <strong>Mobile</strong>: Uses back camera for better viewing</li>
+                    <li>• Browser will ask for camera permission on first use</li>
+                    <li>• <strong>Automatic scanning</strong> - just point at barcode</li>
+                    <li>• Scanner will detect barcode automatically and close</li>
+                    <li>• If barcode format is invalid, scanner stays open for retry</li>
+                  </ul>
+                </div>
+              </>
+            )}
 
-          {/* Actions */}
-          <div className="flex gap-2 sm:gap-3">
-            <button 
-              type="button"
-              onClick={handleClose}
-              className="flex-1 h-10 sm:h-12 border-2 border-gray-300 hover:border-gray-400 bg-white hover:bg-gray-50 rounded-md font-semibold text-sm sm:text-base transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <X className="h-3 w-3 sm:h-4 sm:w-4" />
-              Cancel
-            </button>
+            {/* Actions */}
+            <div className="flex gap-2 sm:gap-3">
+              <button 
+                type="button"
+                onClick={handleClose}
+                className="flex-1 h-10 sm:h-12 border-2 border-gray-300 hover:border-gray-400 bg-white hover:bg-gray-50 rounded-md font-semibold text-sm sm:text-base transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <X className="h-3 w-3 sm:h-4 sm:w-4" />
+                Cancel
+              </button>
+            </div>
           </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+
+      {/* Scanner Preferences Dialog */}
+      <ScannerPreferencesDialog
+        isOpen={showPreferences}
+        onClose={() => setShowPreferences(false)}
+      />
+    </>
   );
 };
 

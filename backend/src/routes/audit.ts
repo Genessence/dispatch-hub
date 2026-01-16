@@ -445,6 +445,7 @@ router.post('/mismatch', authenticateToken, async (req: AuthRequest, res: Respon
       invoiceId, 
       customer,
       step,
+      validationStep,
       customerScan, 
       autolivScan 
     } = req.body;
@@ -452,15 +453,16 @@ router.post('/mismatch', authenticateToken, async (req: AuthRequest, res: Respon
     // Insert mismatch alert
     await query(
       `INSERT INTO mismatch_alerts 
-       (user_name, customer, invoice_id, step, 
+       (user_name, customer, invoice_id, step, validation_step,
         customer_scan_part_code, customer_scan_quantity, customer_scan_bin_number, customer_scan_raw_value,
         autoliv_scan_part_code, autoliv_scan_quantity, autoliv_scan_bin_number, autoliv_scan_raw_value)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         req.user?.username,
         customer,
         invoiceId,
         step || 'doc-audit',
+        validationStep || null,
         customerScan?.partCode || 'N/A',
         customerScan?.quantity || 'N/A',
         customerScan?.binNumber || 'N/A',

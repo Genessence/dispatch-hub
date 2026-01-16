@@ -97,6 +97,7 @@ router.get('/exceptions', async (req: AuthRequest, res: Response) => {
         customer: alert.customer,
         invoiceId: alert.invoice_id,
         step: alert.step,
+        validationStep: alert.validation_step,
         customerScan: {
           partCode: alert.customer_scan_part_code,
           quantity: alert.customer_scan_quantity,

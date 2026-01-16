@@ -103,6 +103,23 @@ export const authApi = {
       method: 'PUT',
       body: JSON.stringify({ selectedCustomers, selectedSite })
     });
+  },
+
+  getScannerPreferences: async () => {
+    return fetchWithAuth('/api/auth/scanner-preferences');
+  },
+
+  saveScannerPreferences: async (preferences: {
+    defaultScanMode?: 'scanner' | 'camera';
+    scannerSuffix?: 'Enter' | 'Tab' | 'None';
+    autoTimeoutMs?: number;
+    duplicateScanThresholdMs?: number;
+    showRealtimeDisplay?: boolean;
+  }) => {
+    return fetchWithAuth('/api/auth/scanner-preferences', {
+      method: 'PUT',
+      body: JSON.stringify(preferences)
+    });
   }
 };
 
@@ -248,6 +265,7 @@ export const auditApi = {
     invoiceId: string;
     customer: string;
     step: 'doc-audit' | 'loading-dispatch';
+    validationStep?: string;
     customerScan: any;
     autolivScan: any;
   }) => {

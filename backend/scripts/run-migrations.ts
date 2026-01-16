@@ -37,7 +37,9 @@ async function runMigrations() {
       '004_bin_quantity_tracking.sql',
       '005_add_schedule_quantity.sql',
       '006_add_schedule_customer_part_index.sql',
-      '007_make_schedule_customer_code_nullable.sql'
+      '007_make_schedule_customer_code_nullable.sql',
+      '008_add_validation_step_to_mismatch_alerts.sql',
+      '009_add_scanner_preferences.sql'
     ];
 
     for (const migrationFile of migrationFiles) {

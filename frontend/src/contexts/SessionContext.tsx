@@ -85,6 +85,7 @@ export interface MismatchAlert {
   customer: string;
   invoiceId: string;
   step: 'doc-audit' | 'loading-dispatch';
+  validationStep?: string;
   customerScan: {
     partCode: string;
     quantity: string;
@@ -461,6 +462,7 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         invoiceId: alert.invoiceId,
         customer: alert.customer,
         step: alert.step,
+        validationStep: alert.validationStep,
         customerScan: alert.customerScan,
         autolivScan: alert.autolivScan
       });

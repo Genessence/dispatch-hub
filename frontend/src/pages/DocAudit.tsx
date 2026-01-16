@@ -67,6 +67,16 @@ const DocAudit = () => {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<Date | undefined>(undefined);
   const [showAuditLogs, setShowAuditLogs] = useState(false);
   
+  // Validation state tracking
+  const [matchedCustomerItem, setMatchedCustomerItem] = useState<{
+    invoiceId: string;
+    item: UploadedRow;
+  } | null>(null);
+  const [matchedAutolivItem, setMatchedAutolivItem] = useState<{
+    invoiceId: string;
+    item: UploadedRow;
+  } | null>(null);
+  
   // Delivery date, location, and time selection states
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
   const [selectedUnloadingLocs, setSelectedUnloadingLocs] = useState<string[]>([]);
@@ -447,13 +457,64 @@ const DocAudit = () => {
   }, [sharedInvoices, selectedInvoices]);
 
   // Auto-validate when both barcodes are scanned
+  // Handle QR scans - can be in any order
   useEffect(() => {
-    if (customerScan && autolivScan) {
-      handleValidateBarcodes();
+    // If customer QR is scanned and it's a customer QR type
+    if (customerScan && customerScan.qrType === 'customer') {
+      // Reset previous matches if scanning a new QR
+      if (matchedCustomerItem || matchedAutolivItem) {
+        setMatchedCustomerItem(null);
+        setMatchedAutolivItem(null);
+      }
+      handleCustomerQRValidation();
     }
-  }, [customerScan, autolivScan]);
+    // If customer QR is scanned but it's actually an Autoliv QR (wrong button)
+    else if (customerScan && customerScan.qrType === 'autoliv') {
+      // User scanned Autoliv QR in customer scanner - handle it
+      if (matchedCustomerItem || matchedAutolivItem) {
+        setMatchedCustomerItem(null);
+        setMatchedAutolivItem(null);
+      }
+      setAutolivScan(customerScan);
+      setCustomerScan(null);
+    }
+  }, [customerScan]);
 
-  const handleValidateBarcodes = async () => {
+  useEffect(() => {
+    // If Autoliv QR is scanned and it's an Autoliv QR type
+    if (autolivScan && autolivScan.qrType === 'autoliv') {
+      // Reset previous matches if scanning a new QR
+      if (matchedCustomerItem || matchedAutolivItem) {
+        setMatchedCustomerItem(null);
+        setMatchedAutolivItem(null);
+      }
+      handleAutolivQRValidation();
+    }
+    // If Autoliv QR is scanned but it's actually a Customer QR (wrong button)
+    else if (autolivScan && autolivScan.qrType === 'customer') {
+      // User scanned Customer QR in Autoliv scanner - handle it
+      if (matchedCustomerItem || matchedAutolivItem) {
+        setMatchedCustomerItem(null);
+        setMatchedAutolivItem(null);
+      }
+      setCustomerScan(autolivScan);
+      setAutolivScan(null);
+    }
+  }, [autolivScan]);
+
+  // When both are validated, proceed to steps 3 and 4
+  useEffect(() => {
+    if (matchedCustomerItem && matchedAutolivItem) {
+      handleFinalValidation();
+    }
+  }, [matchedCustomerItem, matchedAutolivItem]);
+
+  // Step 1: Validate Customer QR - Match with customer_item
+  const handleCustomerQRValidation = () => {
+    if (!customerScan || customerScan.qrType !== 'customer') {
+      return;
+    }
+
     // Check if any selected invoice is blocked
     const hasBlockedInvoice = selectedInvoices.some(invoiceId => {
       const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
@@ -465,38 +526,31 @@ const DocAudit = () => {
         description: "Please resolve mismatches before continuing.",
         duration: 5000,
       });
+      setCustomerScan(null);
       return;
     }
 
-    if (!customerScan || !autolivScan) {
-      toast.error("Please scan both barcodes");
+    if (selectedInvoices.length === 0) {
+      toast.error("⚠️ No invoices selected", {
+        description: "Please select invoices before scanning.",
+        duration: 3000,
+      });
+      setCustomerScan(null);
       return;
     }
-    
-    // Extract part numbers from barcodes
-    // Customer barcode part number should match customer_item
-    // Autoliv barcode part number should match part (item_number)
-    const customerPartNumber = customerScan.partCode?.trim() || null;
-    const autolivPartNumber = autolivScan.partCode?.trim() || null;
-    
-    // Extract bin_quantity from barcode scan (quantity field in barcode)
-    const binQuantity = parseInt(customerScan.quantity || autolivScan.quantity || '0') || null;
-    
-    if (!customerPartNumber || !autolivPartNumber) {
-      toast.error("⚠️ Could not extract part numbers from barcodes!", {
-        description: "Please ensure both barcodes contain valid part numbers.",
+
+    const customerPartCode = customerScan.partCode?.trim();
+    if (!customerPartCode) {
+      toast.error("⚠️ Could not extract part code from Customer QR!", {
+        description: "Please ensure the QR code is valid.",
         duration: 4000,
       });
       setCustomerScan(null);
-      setAutolivScan(null);
       return;
     }
-    
-    // Search through all selected invoices to find matching invoice_item
-    // Match: customer_item = customerPartNumber AND part = autolivPartNumber
-    // Both must match the same invoice_item record
-    let foundInvoice: InvoiceData | null = null;
-    let matchedInvoiceItem: UploadedRow | undefined;
+
+    // Search through all selected invoices to find matching customer_item
+    const matchedItems: Array<{ invoiceId: string; item: UploadedRow; invoice: InvoiceData }> = [];
     
     for (const invoiceId of selectedInvoices) {
       const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
@@ -504,161 +558,515 @@ const DocAudit = () => {
       
       if (!invoice || !invoice.items) continue;
       
-      // Find invoice_item where customer_item matches customer barcode part number
-      // AND part matches autoliv barcode part number
-      // Both must match the same invoice_item record
-      matchedInvoiceItem = invoice.items.find((item: UploadedRow) => {
+      // Find invoice_item where customer_item matches customer QR part code
+      const matchedItem = invoice.items.find((item: UploadedRow) => {
         const itemCustomerItem = item.customerItem?.toString().trim() || '';
-        const itemPart = item.part?.toString().trim() || '';
-        return itemCustomerItem === customerPartNumber && itemPart === autolivPartNumber;
+        return itemCustomerItem === customerPartCode;
       });
       
-      if (matchedInvoiceItem) {
-        foundInvoice = invoice;
-        break;
+      if (matchedItem) {
+        matchedItems.push({ invoiceId, item: matchedItem, invoice });
       }
     }
-    
-    // Determine if it's a match or mismatch based on actual data
-    const isMatch = !!foundInvoice && !!matchedInvoiceItem;
-    
-    if (isMatch) {
-      // MATCH: Both barcodes match the same invoice_item
-      
-      // Check if this specific invoice_item was already scanned (check by customer_item + part combination)
-      const invoiceBins = validatedBins[foundInvoice!.id] || [];
-      const alreadyScanned = invoiceBins.some(bin => 
-        bin.customerItem === (matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part) &&
-        bin.itemNumber === matchedInvoiceItem!.part
-      );
-      
-      if (alreadyScanned) {
-        toast.warning("⚠️ This item was already scanned for this invoice!", {
-          description: `Invoice: ${foundInvoice!.id}`,
-          duration: 3000,
-        });
-        setCustomerScan(null);
-        setAutolivScan(null);
-        return;
-      }
-      
-      const newScannedItem = {
-        customerItem: matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part || 'N/A',
-        itemNumber: matchedInvoiceItem!.part || 'N/A',
-        partDescription: matchedInvoiceItem!.partDescription || 'N/A',
-        quantity: matchedInvoiceItem!.qty,
-        binQuantity: binQuantity || 0,
-        status: 'matched',
-        scannedBy: currentUser,
-        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-      };
-      
-      const uniqueCustomerItems = getUniqueCustomerItems(foundInvoice!);
-      const totalCustomerItems = uniqueCustomerItems.length;
-      const newScannedCount = invoiceBins.length + 1;
-      const isComplete = newScannedCount >= totalCustomerItems;
-      
-      // Save scan to database immediately with bin_quantity
-      try {
-        const scanResult = await auditApi.recordScan(foundInvoice!.id, {
-          customerBarcode: customerScan.rawValue,
-          autolivBarcode: autolivScan?.rawValue || null,
-          customerItem: matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part || 'N/A',
-          itemNumber: matchedInvoiceItem!.part || 'N/A',
-          partDescription: matchedInvoiceItem!.partDescription || 'N/A',
-          quantity: matchedInvoiceItem!.qty || 0,
-          binQuantity: binQuantity, // bin_quantity from barcode scan
-          binNumber: customerScan.binNumber || autolivScan.binNumber || null,
-          status: 'matched',
-          scanContext: 'doc-audit'
-        });
-        
-        // Refresh invoice data to get updated bin tracking fields
-        if (scanResult?.matchedInvoiceItem) {
-          // Update matchedInvoiceItem with latest data from server
-          const updatedItem = scanResult.matchedInvoiceItem;
-          newScannedItem.binQuantity = updatedItem.number_of_bins ? 
-            Math.ceil(matchedInvoiceItem!.qty / (binQuantity || 1)) : 
-            (binQuantity || 0);
-        }
-      } catch (error: any) {
-        console.error('Error saving scan to database:', error);
-        toast.error('Failed to save scan to database', {
-          description: error.message || 'Please try again',
-          duration: 5000
-        });
-        // Continue with local state update even if API fails
-      }
-      
-      // Update local state optimistically
-      setValidatedBins(prev => ({
-        ...prev,
-        [foundInvoice!.id]: [...(prev[foundInvoice!.id] || []), newScannedItem]
-      }));
-      
-      // Update invoice audit status
-      updateInvoiceAudit(foundInvoice!.id, {
-        scannedBins: newScannedCount,
-        expectedBins: totalCustomerItems,
-        auditComplete: isComplete
-      }, currentUser);
-      
-      toast.success(`✅ Item scanned for Invoice ${foundInvoice!.id}!`, {
-        description: `${matchedInvoiceItem!.customerItem || matchedInvoiceItem!.part} | Bin Qty: ${binQuantity || 'N/A'} | Progress: ${newScannedCount}/${totalCustomerItems}`,
-        duration: 3000,
-      });
-      
-      setCustomerScan(null);
-      setAutolivScan(null);
-    } else {
-      // MISMATCH: Barcodes don't match the same invoice_item
-      toast.error("⚠️ Barcode Mismatch Detected!", {
-        description: `Customer item "${customerPartNumber}" and item number "${autolivPartNumber}" do not match the same invoice item. Invoice has been blocked.`,
-        duration: 5000,
-      });
-      
-      // Block all selected invoices on mismatch
-      if (selectedInvoices.length > 0 && customerScan && autolivScan) {
-        selectedInvoices.forEach(invoiceId => {
-          const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-          if (invoice) {
-            updateInvoiceAudit(invoice.id, {
-              blocked: true,
-              blockedAt: new Date()
-            }, currentUser);
 
-            addMismatchAlert({
-              user: currentUser,
-              customer: invoice.customer,
-              invoiceId: invoice.id,
-              step: 'doc-audit',
-              customerScan: {
-                partCode: customerScan.partCode || 'N/A',
-                quantity: customerScan.quantity || 'N/A',
-                binNumber: customerScan.binNumber || 'N/A',
-                rawValue: customerScan.rawValue || 'N/A'
-              },
-              autolivScan: {
-                partCode: autolivScan.partCode || 'N/A',
-                quantity: autolivScan.quantity || 'N/A',
-                binNumber: autolivScan.binNumber || 'N/A',
-                rawValue: autolivScan.rawValue || 'N/A'
-              }
-            });
-          }
-        });
-      }
-      
+    if (matchedItems.length === 0) {
+      // STEP 1 MISMATCH: Customer QR part code not found
+      toast.error("⚠️ Customer QR Mismatch - Step 1 Failed!", {
+        description: `Part code "${customerPartCode}" not found in any selected invoice. Invoice(s) blocked.`,
+        duration: 6000,
+      });
+
+      // Block all selected invoices
+      selectedInvoices.forEach(invoiceId => {
+        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+        if (invoice) {
+          updateInvoiceAudit(invoice.id, {
+            blocked: true,
+            blockedAt: new Date()
+          }, currentUser);
+
+          addMismatchAlert({
+            user: currentUser,
+            customer: invoice.customer,
+            invoiceId: invoice.id,
+            step: 'doc-audit',
+            validationStep: 'customer_qr_no_match',
+            customerScan: {
+              partCode: customerScan.partCode || 'N/A',
+              quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
+              binNumber: customerScan.binNumber || 'N/A',
+              rawValue: customerScan.rawValue || 'N/A'
+            },
+            autolivScan: {
+              partCode: 'N/A',
+              quantity: 'N/A',
+              binNumber: 'N/A',
+              rawValue: 'N/A'
+            }
+          });
+        }
+      });
+
       setTimeout(() => {
-        toast.info("📨 Message sent to senior for approval", {
-          description: "Approval request has been automatically sent to the supervisor.",
+        toast.info("📨 Alert sent to admin", {
+          description: "Admin will review and resolve the mismatch.",
           duration: 5000,
         });
       }, 500);
 
       setCustomerScan(null);
-      setAutolivScan(null);
+      return;
     }
+
+    // If multiple matches (edge case), block all matching invoices
+    if (matchedItems.length > 1) {
+      toast.warning("⚠️ Multiple invoices matched!", {
+        description: `Part code found in ${matchedItems.length} invoices. All will be blocked for admin review.`,
+        duration: 5000,
+      });
+
+      matchedItems.forEach(({ invoiceId }) => {
+        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+        if (invoice) {
+          updateInvoiceAudit(invoice.id, {
+            blocked: true,
+            blockedAt: new Date()
+          }, currentUser);
+
+          addMismatchAlert({
+            user: currentUser,
+            customer: invoice.customer,
+            invoiceId: invoice.id,
+            step: 'doc-audit',
+            validationStep: 'customer_qr_no_match',
+            customerScan: {
+              partCode: customerScan.partCode || 'N/A',
+              quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
+              binNumber: customerScan.binNumber || 'N/A',
+              rawValue: customerScan.rawValue || 'N/A'
+            },
+            autolivScan: {
+              partCode: 'N/A',
+              quantity: 'N/A',
+              binNumber: 'N/A',
+              rawValue: 'N/A'
+            }
+          });
+        }
+      });
+
+      setCustomerScan(null);
+      return;
+    }
+
+    // STEP 1 SUCCESS: Customer QR matched
+    const { invoiceId, item } = matchedItems[0];
+    setMatchedCustomerItem({ invoiceId, item });
+    
+    toast.success("✅ Step 1: Customer QR validated!", {
+      description: `Part code "${customerPartCode}" matched. Please scan Autoliv QR.`,
+      duration: 3000,
+    });
+  };
+
+  // Step 2: Validate Autoliv QR - Match with part (item_number)
+  const handleAutolivQRValidation = () => {
+    if (!autolivScan || autolivScan.qrType !== 'autoliv') {
+      return;
+    }
+
+    // Check if any selected invoice is blocked
+    const hasBlockedInvoice = selectedInvoices.some(invoiceId => {
+      const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+      return invoice?.blocked;
+    });
+    
+    if (hasBlockedInvoice) {
+      toast.error("⚠️ One or more invoices are blocked", {
+        description: "Please resolve mismatches before continuing.",
+        duration: 5000,
+      });
+      setAutolivScan(null);
+      return;
+    }
+
+    if (selectedInvoices.length === 0) {
+      toast.error("⚠️ No invoices selected", {
+        description: "Please select invoices before scanning.",
+        duration: 3000,
+      });
+      setAutolivScan(null);
+      return;
+    }
+
+    const autolivPartNumber = autolivScan.partCode?.trim();
+    if (!autolivPartNumber) {
+      toast.error("⚠️ Could not extract part number from Autoliv QR!", {
+        description: "Please ensure the QR code is valid.",
+        duration: 4000,
+      });
+      setAutolivScan(null);
+      return;
+    }
+
+    // Search through all selected invoices to find matching part (item_number)
+    const matchedItems: Array<{ invoiceId: string; item: UploadedRow; invoice: InvoiceData }> = [];
+    
+    for (const invoiceId of selectedInvoices) {
+      const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
+      const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
+      
+      if (!invoice || !invoice.items) continue;
+      
+      // Find invoice_item where part matches Autoliv QR part number
+      const matchedItem = invoice.items.find((item: UploadedRow) => {
+        const itemPart = item.part?.toString().trim() || '';
+        return itemPart === autolivPartNumber;
+      });
+      
+      if (matchedItem) {
+        matchedItems.push({ invoiceId, item: matchedItem, invoice });
+      }
+    }
+
+    if (matchedItems.length === 0) {
+      // STEP 2 MISMATCH: Autoliv QR part number not found
+      toast.error("⚠️ Autoliv QR Mismatch - Step 2 Failed!", {
+        description: `Part number "${autolivPartNumber}" not found in any selected invoice. Invoice(s) blocked.`,
+        duration: 6000,
+      });
+
+      // Block all selected invoices
+      selectedInvoices.forEach(invoiceId => {
+        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+        if (invoice) {
+          updateInvoiceAudit(invoice.id, {
+            blocked: true,
+            blockedAt: new Date()
+          }, currentUser);
+
+          addMismatchAlert({
+            user: currentUser,
+            customer: invoice.customer,
+            invoiceId: invoice.id,
+            step: 'doc-audit',
+            validationStep: 'autoliv_qr_no_match',
+            customerScan: {
+              partCode: customerScan?.partCode || 'N/A',
+              quantity: customerScan?.binQuantity || customerScan?.quantity || 'N/A',
+              binNumber: customerScan?.binNumber || 'N/A',
+              rawValue: customerScan?.rawValue || 'N/A'
+            },
+            autolivScan: {
+              partCode: autolivScan.partCode || 'N/A',
+              quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
+              binNumber: autolivScan.binNumber || 'N/A',
+              rawValue: autolivScan.rawValue || 'N/A'
+            }
+          });
+        }
+      });
+
+      setTimeout(() => {
+        toast.info("📨 Alert sent to admin", {
+          description: "Admin will review and resolve the mismatch.",
+          duration: 5000,
+        });
+      }, 500);
+
+      setAutolivScan(null);
+      setMatchedCustomerItem(null); // Reset customer match
+      return;
+    }
+
+    // If multiple matches (edge case), block all matching invoices
+    if (matchedItems.length > 1) {
+      toast.warning("⚠️ Multiple invoices matched!", {
+        description: `Part number found in ${matchedItems.length} invoices. All will be blocked for admin review.`,
+        duration: 5000,
+      });
+
+      matchedItems.forEach(({ invoiceId }) => {
+        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+        if (invoice) {
+          updateInvoiceAudit(invoice.id, {
+            blocked: true,
+            blockedAt: new Date()
+          }, currentUser);
+
+          addMismatchAlert({
+            user: currentUser,
+            customer: invoice.customer,
+            invoiceId: invoice.id,
+            step: 'doc-audit',
+            validationStep: 'autoliv_qr_no_match',
+            customerScan: {
+              partCode: customerScan?.partCode || 'N/A',
+              quantity: customerScan?.binQuantity || customerScan?.quantity || 'N/A',
+              binNumber: customerScan?.binNumber || 'N/A',
+              rawValue: customerScan?.rawValue || 'N/A'
+            },
+            autolivScan: {
+              partCode: autolivScan.partCode || 'N/A',
+              quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
+              binNumber: autolivScan.binNumber || 'N/A',
+              rawValue: autolivScan.rawValue || 'N/A'
+            }
+          });
+        }
+      });
+
+      setAutolivScan(null);
+      setMatchedCustomerItem(null); // Reset customer match
+      return;
+    }
+
+    // STEP 2 SUCCESS: Autoliv QR matched
+    const { invoiceId, item } = matchedItems[0];
+    setMatchedAutolivItem({ invoiceId, item });
+    
+    toast.success("✅ Step 2: Autoliv QR validated!", {
+      description: `Part number "${autolivPartNumber}" matched. Validating invoice consistency...`,
+      duration: 3000,
+    });
+  };
+
+  // Step 3 & 4: Invoice consistency check and bin quantity match
+  const handleFinalValidation = async () => {
+    if (!matchedCustomerItem || !matchedAutolivItem || !customerScan || !autolivScan) {
+      return;
+    }
+
+    // STEP 3: Check if both items belong to the same invoice
+    if (matchedCustomerItem.invoiceId !== matchedAutolivItem.invoiceId) {
+      // STEP 3 MISMATCH: Items belong to different invoices
+      toast.error("⚠️ Invoice Mismatch - Step 3 Failed!", {
+        description: `Customer item and Autoliv item belong to different invoices. Invoice(s) blocked.`,
+        duration: 6000,
+      });
+
+      // Block both invoices
+      const invoicesToBlock = [
+        matchedCustomerItem.invoiceId,
+        matchedAutolivItem.invoiceId
+      ].filter((id, index, self) => self.indexOf(id) === index); // Remove duplicates
+
+      invoicesToBlock.forEach(invoiceId => {
+        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+        if (invoice) {
+          updateInvoiceAudit(invoice.id, {
+            blocked: true,
+            blockedAt: new Date()
+          }, currentUser);
+
+          addMismatchAlert({
+            user: currentUser,
+            customer: invoice.customer,
+            invoiceId: invoice.id,
+            step: 'doc-audit',
+            validationStep: 'invoice_mismatch',
+            customerScan: {
+              partCode: customerScan.partCode || 'N/A',
+              quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
+              binNumber: customerScan.binNumber || 'N/A',
+              rawValue: customerScan.rawValue || 'N/A'
+            },
+            autolivScan: {
+              partCode: autolivScan.partCode || 'N/A',
+              quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
+              binNumber: autolivScan.binNumber || 'N/A',
+              rawValue: autolivScan.rawValue || 'N/A'
+            }
+          });
+        }
+      });
+
+      setTimeout(() => {
+        toast.info("📨 Alert sent to admin", {
+          description: "Admin will review and resolve the mismatch.",
+          duration: 5000,
+        });
+      }, 500);
+
+      // Reset state
+      setCustomerScan(null);
+      setAutolivScan(null);
+      setMatchedCustomerItem(null);
+      setMatchedAutolivItem(null);
+      return;
+    }
+
+    // STEP 3 SUCCESS: Both items belong to same invoice
+    const invoiceId = matchedCustomerItem.invoiceId;
+    const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+    
+    if (!invoice) {
+      toast.error("⚠️ Invoice not found", {
+        description: "Please try again.",
+        duration: 3000,
+      });
+      setCustomerScan(null);
+      setAutolivScan(null);
+      setMatchedCustomerItem(null);
+      setMatchedAutolivItem(null);
+      return;
+    }
+
+    // STEP 4: Match bin quantities (must be exactly equal)
+    const customerBinQty = customerScan.binQuantity?.trim();
+    const autolivBinQty = autolivScan.binQuantity?.trim();
+
+    if (!customerBinQty || !autolivBinQty) {
+      toast.error("⚠️ Could not extract bin quantities from QR codes!", {
+        description: "Please ensure both QR codes contain valid bin quantities.",
+        duration: 4000,
+      });
+      setCustomerScan(null);
+      setAutolivScan(null);
+      setMatchedCustomerItem(null);
+      setMatchedAutolivItem(null);
+      return;
+    }
+
+    if (customerBinQty !== autolivBinQty) {
+      // STEP 4 MISMATCH: Bin quantities don't match
+      toast.error("⚠️ Bin Quantity Mismatch - Step 4 Failed!", {
+        description: `Customer QR bin quantity "${customerBinQty}" does not match Autoliv QR bin quantity "${autolivBinQty}". Invoice blocked.`,
+        duration: 6000,
+      });
+
+      // Block the invoice
+      updateInvoiceAudit(invoiceId, {
+        blocked: true,
+        blockedAt: new Date()
+      }, currentUser);
+
+      addMismatchAlert({
+        user: currentUser,
+        customer: invoice.customer,
+        invoiceId: invoiceId,
+        step: 'doc-audit',
+        validationStep: 'bin_quantity_mismatch',
+        customerScan: {
+          partCode: customerScan.partCode || 'N/A',
+          quantity: customerBinQty,
+          binNumber: customerScan.binNumber || 'N/A',
+          rawValue: customerScan.rawValue || 'N/A'
+        },
+        autolivScan: {
+          partCode: autolivScan.partCode || 'N/A',
+          quantity: autolivBinQty,
+          binNumber: autolivScan.binNumber || 'N/A',
+          rawValue: autolivScan.rawValue || 'N/A'
+        }
+      });
+
+      setTimeout(() => {
+        toast.info("📨 Alert sent to admin", {
+          description: "Admin will review and resolve the mismatch.",
+          duration: 5000,
+        });
+      }, 500);
+
+      // Reset state
+      setCustomerScan(null);
+      setAutolivScan(null);
+      setMatchedCustomerItem(null);
+      setMatchedAutolivItem(null);
+      return;
+    }
+
+    // STEP 4 SUCCESS: All validations passed!
+    const binQuantity = parseInt(customerBinQty) || 0;
+    const matchedInvoiceItem = matchedCustomerItem.item;
+
+    // Check if this specific invoice_item was already scanned
+    const invoiceBins = validatedBins[invoiceId] || [];
+    const alreadyScanned = invoiceBins.some(bin => 
+      bin.customerItem === (matchedInvoiceItem.customerItem || matchedInvoiceItem.part) &&
+      bin.itemNumber === matchedInvoiceItem.part
+    );
+    
+    if (alreadyScanned) {
+      toast.warning("⚠️ This item was already scanned for this invoice!", {
+        description: `Invoice: ${invoiceId}`,
+        duration: 3000,
+      });
+      setCustomerScan(null);
+      setAutolivScan(null);
+      setMatchedCustomerItem(null);
+      setMatchedAutolivItem(null);
+      return;
+    }
+
+    const newScannedItem = {
+      customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
+      itemNumber: matchedInvoiceItem.part || 'N/A',
+      partDescription: matchedInvoiceItem.partDescription || 'N/A',
+      quantity: matchedInvoiceItem.qty,
+      binQuantity: binQuantity,
+      status: 'matched',
+      scannedBy: currentUser,
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    };
+
+    const uniqueCustomerItems = getUniqueCustomerItems(invoice);
+    const totalCustomerItems = uniqueCustomerItems.length;
+    const newScannedCount = invoiceBins.length + 1;
+    const isComplete = newScannedCount >= totalCustomerItems;
+
+    // Save scan to database immediately
+    try {
+      const scanResult = await auditApi.recordScan(invoiceId, {
+        customerBarcode: customerScan.rawValue,
+        autolivBarcode: autolivScan.rawValue,
+        customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
+        itemNumber: matchedInvoiceItem.part || 'N/A',
+        partDescription: matchedInvoiceItem.partDescription || 'N/A',
+        quantity: matchedInvoiceItem.qty || 0,
+        binQuantity: binQuantity,
+        binNumber: customerScan.binNumber || autolivScan.binNumber || null,
+        status: 'matched',
+        scanContext: 'doc-audit'
+      });
+
+      if (scanResult?.matchedInvoiceItem) {
+        const updatedItem = scanResult.matchedInvoiceItem;
+        newScannedItem.binQuantity = updatedItem.number_of_bins ? 
+          Math.ceil(matchedInvoiceItem.qty / (binQuantity || 1)) : 
+          binQuantity;
+      }
+    } catch (error: any) {
+      console.error('Error saving scan to database:', error);
+      toast.error('Failed to save scan to database', {
+        description: error.message || 'Please try again',
+        duration: 5000
+      });
+    }
+
+    // Update local state
+    setValidatedBins(prev => ({
+      ...prev,
+      [invoiceId]: [...(prev[invoiceId] || []), newScannedItem]
+    }));
+
+    // Update invoice audit status
+    updateInvoiceAudit(invoiceId, {
+      scannedBins: newScannedCount,
+      expectedBins: totalCustomerItems,
+      auditComplete: isComplete
+    }, currentUser);
+
+    toast.success(`✅ All validations passed! Item scanned for Invoice ${invoiceId}!`, {
+      description: `${matchedInvoiceItem.customerItem || matchedInvoiceItem.part} | Bin Qty: ${binQuantity} | Progress: ${newScannedCount}/${totalCustomerItems}`,
+      duration: 4000,
+    });
+
+    // Reset state for next scan
+    setCustomerScan(null);
+    setAutolivScan(null);
+    setMatchedCustomerItem(null);
+    setMatchedAutolivItem(null);
   };
 
   return (
