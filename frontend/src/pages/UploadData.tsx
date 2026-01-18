@@ -278,6 +278,15 @@ const UploadData = () => {
             return;
           }
           
+          // Debug: Log detected headers
+          console.log('\n🔍 DEBUG: Invoice File Headers');
+          console.log(`  Total headers: ${headers.length}`);
+          console.log(`  Headers:`, headers);
+          console.log(`  Looking for "Customer Item":`, headers.some(h => h.toLowerCase().includes('customer') && h.toLowerCase().includes('item')));
+          console.log(`  Headers containing "Customer":`, headers.filter(h => h.toLowerCase().includes('customer')));
+          console.log(`  Headers containing "Item":`, headers.filter(h => h.toLowerCase().includes('item')));
+          console.log('================================\n');
+          
           const parsedData: UploadedRow[] = dataRows.map((row: string[], index: number) => {
             const rowObj: any = {};
             headers.forEach((header, colIndex) => {
@@ -533,6 +542,18 @@ const UploadData = () => {
                 return;
               }
 
+              // Debug: Log schedule file headers
+              if (jsonData.length > 0) {
+                const scheduleHeaders = Object.keys(jsonData[0]);
+                console.log(`\n🔍 DEBUG: Schedule Sheet "${sheetName}" Headers`);
+                console.log(`  Total headers: ${scheduleHeaders.length}`);
+                console.log(`  Headers:`, scheduleHeaders);
+                console.log(`  Looking for "PART NUMBER":`, scheduleHeaders.some(h => h.toLowerCase().includes('part') && h.toLowerCase().includes('number')));
+                console.log(`  Headers containing "PART":`, scheduleHeaders.filter(h => h.toLowerCase().includes('part')));
+                console.log(`  Headers containing "NUMBER":`, scheduleHeaders.filter(h => h.toLowerCase().includes('number')));
+                console.log('================================\n');
+              }
+              
               // Check first 5 rows to see if PART NUMBER column exists
               const firstFiveRows = jsonData.slice(0, Math.min(5, jsonData.length));
               let partNumberColumnExists = false;
@@ -546,7 +567,10 @@ const UploadData = () => {
               }
 
               if (!partNumberColumnExists) {
-                console.warn(`PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Treating partNumber as null for all rows.`);
+                console.warn(`⚠️ PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Treating partNumber as null for all rows.`);
+                console.warn(`  Available columns:`, Object.keys(firstFiveRows[0] || {}));
+              } else {
+                console.log(`✓ PART NUMBER column detected in sheet "${sheetName}"`);
               }
               
               jsonData.forEach((row: any) => {
@@ -555,7 +579,9 @@ const UploadData = () => {
                 // Customer Code removed - schedule no longer contains customer code column
                 const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
                 // Only extract PART NUMBER if column was found in first 5 rows, otherwise use empty string
-                const partNumber = partNumberColumnExists ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
+                // Normalize: convert to string, trim, and collapse multiple spaces
+                const partNumberRaw = partNumberColumnExists ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
+                const partNumber = String(partNumberRaw).trim().replace(/\s+/g, ' ');
                 const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
                 const description = getColumnValue(row, ['Description', 'description']) || '';
                 const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
@@ -781,9 +807,10 @@ const UploadData = () => {
       setParsedScheduleItems(validScheduleItems);
       
       // Helper function to normalize values for comparison
+      // Trims whitespace and collapses multiple spaces to single space
       const normalizeValue = (value: any): string => {
         if (value === null || value === undefined) return '';
-        return String(value).trim();
+        return String(value).trim().replace(/\s+/g, ' ');
       };
       
       // ============================================
@@ -801,6 +828,16 @@ const UploadData = () => {
           schedulePartNumbers.add(partNumber);
         }
       });
+      
+      console.log('\n🔍 DEBUG: Parsed Data Summary');
+      console.log(`  Schedule items parsed: ${validScheduleItems.length}`);
+      console.log(`  Schedule items with partNumber: ${validScheduleItems.filter(s => s.partNumber).length}`);
+      console.log(`  Unique schedule PART NUMBERS: ${schedulePartNumbers.size}`);
+      console.log(`  Sample schedule partNumbers (first 5):`, validScheduleItems.filter(s => s.partNumber).slice(0, 5).map(s => s.partNumber));
+      console.log(`  Invoice rows parsed: ${invoiceResult.rows.length}`);
+      console.log(`  Invoice rows with customerItem: ${invoiceResult.rows.filter(r => r.customerItem).length}`);
+      console.log(`  Sample invoice customerItems (first 5):`, invoiceResult.rows.filter(r => r.customerItem).slice(0, 5).map(r => r.customerItem));
+      console.log('================================\n');
       
       console.log('Schedule PART NUMBERS:', schedulePartNumbers.size);
       console.log('Invoice rows to validate:', invoiceResult.rows.length);
@@ -856,6 +893,52 @@ const UploadData = () => {
       console.log('🔵 ============================================\n');
       
       toast.dismiss(loadingToast);
+      
+      // Show diagnostics if there are issues
+      if (matchedCount === 0 && unmatchedCount > 0) {
+        console.warn('\n⚠️ ===== MATCHING DIAGNOSTICS =====');
+        console.warn(`No matches found! This could be due to:`);
+        console.warn(`1. Customer Item values don't match PART NUMBER values`);
+        console.warn(`2. Extra whitespace in cells (now handled with normalization)`);
+        console.warn(`3. PART NUMBER column not detected in schedule`);
+        
+        // Debug: Check what's actually in the parsed data
+        console.warn(`\n🔍 DEBUG: Checking parsed data...`);
+        console.warn(`  Total invoice rows: ${invoiceResult.rows.length}`);
+        console.warn(`  Total schedule items: ${validScheduleItems.length}`);
+        console.warn(`  Sample invoice rows (first 3):`, invoiceResult.rows.slice(0, 3).map(r => ({
+          invoice: r.invoice,
+          customerItem: r.customerItem,
+          part: r.part
+        })));
+        console.warn(`  Sample schedule items (first 3):`, validScheduleItems.slice(0, 3).map(s => ({
+          partNumber: s.partNumber,
+          customerPart: s.customerPart
+        })));
+        
+        // Get customer items from validated data
+        const customerItemsFromValidated = Array.from(new Set(validatedData.map(r => r.customerItem).filter(Boolean)));
+        console.warn(`\n📋 Invoice Customer Items from validated data (${customerItemsFromValidated.length}):`, customerItemsFromValidated.slice(0, 10));
+        console.warn(`📋 Schedule Part Numbers (${schedulePartNumbers.size}):`, Array.from(schedulePartNumbers).slice(0, 10));
+        
+        // Check if schedule items have partNumber
+        const scheduleItemsWithPartNumber = validScheduleItems.filter(s => s.partNumber);
+        console.warn(`  Schedule items with partNumber: ${scheduleItemsWithPartNumber.length} out of ${validScheduleItems.length}`);
+        
+        // Check if invoice rows have customerItem
+        const invoiceRowsWithCustomerItem = invoiceResult.rows.filter(r => r.customerItem);
+        console.warn(`  Invoice rows with customerItem: ${invoiceRowsWithCustomerItem.length} out of ${invoiceResult.rows.length}`);
+        console.warn('====================================\n');
+        
+        toast.warning(`⚠️ No matches found!`, {
+          description: `${unmatchedCount} items couldn't be matched with schedule. Check console for details.`,
+          duration: 8000
+        });
+      } else if (unmatchedCount > matchedCount) {
+        console.warn(`\n⚠️ More unmatched (${unmatchedCount}) than matched (${matchedCount})`);
+        console.warn(`📋 Sample unmatched customer items:`, uploadedData.filter(r => r.status === 'valid-unmatched').slice(0, 5).map(r => r.customerItem));
+      }
+      
       toast.success(`Validation complete!`, {
         description: `Matched: ${matchedCount}, Unmatched: ${unmatchedCount}, Errors: ${errorCount}`
       });
@@ -916,14 +999,48 @@ const UploadData = () => {
 
       // Upload schedule file first
       const scheduleResult = await scheduleApi.upload(scheduleFile, selectedCustomerCode);
+      console.log('\n📤 ===== SCHEDULE UPLOAD RESULT =====');
       console.log('Schedule upload result:', scheduleResult);
+      
+      if (scheduleResult.diagnostics) {
+        console.log('📊 Unique part numbers:', scheduleResult.diagnostics.uniquePartNumbers);
+        console.log('📋 Sample part numbers:', scheduleResult.diagnostics.samplePartNumbers);
+      }
+      
+      if (scheduleResult.filteringStats) {
+        console.log('📊 Filtering stats:', scheduleResult.filteringStats);
+      }
+      
+      if (scheduleResult.validationStats) {
+        console.log('✅ Validation stats:', scheduleResult.validationStats);
+        if (scheduleResult.validationStats.diagnostics) {
+          console.log('📋 Validation diagnostics:', scheduleResult.validationStats.diagnostics);
+        }
+      }
+      console.log('====================================\n');
+      
       if (scheduleResult.success) {
         toast.success(`Schedule uploaded: ${scheduleResult.itemCount || 0} items`);
       }
       
       // Upload invoice file
       const invoiceResult = await invoicesApi.upload(file, selectedCustomerCode);
+      console.log('\n📤 ===== INVOICE UPLOAD RESULT =====');
       console.log('Invoice upload result:', invoiceResult);
+      
+      if (invoiceResult.diagnostics) {
+        console.log('📊 Unique customer items:', invoiceResult.diagnostics.uniqueCustomerItems);
+        console.log('📋 Sample customer items:', invoiceResult.diagnostics.sampleCustomerItems);
+      }
+      
+      if (invoiceResult.validationStats) {
+        console.log('✅ Validation stats:', invoiceResult.validationStats);
+        if (invoiceResult.validationStats.diagnostics) {
+          console.log('📋 Validation diagnostics:', invoiceResult.validationStats.diagnostics);
+        }
+      }
+      console.log('====================================\n');
+      
       if (invoiceResult.success) {
         toast.success(`Invoices uploaded: ${invoiceResult.invoiceCount || 0} invoices`);
       }

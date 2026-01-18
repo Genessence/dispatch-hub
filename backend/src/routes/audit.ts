@@ -498,5 +498,123 @@ router.post('/mismatch', authenticateToken, async (req: AuthRequest, res: Respon
   }
 });
 
+/**
+ * POST /api/audit/test-scan
+ * Test endpoint to log scan data format (for testing purposes only)
+ */
+router.post('/test-scan', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const scanData = req.body;
+    
+    // Log the exact data structure and types
+    console.log('\n========== TEST SCAN DATA RECEIVED ==========');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('User:', req.user?.username || 'Unknown');
+    console.log('\n--- Request Body (Full Object) ---');
+    console.log(JSON.stringify(scanData, null, 2));
+    console.log('\n--- Data Types ---');
+    console.log('Type of scanData:', typeof scanData);
+    console.log('Is Array:', Array.isArray(scanData));
+    console.log('\n--- Individual Fields ---');
+    Object.keys(scanData).forEach(key => {
+      const value = scanData[key];
+      console.log(`${key}:`, {
+        value: value,
+        type: typeof value,
+        isNull: value === null,
+        isUndefined: value === undefined,
+        constructor: value?.constructor?.name,
+        stringified: JSON.stringify(value)
+      });
+    });
+    console.log('\n--- Field-by-Field Breakdown ---');
+    if (scanData.customerBarcode !== undefined) {
+      console.log('customerBarcode:', {
+        value: scanData.customerBarcode,
+        type: typeof scanData.customerBarcode,
+        length: scanData.customerBarcode?.length
+      });
+    }
+    if (scanData.autolivBarcode !== undefined) {
+      console.log('autolivBarcode:', {
+        value: scanData.autolivBarcode,
+        type: typeof scanData.autolivBarcode,
+        length: scanData.autolivBarcode?.length
+      });
+    }
+    if (scanData.customerItem !== undefined) {
+      console.log('customerItem:', {
+        value: scanData.customerItem,
+        type: typeof scanData.customerItem
+      });
+    }
+    if (scanData.itemNumber !== undefined) {
+      console.log('itemNumber:', {
+        value: scanData.itemNumber,
+        type: typeof scanData.itemNumber
+      });
+    }
+    if (scanData.partDescription !== undefined) {
+      console.log('partDescription:', {
+        value: scanData.partDescription,
+        type: typeof scanData.partDescription
+      });
+    }
+    if (scanData.quantity !== undefined) {
+      console.log('quantity:', {
+        value: scanData.quantity,
+        type: typeof scanData.quantity,
+        isNumber: typeof scanData.quantity === 'number',
+        parsed: Number(scanData.quantity)
+      });
+    }
+    if (scanData.binQuantity !== undefined) {
+      console.log('binQuantity:', {
+        value: scanData.binQuantity,
+        type: typeof scanData.binQuantity,
+        isNumber: typeof scanData.binQuantity === 'number',
+        parsed: Number(scanData.binQuantity)
+      });
+    }
+    if (scanData.binNumber !== undefined) {
+      console.log('binNumber:', {
+        value: scanData.binNumber,
+        type: typeof scanData.binNumber
+      });
+    }
+    if (scanData.status !== undefined) {
+      console.log('status:', {
+        value: scanData.status,
+        type: typeof scanData.status
+      });
+    }
+    if (scanData.scanContext !== undefined) {
+      console.log('scanContext:', {
+        value: scanData.scanContext,
+        type: typeof scanData.scanContext
+      });
+    }
+    if (scanData.invoiceId !== undefined) {
+      console.log('invoiceId:', {
+        value: scanData.invoiceId,
+        type: typeof scanData.invoiceId
+      });
+    }
+    console.log('\n========== END TEST SCAN DATA ==========\n');
+    
+    res.json({ 
+      success: true, 
+      message: 'Test scan data logged to console',
+      receivedData: scanData
+    });
+  } catch (error: any) {
+    console.error('Error in test-scan endpoint:', error);
+    res.status(500).json({ 
+      error: 'Failed to process test scan',
+      message: error?.message || 'Unknown error occurred'
+    });
+  }
+});
+
 export default router;
 

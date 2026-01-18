@@ -228,9 +228,13 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       return res.status(400).json({ error: 'No data found in file' });
     }
 
+    console.log('\n📤 ===== INVOICE UPLOAD: Starting =====');
+    console.log(`📊 Total rows in file: ${jsonData.length}`);
+
     const invoiceMap = new Map<string, any>();
     const allItems: any[] = [];
     const foundCustomerCodes = new Set<string>();
+    const sampleCustomerItems: string[] = [];
 
     jsonData.forEach((row: any, index: number) => {
       const invoiceNum = row['Invoice Number'] || row['Invoice'] || row['invoice'] || `INV-${index + 1}`;
@@ -239,8 +243,15 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       const billTo = row['Bill To'] || row['BillTo'] || row['bill to'] || '';
       const plant = row['Ship To'] || row['ShipTo'] || row['Plant'] || row['plant'] || '';
       const part = row['Item Number'] || row['Part'] || row['part'] || row['Part Code'] || 'Unknown Part';
-      const customerItem = row['Customer Item'] || row['CustomerItem'] || row['customer item'] || '';
+      // Normalize customer item
+      const customerItemRaw = row['Customer Item'] || row['CustomerItem'] || row['customer item'] || '';
+      const customerItem = String(customerItemRaw).trim().replace(/\s+/g, ' ');
       const partDescription = row['Part Description'] || row['Description'] || '';
+      
+      // Collect sample customer items for diagnostics (first 10 unique)
+      if (customerItem && sampleCustomerItems.length < 10 && !sampleCustomerItems.includes(customerItem)) {
+        sampleCustomerItems.push(customerItem);
+      }
 
       // Track customer codes found
       if (billTo && String(billTo).trim()) {
@@ -321,6 +332,17 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       const uniqueCustomerItems = new Set(items.map((item: any) => item.customerItem).filter(Boolean));
       invoice.expectedBins = uniqueCustomerItems.size;
     });
+    
+    // Log parsing summary
+    console.log('\n📊 ===== PARSING SUMMARY =====');
+    console.log(`  Invoices found: ${invoiceMap.size}`);
+    console.log(`  Total items: ${allItems.length}`);
+    console.log(`  Customer codes found: ${Array.from(foundCustomerCodes).join(', ') || 'None'}`);
+    console.log(`\n📋 Sample customer items (first 10):`, sampleCustomerItems);
+    
+    const uniqueCustomerItems = new Set(allItems.map(item => item.customerItem).filter(Boolean));
+    console.log(`📊 Unique customer items: ${uniqueCustomerItems.size}`);
+    console.log('================================\n');
 
     // Insert into database using transaction
     let validationStats;
@@ -370,11 +392,16 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       uploadedBy: req.user?.username 
     });
 
+    // uniqueCustomerItems already calculated above (line 343)
     res.json({
       success: true,
       message: `Uploaded ${invoiceMap.size} invoices`,
       invoiceCount: invoiceMap.size,
       itemCount: allItems.length,
+      diagnostics: {
+        uniqueCustomerItems: uniqueCustomerItems.size,
+        sampleCustomerItems: sampleCustomerItems.slice(0, 5)
+      },
       validationStats: validationStats || {
         matchedCount: 0,
         unmatchedCount: 0,

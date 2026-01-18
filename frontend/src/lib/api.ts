@@ -273,6 +273,25 @@ export const auditApi = {
       method: 'POST',
       body: JSON.stringify(data)
     });
+  },
+
+  testScan: async (scanData: {
+    invoiceId?: string;
+    customerBarcode?: string;
+    autolivBarcode?: string;
+    customerItem?: string;
+    itemNumber?: string;
+    partDescription?: string;
+    quantity?: number;
+    binQuantity?: number;
+    binNumber?: string;
+    status?: string;
+    scanContext?: 'doc-audit' | 'loading-dispatch';
+  }) => {
+    return fetchWithAuth('/api/audit/test-scan', {
+      method: 'POST',
+      body: JSON.stringify(scanData)
+    });
   }
 };
 

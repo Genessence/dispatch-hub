@@ -186,29 +186,66 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     let totalRowsProcessed = 0;
     let rowsFilteredOut = 0; // Rows where quantity === quantityDispatched
     let rowsExcludedMissingColumns = 0; // Rows with both columns missing
+    let rowsWithoutPartNumber = 0; // Rows missing PART NUMBER
+    
+    console.log('\n📤 ===== SCHEDULE UPLOAD: Starting =====');
+    console.log(`📊 Sheets found: ${workbook.SheetNames.join(', ')}`);
+    console.log(`📊 Single sheet mode: ${isSingleSheet}`);
 
     // Parse each sheet
     workbook.SheetNames.forEach((sheetName: string) => {
       // Skip generic sheet names only if there are multiple sheets
       // If it's a single sheet, process it regardless of name
       if (!isSingleSheet && (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2')) {
+        console.log(`⏭️  Skipping generic sheet: ${sheetName}`);
         return;
       }
 
+      console.log(`\n📄 Processing sheet: "${sheetName}"`);
       const sheet = workbook.Sheets[sheetName];
-      if (!sheet) return;
+      if (!sheet) {
+        console.warn(`⚠️  Sheet "${sheetName}" is empty or invalid`);
+        return;
+      }
 
       try {
         const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
         
-        if (!jsonData || jsonData.length === 0) return;
+        if (!jsonData || jsonData.length === 0) {
+          console.warn(`⚠️  No data found in sheet "${sheetName}"`);
+          return;
+        }
+        
+        console.log(`📊 Rows in sheet: ${jsonData.length}`);
+        
+        // Check first 5 rows to see if PART NUMBER column exists (like frontend does)
+        const firstFiveRows = jsonData.slice(0, Math.min(5, jsonData.length));
+        let partNumberColumnExists = false;
+        
+        for (const checkRow of firstFiveRows) {
+          const partNumCheck = getColumnValue(checkRow, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']);
+          if (partNumCheck && String(partNumCheck).trim() !== '') {
+            partNumberColumnExists = true;
+            break;
+          }
+        }
+        
+        if (!partNumberColumnExists) {
+          console.warn(`⚠️  PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Items from this sheet will be skipped.`);
+        } else {
+          console.log(`✓ PART NUMBER column detected in sheet "${sheetName}"`);
+        }
 
         jsonData.forEach((row: any) => {
           totalRowsProcessed++;
           
           const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
           const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
-          const partNumber = getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '';
+          
+          // Only extract PART NUMBER if column was found in first 5 rows
+          // Normalize part number: convert to string and trim to handle Excel formatting issues
+          const partNumberRaw = partNumberColumnExists ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
+          const partNumber = String(partNumberRaw).trim().replace(/\s+/g, ' '); // Normalize: trim and collapse spaces
           const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
           const description = getColumnValue(row, ['Description', 'description']) || '';
           const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
@@ -225,30 +262,22 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
           const quantity = parseQuantity(quantityStr);
           const quantityDispatched = parseQuantity(quantityDispatchedStr);
           
-          // Filtering logic:
-          // - If BOTH columns are missing: Exclude row (treat as invalid)
-          // - If either column is missing: Include row (assume not fully dispatched)
-          // - If both present and equal: Exclude row
-          // - If both present and not equal: Include row
+          // Filtering logic (per user requirements):
+          // - Exclude row ONLY if quantity === quantityDispatched (fully dispatched)
+          // - Include all other cases (even if one or both values are null)
+          // - User confirmed: "both columns being empty can never be the case"
           
-          if (quantity === null && quantityDispatched === null) {
-            // Both columns missing - exclude row
-            rowsExcludedMissingColumns++;
-            console.warn(`Row excluded: Both Quantity and Quantity Dispatched columns missing for part ${partNumber || customerPart}`);
+          if (quantity !== null && quantity === quantityDispatched) {
+            // Quantities match - row is fully dispatched, exclude it
+            rowsFilteredOut++;
+            console.log(`Row filtered out: Quantity (${quantity}) equals Quantity Dispatched (${quantityDispatched}) for part ${partNumber || customerPart}`);
             return; // Skip this row
           }
           
-          if (quantity !== null && quantityDispatched !== null) {
-            // Both present - compare numeric values
-            if (quantity === quantityDispatched) {
-              // Quantities match - exclude row
-              rowsFilteredOut++;
-              console.log(`Row filtered out: Quantity (${quantity}) equals Quantity Dispatched (${quantityDispatched}) for part ${partNumber || customerPart}`);
-              return; // Skip this row
-            }
-            // Quantities don't match - include row (continue processing)
-          }
-          // If either column is missing, include row (assume not fully dispatched)
+          // Include all other cases:
+          // - quantity !== quantityDispatched (partially dispatched or not dispatched)
+          // - quantity is null or quantityDispatched is null
+          // - both are null (shouldn't happen per user, but include anyway)
           
           const deliveryDateTime = getColumnValue(row, [
             'SUPPLY DATE', 'Supply Date', 'SupplyDate', 'supply date',
@@ -287,6 +316,16 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
           // Schedule files no longer contain customer code - include all items with part number
           // Only require part number to be present for the item to be valid
           if (partNumber) {
+            // Debug: Log specific part numbers being added
+            if (partNumber === '73112M66T00' || partNumber === '73910M66T00') {
+              const partNumberRaw = getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '';
+              console.log(`\n🔍 DEBUG: Adding schedule item with partNumber="${partNumber}"`);
+              console.log(`  Original raw value: "${partNumberRaw}"`);
+              console.log(`  Normalized value: "${partNumber}"`);
+              console.log(`  Quantity: ${quantity}, QuantityDispatched: ${quantityDispatched}`);
+              console.log(`  Will be included: ${!(quantity !== null && quantity === quantityDispatched)}`);
+            }
+            
             allScheduleItems.push({
               customerCode: customerCode ? customerCode.toString() : null, // Nullable now - migration 007 has been applied
               customerPart: customerPart.toString(),
@@ -302,12 +341,37 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
               unloadingLoc: unloadingLoc ? unloadingLoc.toString() : null,
               quantity: quantity !== null ? Math.round(quantity) : null // Store as integer
             });
+          } else {
+            // Track rows without part number
+            rowsWithoutPartNumber++;
           }
         });
+        
+        console.log(`✅ Processed ${jsonData.length} rows from sheet "${sheetName}"`);
       } catch (sheetError) {
-        console.error(`Error parsing sheet ${sheetName}:`, sheetError);
+        console.error(`❌ Error parsing sheet ${sheetName}:`, sheetError);
       }
     });
+    
+    // Log parsing summary
+    console.log('\n📊 ===== PARSING SUMMARY =====');
+    console.log(`  Total rows processed: ${totalRowsProcessed}`);
+    console.log(`  Rows filtered (qty matched): ${rowsFilteredOut}`);
+    console.log(`  Rows excluded (missing columns): ${rowsExcludedMissingColumns}`);
+    console.log(`  Rows without part number: ${rowsWithoutPartNumber}`);
+    console.log(`  Rows imported: ${allScheduleItems.length}`);
+    
+    // Sample part numbers for debugging
+    const samplePartNumbers = allScheduleItems
+      .map(item => item.partNumber)
+      .filter(Boolean)
+      .slice(0, 10);
+    console.log(`\n📋 Sample part numbers (first 10):`, samplePartNumbers);
+    
+    // Show unique part numbers count
+    const uniquePartNumbers = new Set(allScheduleItems.map(item => item.partNumber).filter(Boolean));
+    console.log(`📊 Unique part numbers: ${uniquePartNumbers.size}`);
+    console.log('================================\n');
 
     // Customer code validation removed - schedule files no longer contain customer codes
     // Schedule items are matched globally by PART NUMBER only
@@ -388,6 +452,10 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       uploadedBy: req.user?.username 
     });
 
+    // samplePartNumbers and uniquePartNumbers already calculated above (lines 355, 362)
+    // Use first 5 for response (already calculated first 10 for logging)
+    const samplePartNumbersForResponse = samplePartNumbers.slice(0, 5);
+
     res.json({
       success: true,
       message: `Uploaded ${allScheduleItems.length} schedule items`,
@@ -396,7 +464,12 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         totalRowsProcessed,
         rowsImported: allScheduleItems.length,
         rowsFilteredOut,
-        rowsExcludedMissingColumns
+        rowsExcludedMissingColumns,
+        rowsWithoutPartNumber
+      },
+      diagnostics: {
+        uniquePartNumbers: uniquePartNumbers.size,
+        samplePartNumbers: samplePartNumbersForResponse
       },
       validationStats: validationStats || {
         matchedCount: 0,

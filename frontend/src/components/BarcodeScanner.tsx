@@ -14,6 +14,10 @@ export interface BarcodeData {
   binNumber: string;
   binQuantity?: string; // Bin quantity extracted from QR (for validation)
   qrType?: 'autoliv' | 'customer'; // Type of QR code scanned
+  // Additional fields for customer QR codes
+  invoiceNumber?: string; // Invoice number (10 digits after date)
+  totalQty?: string; // Total quantity (numbers after invoice number, before first 'A')
+  totalBinNo?: string; // Total bin number (number before "AUTOLIV INDIA PRIVATE LIMITED")
 }
 
 interface BarcodeScannerProps {
@@ -64,22 +68,26 @@ export const BarcodeScanner = ({
   // Example: [)>0612SA16S1V123456SR22281225173P641704700HQ83QPCEH281225R20075D2512280941LAM2005
   // Part Number: Between first P and Q → 641704700H
   // Bin Quantity: Single digit immediately after that Q → 8
-  const parseAutolivQR = (rawValue: string): BarcodeData | null => {
+  const parseAutolivQR = (rawValue: string): { data: BarcodeData | null; error?: string } => {
     try {
       console.log("Parsing Autoliv QR:", rawValue);
       
       // Find the first occurrence of P followed by Q
       const pIndex = rawValue.indexOf('P');
       if (pIndex === -1) {
-        console.error("No 'P' found in Autoliv QR");
-        return null;
+        return { 
+          data: null, 
+          error: "Autoliv QR Format Error: Missing 'P' marker. This doesn't appear to be a valid Autoliv QR code." 
+        };
       }
 
       // Find Q after P
       const qIndex = rawValue.indexOf('Q', pIndex);
       if (qIndex === -1) {
-        console.error("No 'Q' found after 'P' in Autoliv QR");
-        return null;
+        return { 
+          data: null, 
+          error: "Autoliv QR Format Error: Missing 'Q' marker after 'P'. Part number cannot be extracted." 
+        };
       }
 
       // Extract part number between P and Q
@@ -89,93 +97,181 @@ export const BarcodeScanner = ({
       const binQuantity = rawValue.substring(qIndex + 1, qIndex + 2).trim();
 
       if (!partCode) {
-        console.error("Failed to extract part code from Autoliv QR");
-        return null;
+        return { 
+          data: null, 
+          error: "Autoliv QR Format Error: Part code is empty between 'P' and 'Q' markers." 
+        };
       }
 
       if (!binQuantity || !/^\d$/.test(binQuantity)) {
-        console.error("Failed to extract valid bin quantity (single digit) from Autoliv QR");
-        return null;
+        return { 
+          data: null, 
+          error: "Autoliv QR Format Error: Invalid bin quantity after 'Q'. Expected a single digit, found: '" + binQuantity + "'" 
+        };
       }
 
       return {
-        rawValue,
-        partCode,
-        quantity: binQuantity, // Use binQuantity as quantity for consistency
-        binNumber: "", // Not available in Autoliv format
-        binQuantity: binQuantity,
-        qrType: 'autoliv'
+        data: {
+          rawValue,
+          partCode,
+          quantity: binQuantity, // Use binQuantity as quantity for consistency
+          binNumber: "", // Not available in Autoliv format
+          binQuantity: binQuantity,
+          qrType: 'autoliv'
+        }
       };
     } catch (error) {
       console.error("Error parsing Autoliv QR:", error);
-      return null;
+      return { 
+        data: null, 
+        error: "Autoliv QR Parse Error: " + (error instanceof Error ? error.message : "Unknown error occurred") 
+      };
     }
   };
 
-  // Parse Customer QR code format (multi-line)
-  // Part Code: Line 2 (second line) → 84940M69R13-BHE
-  // Bin Quantity: Line 3 (third line, single digit) → 8
-  const parseCustomerQR = (rawValue: string): BarcodeData | null => {
+  // Parse Customer QR code format
+  // Format: 2083107504002                      84940M69R13-BHE8      TONGUE ASSY,FR BELT,L208310750400215/01/26 262060066348A74915N623443243A85A8-232/6AUTOLIV INDIA PRIVATE LIMITED--MSIL - Manesar-15/01/2026 09:31 PM---A85A-
+  // Expected extraction:
+  // - Bin Number: 2083107504002 (from start, before first multiple spaces)
+  // - Part Code: 84940M69R13-BHE (from second field, without trailing digit)
+  // - Scanned Bin Quantity: 8 (trailing digit after part code)
+  // - Invoice Number: 2620600663 (10 digits after date pattern DD/MM/YY)
+  // - Total Quantity: 48 (numbers after invoice number, before first 'A')
+  // - Total Bin No.: 6 (number before "AUTOLIV INDIA PRIVATE LIMITED")
+  const parseCustomerQR = (rawValue: string): { data: BarcodeData | null; error?: string } => {
     try {
       console.log("Parsing Customer QR:", rawValue);
       
-      // Split by newlines (handle both \n and \r\n)
-      const lines = rawValue.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+      // Extract Bin Number: First sequence of digits before first occurrence of multiple spaces (2+ spaces)
+      const binNumberMatch = rawValue.match(/^(\d+)\s{2,}/);
+      const binNumber = binNumberMatch ? binNumberMatch[1] : null;
       
-      if (lines.length < 3) {
-        console.error("Customer QR must have at least 3 lines, got:", lines.length);
-        return null;
+      if (!binNumber) {
+        return { 
+          data: null, 
+          error: "Customer QR Format Error: Could not extract bin number from start of QR code." 
+        };
       }
 
-      // Part code is on line 2 (index 1)
-      const partCode = lines[1].trim();
+      // Split by multiple spaces (2 or more) to extract fields
+      const fields = rawValue.split(/\s{2,}/).map(field => field.trim()).filter(field => field.length > 0);
       
-      // Bin quantity is on line 3 (index 2), should be a single digit
-      const binQuantity = lines[2].trim();
+      if (fields.length < 2) {
+        return { 
+          data: null, 
+          error: "Customer QR Format Error: Expected at least 2 fields separated by multiple spaces. Found " + fields.length + " field(s)." 
+        };
+      }
+
+      // Extract Part Code and Bin Quantity from second field
+      // Format: 84940M69R13-BHE8 where '8' is the bin quantity
+      const partCodeField = fields[1];
+      let partCode = partCodeField;
+      let binQuantity: string | null = null;
+      
+      // Check if last character is a digit (bin quantity)
+      const lastChar = partCodeField[partCodeField.length - 1];
+      if (lastChar && /^\d$/.test(lastChar)) {
+        // Extract part code without trailing digit
+        partCode = partCodeField.slice(0, -1);
+        binQuantity = lastChar;
+      } else {
+        // If no trailing digit, default bin quantity to "1"
+        binQuantity = "1";
+      }
 
       if (!partCode) {
-        console.error("Failed to extract part code from Customer QR (line 2)");
-        return null;
+        return { 
+          data: null, 
+          error: "Customer QR Format Error: Part code not found in expected position (field 2)." 
+        };
       }
 
-      if (!binQuantity || !/^\d$/.test(binQuantity)) {
-        console.error("Failed to extract valid bin quantity (single digit) from Customer QR (line 3)");
-        return null;
+      // Extract Invoice Number: 10 digits after date pattern DD/MM/YY
+      // Pattern: date pattern followed by optional spaces, then exactly 10 digits
+      const invoiceNumberMatch = rawValue.match(/(\d{2}\/\d{2}\/\d{2})\s*(\d{10})/);
+      const invoiceNumber = invoiceNumberMatch ? invoiceNumberMatch[2] : null;
+
+      // Extract Total Quantity: Numbers after invoice number, before first 'A'
+      // Pattern: After the 10-digit invoice number, capture all consecutive digits before first 'A'
+      let totalQty: string | null = null;
+      if (invoiceNumber) {
+        const invoiceIndex = rawValue.indexOf(invoiceNumber);
+        if (invoiceIndex !== -1) {
+          const afterInvoice = rawValue.substring(invoiceIndex + invoiceNumber.length);
+          const totalQtyMatch = afterInvoice.match(/^(\d+)A/i);
+          if (totalQtyMatch) {
+            totalQty = totalQtyMatch[1];
+          }
+        }
       }
+
+      // Extract Total Bin Number: Number before "AUTOLIV INDIA PRIVATE LIMITED"
+      // Pattern: /(\d+)AUTOLIV (case-insensitive)
+      const totalBinNoMatch = rawValue.match(/\/(\d+)AUTOLIV/i);
+      const totalBinNo = totalBinNoMatch ? totalBinNoMatch[1] : null;
+
+      console.log("Customer QR parsed successfully:", {
+        binNumber,
+        partCode,
+        binQuantity,
+        invoiceNumber,
+        totalQty,
+        totalBinNo
+      });
 
       return {
-        rawValue,
-        partCode,
-        quantity: binQuantity, // Use binQuantity as quantity for consistency
-        binNumber: "", // Not available in customer format
-        binQuantity: binQuantity,
-        qrType: 'customer'
+        data: {
+          rawValue,
+          partCode,
+          quantity: binQuantity || "1",
+          binNumber: binNumber,
+          binQuantity: binQuantity || undefined,
+          qrType: 'customer',
+          invoiceNumber: invoiceNumber || undefined,
+          totalQty: totalQty || undefined,
+          totalBinNo: totalBinNo || undefined
+        }
       };
     } catch (error) {
       console.error("Error parsing Customer QR:", error);
-      return null;
+      return { 
+        data: null, 
+        error: "Customer QR Parse Error: " + (error instanceof Error ? error.message : "Unknown error occurred") 
+      };
     }
   };
 
   // Detect QR type and parse accordingly
-  const parseBarcodeData = (rawValue: string): BarcodeData | null => {
+  const parseBarcodeData = (rawValue: string): { data: BarcodeData | null; error?: string } => {
     try {
       console.log("Parsing barcode/QR:", rawValue);
       
       // Check if it's Autoliv QR format (contains P and Q pattern)
       if (rawValue.includes('P') && rawValue.includes('Q')) {
         const autolivResult = parseAutolivQR(rawValue);
-        if (autolivResult) {
-          return autolivResult;
+        if (autolivResult.data) {
+          return { data: autolivResult.data };
+        }
+        // If parsing failed but format was detected, return the error
+        if (autolivResult.error) {
+          return { data: null, error: autolivResult.error };
         }
       }
 
-      // Check if it's Customer QR format (multi-line with at least 3 lines)
+      // Check if it's Customer QR format
+      // Try both multi-line (at least 3 lines) and single-line (space-delimited fields)
       const lines = rawValue.split(/\r?\n/).filter(line => line.trim().length > 0);
-      if (lines.length >= 3) {
+      const fields = rawValue.split(/\s{2,}/).map(field => field.trim()).filter(field => field.length > 0);
+      
+      if (lines.length >= 3 || fields.length >= 2) {
         const customerResult = parseCustomerQR(rawValue);
-        if (customerResult) {
-          return customerResult;
+        if (customerResult.data) {
+          return { data: customerResult.data };
+        }
+        // If parsing failed but format was detected, return the error
+        if (customerResult.error) {
+          return { data: null, error: customerResult.error };
         }
       }
 
@@ -202,19 +298,41 @@ export const BarcodeScanner = ({
       // Validate that we got at least partCode
       if (!partCode) {
         console.error("Failed to parse any known QR/barcode format:", rawValue);
-        return null;
+        
+        // Generate helpful error message based on what we detected
+        let errorMsg = "❌ Unrecognized QR Code Format\n\n";
+        errorMsg += "This QR code doesn't match any supported format:\n\n";
+        errorMsg += "✓ Autoliv QR: Should contain P...Q pattern\n";
+        errorMsg += "✓ Customer QR: Multi-line (3+ lines) or space-delimited (2+ fields)\n";
+        errorMsg += "✓ Legacy: Part_code-X,Quantity-Y,Bin_number-Z\n\n";
+        
+        if (rawValue.length < 10) {
+          errorMsg += "⚠️ Scanned data seems too short (" + rawValue.length + " chars). Please ensure:\n";
+          errorMsg += "• Scanner is positioned correctly\n";
+          errorMsg += "• QR code is not damaged or blurry\n";
+          errorMsg += "• Scanner settings are correct";
+        } else {
+          errorMsg += "📋 Scanned data: " + rawValue.substring(0, 50) + (rawValue.length > 50 ? "..." : "");
+        }
+        
+        return { data: null, error: errorMsg };
       }
 
       return {
-        rawValue,
-        partCode,
-        quantity: quantity || "0",
-        binNumber: binNumber || "",
-        binQuantity: quantity || undefined
+        data: {
+          rawValue,
+          partCode,
+          quantity: quantity || "0",
+          binNumber: binNumber || "",
+          binQuantity: quantity || undefined
+        }
       };
     } catch (error) {
       console.error("Error parsing barcode:", error);
-      return null;
+      return { 
+        data: null, 
+        error: "⚠️ Parsing Error: " + (error instanceof Error ? error.message : "An unexpected error occurred while parsing the QR code.") 
+      };
     }
   };
 
@@ -398,19 +516,20 @@ export const BarcodeScanner = ({
       setIsProcessing(true);
 
       // Parse the barcode data
-      const parsedData = parseBarcodeData(scannedValue);
+      const parseResult = parseBarcodeData(scannedValue);
       
-      if (parsedData) {
-        console.log("Parsed barcode data:", parsedData);
+      if (parseResult.data) {
+        console.log("Parsed barcode data:", parseResult.data);
         
-        const qrTypeLabel = parsedData.qrType === 'autoliv' ? 'Autoliv QR' : 
-                           parsedData.qrType === 'customer' ? 'Customer QR' : 'Barcode';
-        const description = parsedData.binQuantity 
-          ? `Part: ${parsedData.partCode}, Bin Qty: ${parsedData.binQuantity}`
-          : `Part: ${parsedData.partCode}, Qty: ${parsedData.quantity}`;
+        const qrTypeLabel = parseResult.data.qrType === 'autoliv' ? 'Autoliv QR' : 
+                           parseResult.data.qrType === 'customer' ? 'Customer QR' : 'Barcode';
+        const description = parseResult.data.binQuantity 
+          ? `Part: ${parseResult.data.partCode}, Bin Qty: ${parseResult.data.binQuantity}`
+          : `Part: ${parseResult.data.partCode}, Qty: ${parseResult.data.quantity}`;
         
-        toast.success(`${qrTypeLabel} scanned successfully!`, {
-          description: description
+        toast.success(`✅ ${qrTypeLabel} scanned successfully!`, {
+          description: description,
+          duration: 3000
         });
         
         // Reset scanner state
@@ -419,15 +538,21 @@ export const BarcodeScanner = ({
         setIsProcessing(false);
         
         // Send the parsed barcode data to parent
-        onScan(parsedData);
+        onScan(parseResult.data);
         
         // Close the dialog
         onClose();
       } else {
-        // Parsing failed
-        toast.error("Failed to parse QR code", {
-          description: "QR code format is invalid. Please ensure you're scanning the correct QR code type (Customer or Autoliv).",
-          duration: 5000
+        // Parsing failed - show detailed error
+        const errorMessage = parseResult.error || "QR code format is invalid. Please ensure you're scanning the correct QR code type.";
+        
+        toast.error("Failed to Parse QR Code", {
+          description: errorMessage,
+          duration: 8000,
+          style: {
+            maxWidth: '500px',
+            whiteSpace: 'pre-line'
+          }
         });
         scannerInputRef.current = '';
         setScannerInput('');
@@ -687,36 +812,44 @@ export const BarcodeScanner = ({
           lastScanTimeRef.current = now;
 
           // Parse the barcode data
-          const parsedData = parseBarcodeData(rawValue);
+          const parseResult = parseBarcodeData(rawValue);
           
-          if (parsedData) {
-            console.log("Parsed barcode data:", parsedData);
+          if (parseResult.data) {
+            console.log("Parsed barcode data:", parseResult.data);
             
             // Show success message with QR type-specific info
-            const qrTypeLabel = parsedData.qrType === 'autoliv' ? 'Autoliv QR' : 
-                               parsedData.qrType === 'customer' ? 'Customer QR' : 'Barcode';
-            const description = parsedData.binQuantity 
-              ? `Part: ${parsedData.partCode}, Bin Qty: ${parsedData.binQuantity}`
-              : `Part: ${parsedData.partCode}, Qty: ${parsedData.quantity}`;
+            const qrTypeLabel = parseResult.data.qrType === 'autoliv' ? 'Autoliv QR' : 
+                               parseResult.data.qrType === 'customer' ? 'Customer QR' : 'Barcode';
+            const description = parseResult.data.binQuantity 
+              ? `Part: ${parseResult.data.partCode}, Bin Qty: ${parseResult.data.binQuantity}`
+              : `Part: ${parseResult.data.partCode}, Qty: ${parseResult.data.quantity}`;
             
-            toast.success(`${qrTypeLabel} scanned successfully!`, {
-              description: description
+            toast.success(`✅ ${qrTypeLabel} scanned successfully!`, {
+              description: description,
+              duration: 3000
             });
             
             // Stop scanning
             stopScanning();
             
             // Send the parsed barcode data to parent
-            onScan(parsedData);
+            onScan(parseResult.data);
             
             // Close the dialog immediately
             onClose();
           } else {
-            // Parsing failed - show error but keep scanning
-            toast.error("Failed to parse QR code", {
-              description: "QR code format is invalid. Please ensure you're scanning the correct QR code type."
+            // Parsing failed - show detailed error but keep scanning
+            const errorMessage = parseResult.error || "QR code format is invalid. Please ensure you're scanning the correct QR code type.";
+            
+            toast.error("Failed to Parse QR Code", {
+              description: errorMessage,
+              duration: 8000,
+              style: {
+                maxWidth: '500px',
+                whiteSpace: 'pre-line'
+              }
             });
-            // Continue scanning
+            // Continue scanning - user can try again
           }
         } else if (error) {
           // Error during scanning - this is normal when no barcode is detected

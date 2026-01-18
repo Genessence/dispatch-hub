@@ -85,6 +85,10 @@ const DocAudit = () => {
   // Invoice QR scanning
   const [showInvoiceQRScanner, setShowInvoiceQRScanner] = useState(false);
   
+  // Test scan states
+  const [testCustomerScan, setTestCustomerScan] = useState<BarcodeData | null>(null);
+  const [testAutolivScan, setTestAutolivScan] = useState<BarcodeData | null>(null);
+  
   const [validatedBins, setValidatedBins] = useState<Record<string, Array<{
     customerItem: string;
     itemNumber: string;
@@ -1682,10 +1686,10 @@ const DocAudit = () => {
                                 <th className="text-left p-2 font-semibold">Item Number</th>
                                 <th className="text-left p-2 font-semibold">Part Description</th>
                                 <th className="text-left p-2 font-semibold">Quantity</th>
-                                <th className="text-left p-2 font-semibold">Bin Quantity</th>
-                                <th className="text-left p-2 font-semibold">Scanned Quantity</th>
-                                <th className="text-left p-2 font-semibold">No. of Bins</th>
-                                <th className="text-left p-2 font-semibold">Scanned Bins</th>
+                                <th className="text-left p-2 font-semibold">Customer Bin</th>
+                                <th className="text-left p-2 font-semibold">Cust Scanned Qty</th>
+                                <th className="text-left p-2 font-semibold">INBD Bin</th>
+                                <th className="text-left p-2 font-semibold">INBD Scanned Qty</th>
                                 <th className="text-left p-2 font-semibold">Status</th>
                               </tr>
                             </thead>
@@ -1934,6 +1938,151 @@ const DocAudit = () => {
                         </span>
                       </div>
                     </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Test Scan Button - Temporary for Testing */}
+            <Card className="mb-6 border-dashed border-2 border-yellow-500/50 bg-yellow-50/50 dark:bg-yellow-950/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm text-yellow-700 dark:text-yellow-400">🧪 Test Scanning (Temporary)</CardTitle>
+                <CardDescription className="text-xs">
+                  Scan real QR codes with hardware scanner - data will be logged to backend console only
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    {/* Test Customer Label Scan */}
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2 text-xs">
+                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs font-bold">1</span>
+                        Test Customer Label
+                      </Label>
+                      {testCustomerScan && (
+                        <div className="p-2 bg-muted rounded-lg text-xs space-y-1">
+                          <p className="text-[10px] text-muted-foreground mb-1 font-semibold">Scanned Data:</p>
+                          <div className="space-y-0.5">
+                            <p className="font-mono text-[10px] break-all text-muted-foreground">{testCustomerScan.rawValue}</p>
+                            {(testCustomerScan.binNumber || testCustomerScan.partCode || testCustomerScan.binQuantity || testCustomerScan.invoiceNumber || testCustomerScan.totalQty || testCustomerScan.totalBinNo) && (
+                              <div className="mt-2 pt-2 border-t border-border/50">
+                                <p className="text-[10px] text-muted-foreground mb-1 font-semibold">Extracted Fields:</p>
+                                {testCustomerScan.binNumber && <p className="text-[10px]"><span className="font-semibold">Bin Number:</span> {testCustomerScan.binNumber}</p>}
+                                {testCustomerScan.partCode && <p className="text-[10px]"><span className="font-semibold">Part Code:</span> {testCustomerScan.partCode}</p>}
+                                {testCustomerScan.binQuantity && <p className="text-[10px]"><span className="font-semibold">Bin Qty:</span> {testCustomerScan.binQuantity}</p>}
+                                {testCustomerScan.invoiceNumber && <p className="text-[10px]"><span className="font-semibold">Invoice:</span> {testCustomerScan.invoiceNumber}</p>}
+                                {testCustomerScan.totalQty && <p className="text-[10px]"><span className="font-semibold">Total Qty:</span> {testCustomerScan.totalQty}</p>}
+                                {testCustomerScan.totalBinNo && <p className="text-[10px]"><span className="font-semibold">Total Bins:</span> {testCustomerScan.totalBinNo}</p>}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      <BarcodeScanButton
+                        onScan={(data) => {
+                          setTestCustomerScan(data);
+                          toast.success("Test customer barcode scanned!");
+                        }}
+                        label={testCustomerScan ? "Scan Again" : "Scan Customer QR"}
+                        variant="outline"
+                        className="border-yellow-500"
+                      />
+                    </div>
+
+                    {/* Test Autoliv Label Scan */}
+                    <div className="space-y-2">
+                      <Label className="flex items-center gap-2 text-xs">
+                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs font-bold">2</span>
+                        Test Autoliv Label
+                      </Label>
+                      {testAutolivScan && (
+                        <div className="p-2 bg-muted rounded-lg text-xs">
+                          <p className="text-[10px] text-muted-foreground mb-1">Scanned:</p>
+                          <p className="font-mono text-[10px] break-all">{testAutolivScan.rawValue}</p>
+                        </div>
+                      )}
+                      <BarcodeScanButton
+                        onScan={(data) => {
+                          setTestAutolivScan(data);
+                          toast.success("Test Autoliv barcode scanned!");
+                        }}
+                        label={testAutolivScan ? "Scan Again" : "Scan Autoliv QR"}
+                        variant="outline"
+                        className="border-yellow-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Send to Backend Button */}
+                  <Button
+                    variant="outline"
+                    className="w-full border-yellow-500 text-yellow-700 hover:bg-yellow-100 dark:text-yellow-400 dark:hover:bg-yellow-900/30"
+                    disabled={!testCustomerScan || !testAutolivScan}
+                    onClick={async () => {
+                      if (!testCustomerScan || !testAutolivScan) {
+                        toast.error("Please scan both customer and Autoliv QR codes first");
+                        return;
+                      }
+
+                      if (selectedInvoices.length === 0) {
+                        toast.error("Please select at least one invoice first");
+                        return;
+                      }
+
+                      const testInvoiceId = selectedInvoices[0];
+                      
+                      // Prepare test scan data with real scanned values
+                      // Extract data similar to how the real validation does it
+                      const testScanData = {
+                        invoiceId: testInvoiceId,
+                        customerBarcode: testCustomerScan.rawValue,
+                        autolivBarcode: testAutolivScan.rawValue,
+                        customerItem: testCustomerScan.partCode || null,
+                        itemNumber: testAutolivScan.partCode || null,
+                        partDescription: null,
+                        quantity: parseInt(testCustomerScan.quantity) || parseInt(testAutolivScan.quantity) || 0,
+                        binQuantity: parseInt(testCustomerScan.binQuantity || testCustomerScan.quantity) || parseInt(testAutolivScan.binQuantity || testAutolivScan.quantity) || null,
+                        binNumber: testCustomerScan.binNumber || testAutolivScan.binNumber || null,
+                        status: "matched",
+                        scanContext: "doc-audit" as const,
+                        // Include new fields from customer QR parsing
+                        invoiceNumber: testCustomerScan.invoiceNumber || null,
+                        totalQty: testCustomerScan.totalQty ? parseInt(testCustomerScan.totalQty) : null,
+                        totalBinNo: testCustomerScan.totalBinNo ? parseInt(testCustomerScan.totalBinNo) : null
+                      };
+
+                      try {
+                        toast.info("Sending scanned data to backend console...");
+                        const result = await auditApi.testScan(testScanData);
+                        toast.success("✅ Scanned data logged to backend console!", {
+                          description: "Check your backend console for the logged data",
+                          duration: 5000
+                        });
+                      } catch (error: any) {
+                        console.error("Test scan error:", error);
+                        toast.error("Failed to send test scan", {
+                          description: error.message || "Please check console for details"
+                        });
+                      }
+                    }}
+                  >
+                    🧪 Log Scanned Data to Backend Console
+                  </Button>
+
+                  {/* Clear Button */}
+                  {(testCustomerScan || testAutolivScan) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-full text-xs"
+                      onClick={() => {
+                        setTestCustomerScan(null);
+                        setTestAutolivScan(null);
+                      }}
+                    >
+                      Clear Test Scans
+                    </Button>
                   )}
                 </div>
               </CardContent>
