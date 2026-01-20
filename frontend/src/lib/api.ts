@@ -2,11 +2,45 @@
  * API Service for Dispatch Hub Backend
  */
 
+const isLoopbackHostname = (hostname: string) => {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '0.0.0.0';
+};
+
+const isLoopbackUrl = (value: string) => {
+  try {
+    // Use current origin as base so relative values don't throw.
+    const url = new URL(value, window.location.origin);
+    return isLoopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * In production, the frontend should typically call same-origin `/api/*` (Nginx reverse-proxy),
+ * so a mistakenly configured `VITE_API_URL=http://localhost:3001` would break in browsers
+ * (blocked by Private Network Access + non-secure context).
+ *
+ * This guard makes production fail-safe by ignoring loopback API URLs and falling back to
+ * same-origin relative paths.
+ */
+const sanitizeApiUrl = (value: string | undefined) => {
+  if (!value) return '';
+  if (import.meta.env.PROD && isLoopbackUrl(value)) {
+    console.warn(
+      `[config] Ignoring VITE_API_URL="${value}" in production (loopback). Falling back to same-origin /api.`
+    );
+    return '';
+  }
+  // Normalize trailing slash to avoid accidental double-slashes when concatenating.
+  return value.replace(/\/$/, '');
+};
+
 // Get API URL - use proxy in development, or configured URL
 const getApiUrl = () => {
   // If VITE_API_URL is set, use it (allows overriding for custom deployments)
   if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+    return sanitizeApiUrl(import.meta.env.VITE_API_URL);
   }
   
   // Default to empty string - endpoints already start with /api/

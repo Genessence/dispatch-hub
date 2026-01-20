@@ -4,11 +4,35 @@
 
 import { io, Socket } from 'socket.io-client';
 
+const isLoopbackHostname = (hostname: string) => {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '0.0.0.0';
+};
+
+const isLoopbackUrl = (value: string) => {
+  try {
+    const url = new URL(value, window.location.origin);
+    return isLoopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
+};
+
+const sanitizeWsUrl = (value: string | undefined) => {
+  if (!value) return '';
+  if (import.meta.env.PROD && isLoopbackUrl(value)) {
+    console.warn(
+      `[config] Ignoring VITE_API_URL="${value}" for Socket.IO in production (loopback). Falling back to window.location.origin.`
+    );
+    return '';
+  }
+  return value.replace(/\/$/, '');
+};
+
 // Get WebSocket URL - socket.io automatically handles protocol conversion (http -> ws)
 const getWsUrl = () => {
   // If VITE_API_URL is set, use it
   if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+    return sanitizeWsUrl(import.meta.env.VITE_API_URL) || window.location.origin;
   }
   
   // Use current origin - Socket.IO handles protocol conversion
