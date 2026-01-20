@@ -39,7 +39,8 @@ async function runMigrations() {
       '006_add_schedule_customer_part_index.sql',
       '007_make_schedule_customer_code_nullable.sql',
       '008_add_validation_step_to_mismatch_alerts.sql',
-      '009_add_scanner_preferences.sql'
+      '009_add_scanner_preferences.sql',
+      '010_doc_audit_dual_counters.sql'
     ];
 
     for (const migrationFile of migrationFiles) {

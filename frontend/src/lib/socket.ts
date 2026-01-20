@@ -191,6 +191,14 @@ export interface AuditScanEvent {
   scannedBy?: string;
 }
 
+export interface AuditStageScanEvent {
+  invoiceId: string;
+  invoiceItemId?: string;
+  stage: 'customer' | 'inbd';
+  scannedBy?: string;
+  scanContext?: 'doc-audit' | 'loading-dispatch';
+}
+
 export interface DispatchCompletedEvent {
   gatepassNumber: string;
   vehicleNumber: string;
@@ -232,6 +240,10 @@ export const subscribeToAuditScan = (callback: (data: AuditScanEvent) => void) =
   return subscribe('audit:scan', callback);
 };
 
+export const subscribeToAuditStageScan = (callback: (data: AuditStageScanEvent) => void) => {
+  return subscribe('audit:stage-scan', callback);
+};
+
 export const subscribeToDispatchCompleted = (callback: (data: DispatchCompletedEvent) => void) => {
   return subscribe('dispatch:completed', callback);
 };
@@ -256,6 +268,7 @@ export default {
   subscribeToScheduleUpdated,
   subscribeToAuditProgress,
   subscribeToAuditScan,
+  subscribeToAuditStageScan,
   subscribeToDispatchCompleted,
   subscribeToNewAlert,
   subscribeToAlertResolved

@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
+import { canonicalizeBarcode, encodeAsciiTriplets } from '../utils/barcodeNormalization';
 
 const router = Router();
 
@@ -11,13 +12,12 @@ const router = Router();
  */
 router.get('/ready', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    // Get invoices that are audited, not dispatched, and have matching schedule
+    // Get invoices that are audited, not dispatched (invoice-first; schedule no longer gates dispatch readiness)
     const result = await query(`
       SELECT i.* FROM invoices i
       WHERE i.audit_complete = true 
         AND i.dispatched_by IS NULL
         AND i.blocked = false
-        AND EXISTS (SELECT 1 FROM schedule_items s WHERE s.customer_code = i.bill_to)
       ORDER BY i.created_at DESC
     `);
 
@@ -148,6 +148,10 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       // Try to match barcodes to invoices by customerItem or partCode
       // Track bins by bin_number and update scanned_bins_count per invoice_item
       for (const barcode of loadedBarcodes) {
+        const canonicalCustomerBarcode = barcode?.customerBarcode ? canonicalizeBarcode(barcode.customerBarcode) : null;
+        const canonicalAutolivBarcode = barcode?.autolivBarcode ? canonicalizeBarcode(barcode.autolivBarcode) : null;
+        const canonicalCustomerBarcodeTriplets = canonicalCustomerBarcode ? encodeAsciiTriplets(canonicalCustomerBarcode) : null;
+
         let matchedInvoiceId: string | null = null;
         let matchedInvoiceItemId: string | null = null;
         
@@ -179,12 +183,13 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           // Check if this bin_number already scanned for this invoice_item (prevent duplicates)
           let isDuplicate = false;
           if (matchedInvoiceItemId && barcode.binNumber) {
+            const binTriplets = encodeAsciiTriplets(String(barcode.binNumber));
             const duplicateScan = await client.query(
               `SELECT id FROM validated_barcodes 
                WHERE invoice_item_id = $1 
-                 AND customer_barcode LIKE $2 
-                 AND scan_context = $3`,
-              [matchedInvoiceItemId, `%${barcode.binNumber}%`, 'loading-dispatch']
+                 AND (customer_barcode LIKE $2 OR customer_barcode LIKE $3)
+                 AND scan_context = $4`,
+              [matchedInvoiceItemId, `%${barcode.binNumber}%`, `%${binTriplets}%`, 'loading-dispatch']
             );
             isDuplicate = duplicateScan.rows.length > 0;
           }
@@ -192,8 +197,11 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           // Check if this scan already exists by customer_barcode (fallback check)
           if (!isDuplicate) {
             const existingScan = await client.query(
-              'SELECT id FROM validated_barcodes WHERE invoice_id = $1 AND customer_barcode = $2 AND scan_context = $3',
-              [matchedInvoiceId, barcode.customerBarcode || '', 'loading-dispatch']
+              `SELECT id FROM validated_barcodes
+               WHERE invoice_id = $1
+                 AND (customer_barcode = $2 OR customer_barcode = $3)
+                 AND scan_context = $4`,
+              [matchedInvoiceId, canonicalCustomerBarcode || '', canonicalCustomerBarcodeTriplets || '', 'loading-dispatch']
             );
             isDuplicate = existingScan.rows.length > 0;
           }
@@ -207,8 +215,8 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
               [
                 matchedInvoiceId,
-                barcode.customerBarcode || null,
-                barcode.autolivBarcode || null,
+                canonicalCustomerBarcode,
+                canonicalAutolivBarcode,
                 barcode.customerItem || null,
                 barcode.itemNumber || barcode.partCode || null,
                 null, // part_description not available in barcode

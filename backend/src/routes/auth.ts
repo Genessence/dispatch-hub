@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { query } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
+import { ensureScannerPreferencesTable } from '../utils/scannerPreferences';
 
 const router = Router();
 
@@ -134,19 +135,28 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
     const selections = selectionsResult.rows[0] || { selected_customers: [], selected_site: null };
 
     // Get user's scanner preferences
-    const scannerPrefsResult = await query(
-      `SELECT default_scan_mode, scanner_suffix, auto_timeout_ms, duplicate_scan_threshold_ms, show_realtime_display 
-       FROM user_scanner_preferences WHERE user_id = $1`,
-      [req.user.id]
-    );
-
-    const scannerPrefs = scannerPrefsResult.rows[0] || {
+    const defaultScannerPrefs = {
       default_scan_mode: 'scanner',
       scanner_suffix: 'Enter',
       auto_timeout_ms: 150,
       duplicate_scan_threshold_ms: 2000,
       show_realtime_display: true
     };
+
+    let scannerPrefs = defaultScannerPrefs;
+    const tableReady = await ensureScannerPreferencesTable();
+    if (tableReady) {
+      try {
+        const scannerPrefsResult = await query(
+          `SELECT default_scan_mode, scanner_suffix, auto_timeout_ms, duplicate_scan_threshold_ms, show_realtime_display 
+           FROM user_scanner_preferences WHERE user_id = $1`,
+          [req.user.id]
+        );
+        scannerPrefs = scannerPrefsResult.rows[0] || defaultScannerPrefs;
+      } catch (scannerErr) {
+        console.warn('Failed to fetch scanner preferences; falling back to defaults:', scannerErr);
+      }
+    }
 
     res.json({
       success: true,
@@ -211,6 +221,21 @@ router.get('/scanner-preferences', authenticateToken, async (req: AuthRequest, r
   try {
     if (!req.user) {
       return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    const tableReady = await ensureScannerPreferencesTable();
+    if (!tableReady) {
+      // If we cannot ensure the table, still return defaults (do not fail the request).
+      return res.json({
+        success: true,
+        preferences: {
+          defaultScanMode: 'scanner',
+          scannerSuffix: 'Enter',
+          autoTimeoutMs: 150,
+          duplicateScanThresholdMs: 2000,
+          showRealtimeDisplay: true
+        }
+      });
     }
 
     try {
@@ -306,6 +331,15 @@ router.put('/scanner-preferences', authenticateToken, async (req: AuthRequest, r
 
     if (duplicateScanThresholdMs !== undefined && (typeof duplicateScanThresholdMs !== 'number' || duplicateScanThresholdMs < 500 || duplicateScanThresholdMs > 10000)) {
       return res.status(400).json({ error: 'Invalid duplicateScanThresholdMs. Must be between 500 and 10000' });
+    }
+
+    const tableReady = await ensureScannerPreferencesTable();
+    if (!tableReady) {
+      return res.status(500).json({
+        error: 'Database table not found',
+        message:
+          'The scanner preferences table does not exist and could not be auto-created. Please run database migrations: npm run db:migrate'
+      });
     }
 
     try {

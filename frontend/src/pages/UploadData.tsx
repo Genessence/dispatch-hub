@@ -25,10 +25,12 @@ interface UploadedRow {
   customer: string;
   part: string;
   qty: number;
-  status: 'valid-matched' | 'valid-unmatched' | 'error' | 'warning';
+  status: 'valid' | 'error' | 'warning';
   errorMessage?: string;
   customerItem?: string;
   partDescription?: string;
+  billTo?: string;
+  invoiceDate?: Date;
 }
 
 const UploadData = () => {
@@ -53,13 +55,11 @@ const UploadData = () => {
   // Debug: Log when uploadedData changes to verify state updates
   useEffect(() => {
     if (uploadedData.length > 0) {
-      const matchedCount = uploadedData.filter(r => r.status === 'valid-matched').length;
-      const unmatchedCount = uploadedData.filter(r => r.status === 'valid-unmatched').length;
+      const validCount = uploadedData.filter(r => r.status === 'valid').length;
       const errorCount = uploadedData.filter(r => r.status === 'error').length;
       console.log('📊 [useEffect] uploadedData state changed:', {
         total: uploadedData.length,
-        matched: matchedCount,
-        unmatched: unmatchedCount,
+        valid: validCount,
         error: errorCount
       });
     }
@@ -293,25 +293,46 @@ const UploadData = () => {
               rowObj[header] = row[colIndex] || '';
             });
             
-            const invoice = rowObj['Invoice Number'] || rowObj['Invoice'] || rowObj['invoice'] || rowObj['Invoice No'] || rowObj['InvoiceNo'] || `INV-${index + 1}`;
-            const customer = rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || rowObj['Customer Name'] || rowObj['CustomerName'] || 'Unknown Customer';
-            const part = rowObj['Item Number'] || rowObj['Part'] || rowObj['part'] || rowObj['Part Code'] || rowObj['PartCode'] || rowObj['Part Number'] || 'Unknown Part';
-            const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || rowObj['quantity'] || '0');
+            const invoice = rowObj['Invoice Number'] || rowObj['Invoice'] || rowObj['invoice'] || rowObj['Invoice No'] || rowObj['InvoiceNo'] || '';
+            const customer = rowObj['Customer Name'] || rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || rowObj['CustomerName'] || '';
+            const billTo = rowObj['Bill To'] || rowObj['BillTo'] || rowObj['bill to'] || rowObj['Bill-To'] || '';
+            const part = rowObj['Item Number'] || rowObj['ItemNumber'] || rowObj['Part'] || rowObj['part'] || rowObj['Part Code'] || rowObj['PartCode'] || rowObj['Part Number'] || '';
+            const qtyRaw = rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || rowObj['quantity'] || '';
+            const qty = Math.round(parseFloat(String(qtyRaw || '')));
             const customerItem = rowObj['Customer Item'] || rowObj['CustomerItem'] || rowObj['customer item'] || rowObj['Customer-Item'] || rowObj['Cust Item'] || rowObj['CustItem'] || rowObj['Customer Part'] || rowObj['CustomerPart'] || '';
             const partDescription = rowObj['Part Description'] || rowObj['PartDescription'] || rowObj['part description'] || rowObj['Part-Description'] || rowObj['Description'] || rowObj['description'] || rowObj['Part Desc'] || rowObj['PartDesc'] || '';
+
+            const invoiceDateCell =
+              rowObj['Invoice Date'] || rowObj['InvoiceDate'] || rowObj['invoice date'] || rowObj['Inv Date'] || rowObj['Date'] || '';
+            let invoiceDate: Date | undefined = undefined;
+            if (typeof invoiceDateCell === 'number') {
+              invoiceDate = excelDateToJSDate(invoiceDateCell);
+            } else if (invoiceDateCell) {
+              const parsed = new Date(String(invoiceDateCell).trim());
+              invoiceDate = isNaN(parsed.getTime()) ? undefined : parsed;
+            }
             
-            let status: 'valid-matched' | 'valid-unmatched' | 'error' | 'warning' = 'valid-unmatched';
+            let status: 'valid' | 'error' | 'warning' = 'valid';
             let errorMessage = '';
             
             if (!invoice || invoice.toString().trim() === '') {
               status = 'error';
               errorMessage = 'Missing invoice number';
+            } else if (!billTo || billTo.toString().trim() === '') {
+              status = 'error';
+              errorMessage = 'Missing Bill To';
+            } else if (!invoiceDate) {
+              status = 'error';
+              errorMessage = 'Missing/Invalid Invoice Date';
             } else if (!customer || customer.toString().trim() === '') {
               status = 'error';
               errorMessage = 'Missing customer name';
             } else if (!part || part.toString().trim() === '') {
               status = 'error';
-              errorMessage = 'Missing part code';
+              errorMessage = 'Missing item number';
+            } else if (!customerItem || customerItem.toString().trim() === '') {
+              status = 'error';
+              errorMessage = 'Missing Customer Item';
             } else if (isNaN(qty)) {
               status = 'error';
               errorMessage = 'Invalid quantity';
@@ -334,7 +355,9 @@ const UploadData = () => {
               status,
               errorMessage,
               customerItem: customerItem ? customerItem.toString() : undefined,
-              partDescription: partDescription ? partDescription.toString() : undefined
+              partDescription: partDescription ? partDescription.toString() : undefined,
+              billTo: billTo ? billTo.toString() : undefined,
+              invoiceDate
             };
           });
           
@@ -346,16 +369,17 @@ const UploadData = () => {
               rowObj[header] = row[colIndex] || '';
             });
             
-            const invoiceNum = rowObj['Invoice Number'] || rowObj['Invoice'] || rowObj['invoice'] || `INV-${index + 1}`;
-            const customer = rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || 'Unknown Customer';
-            const qty = parseInt(rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || '0');
+            const invoiceNum = rowObj['Invoice Number'] || rowObj['Invoice'] || rowObj['invoice'] || '';
+            const customer = rowObj['Customer Name'] || rowObj['Cust Name'] || rowObj['Customer'] || rowObj['customer'] || '';
+            const qtyRaw = rowObj['Quantity Invoiced'] || rowObj['Qty'] || rowObj['qty'] || rowObj['Quantity'] || rowObj['quantity'] || '';
+            const qty = Math.round(parseFloat(String(qtyRaw || '')));
             const billTo = rowObj['Bill To'] || rowObj['BillTo'] || rowObj['bill to'] || rowObj['Bill-To'] || '';
             const plant = rowObj['Ship To'] || rowObj['ShipTo'] || rowObj['Ship-To'] || 
                          rowObj['Plant'] || rowObj['plant'] || 
                          rowObj['Delivery Location'] || rowObj['DeliveryLocation'] || 
                          rowObj['Destination'] || rowObj['destination'] || '';
-            
-            const invoiceDate = new Date();
+            const parsedInvoiceDate = parsedData[index]?.invoiceDate;
+            const invoiceDate = parsedInvoiceDate || new Date();
             
             if (!invoiceMap.has(invoiceNum.toString())) {
               const binCapacity = Math.random() < 0.5 ? 50 : 80;
@@ -523,11 +547,8 @@ const UploadData = () => {
           
           // Parse each sheet
           workbook.SheetNames.forEach((sheetName) => {
-            // Skip generic sheet names only if there are multiple sheets
-            // If it's a single sheet, process it regardless of name
-            if (!isSingleSheet && (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2')) {
-              return;
-            }
+            // Do NOT skip "Sheet1/Sheet2" etc.
+            // Many customer files keep real data in default sheet names, and skipping them causes "0 schedule items parsed".
             
             const sheet = workbook.Sheets[sheetName];
             if (!sheet) return;
@@ -686,11 +707,20 @@ const UploadData = () => {
                   'LOCATION'
                 ]);
                 
-                // Include row if it has PART NUMBER (customer code no longer required)
-                if (partNumber) {
-                  // Normalize partNumber - ensure it's a string and trimmed
-                  const normalizedPartNumber = String(partNumber).trim();
-                  
+                // Invoice-first: schedule is used for logging (delivery time + unloading loc), so PART NUMBER is optional.
+                const hasAnyUsefulField =
+                  !!partNumber ||
+                  !!deliveryDate ||
+                  !!timeStr ||
+                  (!!unloadingLoc && String(unloadingLoc).trim() !== '') ||
+                  (!!plant && String(plant).trim() !== '') ||
+                  (!!customerPart && String(customerPart).trim() !== '') ||
+                  (!!qadPart && String(qadPart).trim() !== '') ||
+                  (!!description && String(description).trim() !== '');
+
+                if (hasAnyUsefulField) {
+                  const normalizedPartNumber = partNumber ? String(partNumber).trim() : undefined;
+
                   allScheduleItems.push({
                     customerCode: undefined, // Customer code removed from schedule
                     customerPart: customerPart.toString().trim(),
@@ -757,10 +787,6 @@ const UploadData = () => {
       toast.error("Please upload Invoices file");
       return;
     }
-    if (!scheduleFile) {
-      toast.error("Please upload Schedule file");
-      return;
-    }
 
     // Check if customer is selected
     if (!selectedCustomer) {
@@ -785,7 +811,7 @@ const UploadData = () => {
       const timeoutDuration = isMobile ? 10000 : 15000;
       
       const parseInvoicesPromise = parseFile(file);
-      const parseSchedulePromise = parseScheduleFile(scheduleFile);
+      const parseSchedulePromise = scheduleFile ? parseScheduleFile(scheduleFile) : Promise.resolve([]);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('File parsing timeout - please try a smaller file')), timeoutDuration)
       );
@@ -806,73 +832,40 @@ const UploadData = () => {
       setProcessedInvoices(validInvoices);
       setParsedScheduleItems(validScheduleItems);
       
-      // Helper function to normalize values for comparison
-      // Trims whitespace and collapses multiple spaces to single space
-      const normalizeValue = (value: any): string => {
-        if (value === null || value === undefined) return '';
-        return String(value).trim().replace(/\s+/g, ' ');
-      };
-      
       // ============================================
       // VALIDATION - Happens immediately on "Continue to Validation"
       // ============================================
       console.log('\n\n🔵 ============================================');
       console.log('🔵 VALIDATION - STARTING (On Continue to Validation)');
       console.log('🔵 ============================================');
-      
-      // Build schedule PART NUMBERS set
-      const schedulePartNumbers = new Set<string>();
-      validScheduleItems.forEach(item => {
-        const partNumber = normalizeValue(item.partNumber);
-        if (partNumber) {
-          schedulePartNumbers.add(partNumber);
-        }
-      });
-      
+
       console.log('\n🔍 DEBUG: Parsed Data Summary');
-      console.log(`  Schedule items parsed: ${validScheduleItems.length}`);
-      console.log(`  Schedule items with partNumber: ${validScheduleItems.filter(s => s.partNumber).length}`);
-      console.log(`  Unique schedule PART NUMBERS: ${schedulePartNumbers.size}`);
-      console.log(`  Sample schedule partNumbers (first 5):`, validScheduleItems.filter(s => s.partNumber).slice(0, 5).map(s => s.partNumber));
+      console.log(`  Schedule items parsed (post filter): ${validScheduleItems.length}`);
       console.log(`  Invoice rows parsed: ${invoiceResult.rows.length}`);
-      console.log(`  Invoice rows with customerItem: ${invoiceResult.rows.filter(r => r.customerItem).length}`);
-      console.log(`  Sample invoice customerItems (first 5):`, invoiceResult.rows.filter(r => r.customerItem).slice(0, 5).map(r => r.customerItem));
       console.log('================================\n');
-      
-      console.log('Schedule PART NUMBERS:', schedulePartNumbers.size);
-      console.log('Invoice rows to validate:', invoiceResult.rows.length);
-      
-      // Validate all invoice items immediately
-      const validatedData = invoiceResult.rows.map((row, index) => {
-        const customerItem = normalizeValue(row.customerItem);
-        
-        // Check if customer_item is missing
-        if (!customerItem) {
+
+      // Validate invoice rows only (invoice-first; no schedule matching)
+      const validatedData: UploadedRow[] = invoiceResult.rows.map((row) => {
+        const missing: string[] = [];
+        if (!row.invoice || row.invoice.toString().trim() === '') missing.push('Invoice Number');
+        if (!row.billTo || row.billTo.toString().trim() === '') missing.push('Bill To');
+        if (!row.invoiceDate) missing.push('Invoice Date');
+        if (!row.customer || row.customer.toString().trim() === '') missing.push('Customer Name');
+        if (!row.customerItem || row.customerItem.toString().trim() === '') missing.push('Customer Item');
+        if (!row.part || row.part.toString().trim() === '') missing.push('Item Number');
+        if (row.qty === undefined || row.qty === null || isNaN(row.qty)) missing.push('Quantity Invoiced');
+
+        if (missing.length > 0) {
           return {
             ...row,
             status: 'error' as const,
-            errorMessage: 'Missing Customer Item'
+            errorMessage: row.errorMessage || `Missing/invalid: ${missing.join(', ')}`,
           };
         }
-        
-        // Global matching: Check if Customer Item matches any PART NUMBER in schedule
-        const exactMatch = schedulePartNumbers.has(customerItem);
-        
-        if (exactMatch) {
-          console.log(`[MATCHED] Row ${index + 1} - Invoice ${row.invoice} - CustomerItem: "${customerItem}" ✅ MATCHED`);
-          return {
-            ...row,
-            status: 'valid-matched' as const,
-            errorMessage: undefined
-          };
-        } else {
-          console.log(`[UNMATCHED] Row ${index + 1} - Invoice ${row.invoice} - CustomerItem: "${customerItem}" ❌ NOT FOUND`);
-          return {
-            ...row,
-            status: 'valid-unmatched' as const,
-            errorMessage: undefined
-          };
-        }
+
+        // Keep existing warnings (e.g., qty=0/large) if set; otherwise mark valid
+        if (row.status === 'warning') return row;
+        return { ...row, status: 'valid' as const, errorMessage: row.errorMessage || undefined };
       });
       
       // Update state with validated data
@@ -882,65 +875,20 @@ const UploadData = () => {
       setUploadStage('validate');
       
       // Log validation summary
-      const matchedCount = validatedData.filter(r => r.status === 'valid-matched').length;
-      const unmatchedCount = validatedData.filter(r => r.status === 'valid-unmatched').length;
+      const validCount = validatedData.filter(r => r.status === 'valid').length;
+      const warningCount = validatedData.filter(r => r.status === 'warning').length;
       const errorCount = validatedData.filter(r => r.status === 'error').length;
       
       console.log('\n=== VALIDATION SUMMARY ===');
-      console.log(`Matched: ${matchedCount}, Unmatched: ${unmatchedCount}, Errors: ${errorCount}`);
+      console.log(`Valid: ${validCount}, Warnings: ${warningCount}, Errors: ${errorCount}`);
       console.log('🔵 ============================================');
       console.log('🔵 VALIDATION - COMPLETED');
       console.log('🔵 ============================================\n');
       
       toast.dismiss(loadingToast);
-      
-      // Show diagnostics if there are issues
-      if (matchedCount === 0 && unmatchedCount > 0) {
-        console.warn('\n⚠️ ===== MATCHING DIAGNOSTICS =====');
-        console.warn(`No matches found! This could be due to:`);
-        console.warn(`1. Customer Item values don't match PART NUMBER values`);
-        console.warn(`2. Extra whitespace in cells (now handled with normalization)`);
-        console.warn(`3. PART NUMBER column not detected in schedule`);
-        
-        // Debug: Check what's actually in the parsed data
-        console.warn(`\n🔍 DEBUG: Checking parsed data...`);
-        console.warn(`  Total invoice rows: ${invoiceResult.rows.length}`);
-        console.warn(`  Total schedule items: ${validScheduleItems.length}`);
-        console.warn(`  Sample invoice rows (first 3):`, invoiceResult.rows.slice(0, 3).map(r => ({
-          invoice: r.invoice,
-          customerItem: r.customerItem,
-          part: r.part
-        })));
-        console.warn(`  Sample schedule items (first 3):`, validScheduleItems.slice(0, 3).map(s => ({
-          partNumber: s.partNumber,
-          customerPart: s.customerPart
-        })));
-        
-        // Get customer items from validated data
-        const customerItemsFromValidated = Array.from(new Set(validatedData.map(r => r.customerItem).filter(Boolean)));
-        console.warn(`\n📋 Invoice Customer Items from validated data (${customerItemsFromValidated.length}):`, customerItemsFromValidated.slice(0, 10));
-        console.warn(`📋 Schedule Part Numbers (${schedulePartNumbers.size}):`, Array.from(schedulePartNumbers).slice(0, 10));
-        
-        // Check if schedule items have partNumber
-        const scheduleItemsWithPartNumber = validScheduleItems.filter(s => s.partNumber);
-        console.warn(`  Schedule items with partNumber: ${scheduleItemsWithPartNumber.length} out of ${validScheduleItems.length}`);
-        
-        // Check if invoice rows have customerItem
-        const invoiceRowsWithCustomerItem = invoiceResult.rows.filter(r => r.customerItem);
-        console.warn(`  Invoice rows with customerItem: ${invoiceRowsWithCustomerItem.length} out of ${invoiceResult.rows.length}`);
-        console.warn('====================================\n');
-        
-        toast.warning(`⚠️ No matches found!`, {
-          description: `${unmatchedCount} items couldn't be matched with schedule. Check console for details.`,
-          duration: 8000
-        });
-      } else if (unmatchedCount > matchedCount) {
-        console.warn(`\n⚠️ More unmatched (${unmatchedCount}) than matched (${matchedCount})`);
-        console.warn(`📋 Sample unmatched customer items:`, uploadedData.filter(r => r.status === 'valid-unmatched').slice(0, 5).map(r => r.customerItem));
-      }
-      
+
       toast.success(`Validation complete!`, {
-        description: `Matched: ${matchedCount}, Unmatched: ${unmatchedCount}, Errors: ${errorCount}`
+        description: `Valid: ${validCount}, Warnings: ${warningCount}, Errors: ${errorCount}`,
       });
     } catch (error: any) {
       toast.dismiss(loadingToast);
@@ -950,21 +898,21 @@ const UploadData = () => {
   };
 
   const handleImport = async () => {
-    if (!file || !scheduleFile) {
-      toast.error("Please upload both files");
+    if (!file) {
+      toast.error("Please upload Invoices file");
       return;
     }
 
     // Validate schedule data before uploading
     const itemsWithDates = parsedScheduleItems.filter(i => i.deliveryDate).length;
     const itemsWithTimes = parsedScheduleItems.filter(i => i.deliveryTime).length;
-    const itemsWithPartNumbers = parsedScheduleItems.filter(i => i.partNumber).length;
+    const itemsWithUnloadingLocs = parsedScheduleItems.filter(i => i.unloadingLoc).length;
     
     console.log('=== IMPORT VALIDATION ===');
     console.log('Total schedule items:', parsedScheduleItems.length);
     console.log('Items with deliveryDate:', itemsWithDates);
     console.log('Items with deliveryTime:', itemsWithTimes);
-    console.log('Items with partNumber:', itemsWithPartNumbers);
+    console.log('Items with unloadingLoc:', itemsWithUnloadingLocs);
     
     if (parsedScheduleItems.length > 0 && itemsWithDates === 0) {
       toast.warning("⚠️ No delivery dates found in schedule", {
@@ -973,9 +921,15 @@ const UploadData = () => {
       });
     }
     
-    if (parsedScheduleItems.length > 0 && itemsWithPartNumbers === 0) {
-      toast.warning("⚠️ No part numbers found in schedule", {
-        description: "Schedule items need PART NUMBER field to match with invoice Customer Items.",
+    if (parsedScheduleItems.length > 0 && itemsWithTimes === 0) {
+      toast.warning("⚠️ No delivery times found in schedule", {
+        description: "Doc Audit will have limited delivery time options. Please check your schedule file format.",
+        duration: 6000
+      });
+    }
+    if (parsedScheduleItems.length > 0 && itemsWithUnloadingLocs === 0) {
+      toast.warning("⚠️ No unloading locations found in schedule", {
+        description: "Doc Audit will have limited unloading location options. Please check your schedule file format.",
         duration: 6000
       });
     }
@@ -997,30 +951,21 @@ const UploadData = () => {
         return;
       }
 
-      // Upload schedule file first
-      const scheduleResult = await scheduleApi.upload(scheduleFile, selectedCustomerCode);
-      console.log('\n📤 ===== SCHEDULE UPLOAD RESULT =====');
-      console.log('Schedule upload result:', scheduleResult);
-      
-      if (scheduleResult.diagnostics) {
-        console.log('📊 Unique part numbers:', scheduleResult.diagnostics.uniquePartNumbers);
-        console.log('📋 Sample part numbers:', scheduleResult.diagnostics.samplePartNumbers);
-      }
-      
-      if (scheduleResult.filteringStats) {
-        console.log('📊 Filtering stats:', scheduleResult.filteringStats);
-      }
-      
-      if (scheduleResult.validationStats) {
-        console.log('✅ Validation stats:', scheduleResult.validationStats);
-        if (scheduleResult.validationStats.diagnostics) {
-          console.log('📋 Validation diagnostics:', scheduleResult.validationStats.diagnostics);
+      // Schedule upload is optional (Doc Audit is invoice-driven)
+      const scheduleResult = scheduleFile
+        ? await scheduleApi.upload(scheduleFile, selectedCustomerCode)
+        : null;
+
+      if (scheduleResult) {
+        console.log('\n📤 ===== SCHEDULE UPLOAD RESULT =====');
+        console.log('Schedule upload result:', scheduleResult);
+        console.log('====================================\n');
+
+        if (scheduleResult.success) {
+          toast.success(`Schedule uploaded: ${scheduleResult.itemCount || 0} items`);
+        } else {
+          toast.warning('Schedule upload failed (continuing with invoice-only flow).');
         }
-      }
-      console.log('====================================\n');
-      
-      if (scheduleResult.success) {
-        toast.success(`Schedule uploaded: ${scheduleResult.itemCount || 0} items`);
       }
       
       // Upload invoice file
@@ -1048,13 +993,7 @@ const UploadData = () => {
       // Refresh data from backend (this will trigger WebSocket update to all devices)
       await refreshData();
 
-      // Check if upload was successful
-      if (!scheduleResult.success) {
-        toast.error('Schedule upload failed. Please try again.');
-        toast.dismiss(loadingToast);
-        return;
-      }
-      
+      // Schedule is optional; only block if invoice upload failed
       if (!invoiceResult.success) {
         toast.error('Invoice upload failed. Please try again.');
         toast.dismiss(loadingToast);
@@ -1062,16 +1001,16 @@ const UploadData = () => {
       }
       
       // Get validation results from uploaded data
-      const matchedCount = uploadedData.filter(r => r.status === 'valid-matched').length;
-      const unmatchedCount = uploadedData.filter(r => r.status === 'valid-unmatched').length;
+      const validCount = uploadedData.filter(r => r.status === 'valid').length;
+      const warningCount = uploadedData.filter(r => r.status === 'warning').length;
       const errorCount = uploadedData.filter(r => r.status === 'error').length;
       
       console.log('=== UPLOAD COMPLETE ===');
-      console.log(`Schedule items uploaded: ${scheduleResult.itemCount || 0}`);
+      console.log(`Schedule items uploaded: ${scheduleResult?.itemCount || 0}`);
       console.log(`Invoices uploaded: ${invoiceResult.invoiceCount || 0}`);
       console.log(`Invoice items: ${invoiceResult.itemCount || 0}`);
-      console.log(`Matched items: ${matchedCount}`);
-      console.log(`Unmatched items: ${unmatchedCount}`);
+      console.log(`Valid items: ${validCount}`);
+      console.log(`Warning items: ${warningCount}`);
       console.log(`Error items: ${errorCount}`);
       
       // Move to complete stage to show success page
@@ -1079,7 +1018,7 @@ const UploadData = () => {
       
       toast.dismiss(loadingToast);
       toast.success(`Data imported successfully!`, {
-        description: `Schedule: ${scheduleResult.itemCount || 0} items, Invoices: ${invoiceResult.invoiceCount || 0} invoices (${matchedCount} matched, ${unmatchedCount} unmatched)`
+        description: `Invoices: ${invoiceResult.invoiceCount || 0} invoices (valid: ${validCount}, warnings: ${warningCount})`
       });
     } catch (error: any) {
       console.error('\n❌ ============================================');
@@ -1096,30 +1035,15 @@ const UploadData = () => {
   };
 
   // Calculate validation results
-  // Note: Schedule no longer has customer codes, so invoice matching is based on PART NUMBER matching only
-  const matchedInvoicesCount = processedInvoices.filter(inv => {
-    // An invoice is considered "matched" if it has at least one item with valid-matched status
-    return uploadedData.some(row => 
-      row.invoice === inv.id && row.status === 'valid-matched'
-    );
-  }).length;
-  const unmatchedInvoicesCount = processedInvoices.length - matchedInvoicesCount;
-  
-  // Count matched and unmatched items based on PART NUMBER matching
-  const matchedItemsCount = uploadedData.filter(row => row.status === 'valid-matched').length;
-  const unmatchedItemsCount = uploadedData.filter(row => row.status === 'valid-unmatched').length;
+  // Invoice-first: no invoice↔schedule matching
   
   const validationResults = {
     total: uploadedData.length,
-    valid: uploadedData.filter(row => row.status === 'valid-matched' || row.status === 'valid-unmatched').length,
-    matchedItems: matchedItemsCount,
-    unmatchedItems: unmatchedItemsCount,
+    valid: uploadedData.filter(row => row.status === 'valid' || row.status === 'warning').length,
     errors: uploadedData.filter(row => row.status === 'error').length,
     warnings: uploadedData.filter(row => row.status === 'warning').length,
     invoiceCount: processedInvoices.length,
-    scheduleItemCount: parsedScheduleItems.length,
-    matchedInvoices: matchedInvoicesCount,
-    unmatchedInvoices: unmatchedInvoicesCount
+    scheduleItemCount: parsedScheduleItems.length
   };
 
   return (
@@ -1216,12 +1140,16 @@ const UploadData = () => {
                     </CardHeader>
                     <CardContent className="flex-1 flex flex-col">
                       <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                        <p className="text-xs font-medium mb-1">Expected Format:</p>
+                        <p className="text-xs font-medium mb-1">Expected Invoice Columns:</p>
                         <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
+                          <li>Bill To</li>
                           <li>Invoice Number</li>
+                          <li>Invoice Date</li>
                           <li>Customer Name</li>
-                          <li>Part Code</li>
-                          <li>Quantity</li>
+                          <li>Customer Item</li>
+                          <li>Item Number</li>
+                          <li>Part Description (optional)</li>
+                          <li>Quantity Invoiced</li>
                         </ul>
                       </div>
                       <div
@@ -1268,7 +1196,7 @@ const UploadData = () => {
                     </CardContent>
                   </Card>
 
-                  {/* Upload Schedule */}
+                  {/* Upload Schedule (Optional) */}
                   <Card className="h-full flex flex-col">
                     <CardHeader className="pb-4">
                       <div className="flex items-center gap-2">
@@ -1282,9 +1210,8 @@ const UploadData = () => {
                       <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                         <p className="text-xs font-medium mb-1">Expected Format:</p>
                         <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
-                          <li>Schedule data</li>
-                          <li>Dispatch dates</li>
-                          <li>Time slots</li>
+                          <li>Optional: upload if you want schedule analytics</li>
+                          <li>Doc Audit is invoice-driven</li>
                         </ul>
                       </div>
                       <div
@@ -1374,19 +1301,13 @@ const UploadData = () => {
                   </div>
                   <Button
                     onClick={handleProceedToValidation}
-                    disabled={!file || !scheduleFile}
+                    disabled={!file}
                     className="h-12 px-8 text-base font-semibold"
                     size="lg"
                   >
-                    {!file || !scheduleFile ? (
+                    {!file ? (
                       <>
-                        {!file && !scheduleFile ? (
-                          "Upload Both Files to Continue"
-                        ) : !file ? (
-                          "Upload Invoices File to Continue"
-                        ) : (
-                          "Upload Schedule File to Continue"
-                        )}
+                        "Upload Invoices File to Continue"
                       </>
                     ) : (
                       <>
@@ -1451,32 +1372,6 @@ const UploadData = () => {
                     </div>
                   </div>
                   
-                  {/* Schedule Matching Summary */}
-                  <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                    <h4 className="font-semibold text-blue-700 dark:text-blue-300 mb-3">Schedule Matching (Customer Item ↔ PART NUMBER)</h4>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div>
-                        <p className="text-xl font-bold text-foreground">{validationResults.invoiceCount}</p>
-                        <p className="text-xs text-muted-foreground">Total Invoices</p>
-                      </div>
-                      <div>
-                        <p className="text-xl font-bold text-foreground">{validationResults.scheduleItemCount}</p>
-                        <p className="text-xs text-muted-foreground">Schedule Items</p>
-                      </div>
-                      <div>
-                        <p className="text-xl font-bold text-green-600">{validationResults.matchedItems}</p>
-                        <p className="text-xs text-muted-foreground">Matched Items</p>
-                      </div>
-                      <div>
-                        <p className="text-xl font-bold text-orange-600">{validationResults.unmatchedItems}</p>
-                        <p className="text-xs text-muted-foreground">Unmatched Items</p>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Items are matched when Customer Item (invoice) exactly matches PART NUMBER (schedule) for the same customer code. Matched items will be available in Doc Audit.
-                    </p>
-                  </div>
-
                   {/* Data Table */}
                   <div className="border rounded-lg overflow-hidden max-h-96 overflow-x-auto overflow-y-auto">
                     <table className="w-full text-xs sm:text-sm min-w-[600px]">
@@ -1485,7 +1380,7 @@ const UploadData = () => {
                           <th className="text-left p-3 font-semibold">Invoice No</th>
                           <th className="text-left p-3 font-semibold">Customer</th>
                           <th className="text-left p-3 font-semibold">Customer Code</th>
-                          <th className="text-left p-3 font-semibold">Part Code</th>
+                          <th className="text-left p-3 font-semibold">Item Number</th>
                           <th className="text-left p-3 font-semibold">Customer Item</th>
                           <th className="text-left p-3 font-semibold">Qty</th>
                           <th className="text-left p-3 font-semibold">Status</th>
@@ -1503,10 +1398,8 @@ const UploadData = () => {
                               statusText = 'error';
                             } else if (row.status === 'warning') {
                               statusText = 'warning';
-                            } else if (row.status === 'valid-matched') {
-                              statusText = 'matched';
                             } else {
-                              statusText = 'unmatched';
+                              statusText = 'valid';
                             }
                             
                             return (
@@ -1519,9 +1412,8 @@ const UploadData = () => {
                               <td className="p-3">{row.qty}</td>
                               <td className="p-3">
                                 <Badge variant={
-                                  row.status === 'valid-matched' ? 'default' : 
-                                  row.status === 'valid-unmatched' ? 'outline' :
-                                  row.status === 'error' ? 'destructive' : 
+                                  row.status === 'valid' ? 'default' :
+                                  row.status === 'error' ? 'destructive' :
                                   'secondary'
                                 }>
                                   {row.status === 'error' && <XCircle className="h-3 w-3 mr-1" />}

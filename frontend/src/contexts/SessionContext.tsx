@@ -498,36 +498,35 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
     setScheduleData(null);
   }, []);
 
-  const getScheduleForCustomer = useCallback((customerCode: string): ScheduleItem[] => {
+  const getScheduleForCustomer = useCallback((_customerCode: string): ScheduleItem[] => {
+    // Invoice-first: schedule is not customer-scoped anymore (customer_code may be null).
+    // Return all schedule rows (already filtered during upload on qty vs qty dispatched).
     if (!scheduleData) return [];
-    return scheduleData.items.filter(item => String(item.customerCode) === String(customerCode));
+    return scheduleData.items;
   }, [scheduleData]);
 
   const getInvoicesWithSchedule = useCallback((): InvoiceData[] => {
-    if (!scheduleData || !selectedCustomer) return [];
+    if (!selectedCustomer) return [];
     const selectedCustomerCode = getCustomerCode(selectedCustomer);
     if (!selectedCustomerCode) return [];
     
-    // Schedule items no longer have customer codes (they're all NULL after migration 007)
-    // Filter invoices by selected customer's billTo only
-    // The matching between schedule PART NUMBER and invoice Customer Item is done in DocAudit
+    // Invoice-first: invoices are filtered by selected customer's BillTo only.
     return sharedInvoices.filter(inv => inv.billTo && String(inv.billTo) === String(selectedCustomerCode));
-  }, [scheduleData, sharedInvoices, selectedCustomer]);
+  }, [sharedInvoices, selectedCustomer]);
 
   const getScheduledDispatchableInvoices = useCallback((): InvoiceData[] => {
-    if (!scheduleData || !selectedCustomer) return [];
+    if (!selectedCustomer) return [];
     const selectedCustomerCode = getCustomerCode(selectedCustomer);
     if (!selectedCustomerCode) return [];
     
-    // Schedule items no longer have customer codes (they're all NULL after migration 007)
-    // Filter invoices by selected customer's billTo only
+    // Invoice-first: dispatch readiness depends on audited status, not schedule presence.
     return sharedInvoices.filter(inv => 
       inv.billTo && 
       String(inv.billTo) === String(selectedCustomerCode) && 
       inv.auditComplete && 
       !inv.dispatchedBy
     );
-  }, [scheduleData, sharedInvoices, selectedCustomer]);
+  }, [sharedInvoices, selectedCustomer]);
 
   return (
     <SessionContext.Provider

@@ -9,6 +9,11 @@ import { ScannerPreferencesDialog } from "./ScannerPreferencesDialog";
 
 export interface BarcodeData {
   rawValue: string;
+  /**
+   * If the scanner provides an encoded/altered payload (e.g. ASCII-triplet digits),
+   * we canonicalize `rawValue` and keep the original here for debugging/diagnostics.
+   */
+  originalRawValue?: string;
   partCode: string;
   quantity: string;
   binNumber: string;
@@ -64,49 +69,50 @@ export const BarcodeScanner = ({
   const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) 
     || (window.innerWidth < 768 && ('ontouchstart' in window));
 
-  // Parse Autoliv QR code format
-  // Example: [)>0612SA16S1V123456SR22281225173P641704700HQ83QPCEH281225R20075D2512280941LAM2005
-  // Part Number: Between first P and Q → 641704700H
-  // Bin Quantity: Single digit immediately after that Q → 8
-  const parseAutolivQR = (rawValue: string): { data: BarcodeData | null; error?: string } => {
+  // ============================================================
+  // QR nomenclature parsing (Customer label + Autoliv label)
+  // ============================================================
+
+  const normalizeField = (s: string) => String(s ?? '').replace(/\s+/g, ' ').trim();
+
+  /**
+   * Customer label (fixed-position, 1-indexed spec):
+   * - Bin number: chars 1..35
+   * - Customer item / part number: chars 36..50
+   * - Quantity: char at position 51 (single digit)
+   */
+  const parseCustomerLabelFixed = (rawValue: string): { data: BarcodeData | null; error?: string } => {
     try {
-      console.log("Parsing Autoliv QR:", rawValue);
-      
-      // Find the first occurrence of P followed by Q
-      const pIndex = rawValue.indexOf('P');
-      if (pIndex === -1) {
-        return { 
-          data: null, 
-          error: "Autoliv QR Format Error: Missing 'P' marker. This doesn't appear to be a valid Autoliv QR code." 
+      // Need at least 51 chars to read quantity at position 51.
+      if (rawValue.length < 51) {
+        return {
+          data: null,
+          error:
+            `Customer QR Format Error: Data too short (${rawValue.length} chars). ` +
+            `Expected at least 51 chars to extract quantity at position 51.`,
         };
       }
 
-      // Find Q after P
-      const qIndex = rawValue.indexOf('Q', pIndex);
-      if (qIndex === -1) {
-        return { 
-          data: null, 
-          error: "Autoliv QR Format Error: Missing 'Q' marker after 'P'. Part number cannot be extracted." 
-        };
+      // 1-indexed positions mapped to JS 0-index slices:
+      // bin 1..35 => [0,35)
+      // part 36..50 => [35,50)
+      // qty at 51 => [50]
+      const binNumber = normalizeField(rawValue.slice(0, 35));
+      const partCode = normalizeField(rawValue.slice(35, 50));
+      const quantityChar = normalizeField(rawValue.slice(50, 51));
+
+      if (!binNumber) {
+        return { data: null, error: 'Customer QR Format Error: Bin number empty in characters 1..35.' };
       }
-
-      // Extract part number between P and Q
-      const partCode = rawValue.substring(pIndex + 1, qIndex).trim();
-      
-      // Extract bin quantity (single digit after Q)
-      const binQuantity = rawValue.substring(qIndex + 1, qIndex + 2).trim();
-
       if (!partCode) {
-        return { 
-          data: null, 
-          error: "Autoliv QR Format Error: Part code is empty between 'P' and 'Q' markers." 
-        };
+        return { data: null, error: 'Customer QR Format Error: Part number empty in characters 36..50.' };
       }
-
-      if (!binQuantity || !/^\d$/.test(binQuantity)) {
-        return { 
-          data: null, 
-          error: "Autoliv QR Format Error: Invalid bin quantity after 'Q'. Expected a single digit, found: '" + binQuantity + "'" 
+      if (!quantityChar || !/^\d$/.test(quantityChar)) {
+        return {
+          data: null,
+          error:
+            `Customer QR Format Error: Invalid quantity at position 51. ` +
+            `Expected a single digit, found: "${quantityChar || '(empty)'}".`,
         };
       }
 
@@ -114,31 +120,152 @@ export const BarcodeScanner = ({
         data: {
           rawValue,
           partCode,
-          quantity: binQuantity, // Use binQuantity as quantity for consistency
-          binNumber: "", // Not available in Autoliv format
-          binQuantity: binQuantity,
-          qrType: 'autoliv'
-        }
+          quantity: quantityChar,
+          binNumber,
+          binQuantity: quantityChar,
+          qrType: 'customer',
+        },
       };
     } catch (error) {
-      console.error("Error parsing Autoliv QR:", error);
-      return { 
-        data: null, 
-        error: "Autoliv QR Parse Error: " + (error instanceof Error ? error.message : "Unknown error occurred") 
+      console.error('Error parsing Customer QR (fixed):', error);
+      return {
+        data: null,
+        error: 'Customer QR Parse Error: ' + (error instanceof Error ? error.message : 'Unknown error occurred'),
       };
     }
   };
 
-  // Parse Customer QR code format
-  // Format: 2083107504002                      84940M69R13-BHE8      TONGUE ASSY,FR BELT,L208310750400215/01/26 262060066348A74915N623443243A85A8-232/6AUTOLIV INDIA PRIVATE LIMITED--MSIL - Manesar-15/01/2026 09:31 PM---A85A-
-  // Expected extraction:
-  // - Bin Number: 2083107504002 (from start, before first multiple spaces)
-  // - Part Code: 84940M69R13-BHE (from second field, without trailing digit)
-  // - Scanned Bin Quantity: 8 (trailing digit after part code)
-  // - Invoice Number: 2620600663 (10 digits after date pattern DD/MM/YY)
-  // - Total Quantity: 48 (numbers after invoice number, before first 'A')
-  // - Total Bin No.: 6 (number before "AUTOLIV INDIA PRIVATE LIMITED")
-  const parseCustomerQR = (rawValue: string): { data: BarcodeData | null; error?: string } => {
+  /**
+   * Autoliv label (marker-based spec):
+   * - Find the relevant Q (must have single digit right after)
+   * - Find the P before that Q (same P/Q pair)
+   * - Part number: between that P and that Q
+   * - Quantity: single digit after that Q
+   * - Bin number: between S and that same P
+   *   - Prefer S occurring after the last V before P (if V exists)
+   *   - If multiple S, choose the one closest to P (last S in the allowed range)
+   */
+  const parseAutolivLabel = (rawValue: string): { data: BarcodeData | null; error?: string } => {
+    try {
+      const qCandidates: number[] = [];
+      for (let i = 0; i < rawValue.length - 1; i++) {
+        if (rawValue[i] === 'Q' && /^\d$/.test(rawValue[i + 1])) {
+          qCandidates.push(i);
+        }
+      }
+
+      for (const qIndex of qCandidates) {
+        const pIndex = rawValue.lastIndexOf('P', qIndex - 1);
+        if (pIndex === -1) continue;
+
+        const partCode = normalizeField(rawValue.slice(pIndex + 1, qIndex));
+        if (!partCode) continue;
+
+        const quantity = rawValue[qIndex + 1];
+        if (!/^\d$/.test(quantity)) continue;
+
+        const vIndex = rawValue.lastIndexOf('V', pIndex - 1);
+
+        let sIndex = -1;
+        if (vIndex !== -1) {
+          // Find last S between (vIndex, pIndex)
+          for (let i = pIndex - 1; i > vIndex; i--) {
+            if (rawValue[i] === 'S') {
+              sIndex = i;
+              break;
+            }
+          }
+        } else {
+          sIndex = rawValue.lastIndexOf('S', pIndex - 1);
+        }
+
+        if (sIndex === -1) continue;
+
+        const binNumber = normalizeField(rawValue.slice(sIndex + 1, pIndex));
+        if (!binNumber) continue;
+
+        return {
+          data: {
+            rawValue,
+            partCode,
+            quantity,
+            binNumber,
+            binQuantity: quantity,
+            qrType: 'autoliv',
+          },
+        };
+      }
+
+      // If we got here, parsing failed. Provide a helpful diagnostic.
+      const hasP = rawValue.includes('P');
+      const hasQ = rawValue.includes('Q');
+      const hasS = rawValue.includes('S');
+      return {
+        data: null,
+        error:
+          `Autoliv QR Format Error: Could not extract fields using S..P..Q markers. ` +
+          `Found markers - P:${hasP ? 'yes' : 'no'}, Q:${hasQ ? 'yes' : 'no'}, S:${hasS ? 'yes' : 'no'}.`,
+      };
+    } catch (error) {
+      console.error('Error parsing Autoliv QR:', error);
+      return {
+        data: null,
+        error: 'Autoliv QR Parse Error: ' + (error instanceof Error ? error.message : 'Unknown error occurred'),
+      };
+    }
+  };
+
+  // =============================================
+  // Scanner payload normalization (ASCII-triplet decoding)
+  // =============================================
+  const stripUnsafeControlChars = (s: string) => {
+    // Keep tab/newline/carriage return; remove other control chars.
+    return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+  };
+
+  const isLikelyAsciiTriplets = (s: string) => {
+    const trimmed = s.trim();
+    if (trimmed.length < 6) return false;
+    if (trimmed.length % 3 !== 0) return false;
+    if (!/^\d+$/.test(trimmed)) return false;
+    // Guard: very long digit-only strings can be accidental; still bounded elsewhere (10k).
+    return true;
+  };
+
+  const decodeAsciiTriplets = (s: string): string | null => {
+    const trimmed = s.trim();
+    if (!isLikelyAsciiTriplets(trimmed)) return null;
+
+    // Decode 3-digit ASCII codes (e.g. 050048... => '20...')
+    const out: number[] = [];
+    for (let i = 0; i < trimmed.length; i += 3) {
+      const code = Number(trimmed.slice(i, i + 3));
+      if (!Number.isFinite(code) || code < 0 || code > 255) return null;
+      out.push(code);
+    }
+
+    const decoded = String.fromCharCode(...out);
+
+    // Heuristic: require that a good portion is printable whitespace/ASCII.
+    // This avoids decoding arbitrary numeric payloads.
+    const printable = decoded.match(/[\x09\x0A\x0D\x20-\x7E]/g)?.length ?? 0;
+    const ratio = decoded.length > 0 ? printable / decoded.length : 0;
+    if (ratio < 0.85) return null;
+
+    return decoded;
+  };
+
+  const canonicalizeBarcodePayload = (input: string): { canonical: string; original?: string; decoded: boolean } => {
+    // Normalize line endings for downstream parsing, and strip unsafe control chars.
+    const cleaned = stripUnsafeControlChars(String(input ?? ''));
+    const decoded = decodeAsciiTriplets(cleaned);
+    const canonical = stripUnsafeControlChars((decoded ?? cleaned).replace(/\r\n/g, '\n'));
+    const changed = decoded !== null && decoded !== cleaned;
+    return { canonical, original: changed ? cleaned : undefined, decoded: changed };
+  };
+
+  // Legacy Customer QR parsing (space-delimited) - kept for backward compatibility only.
+  const parseCustomerQRLegacy = (rawValue: string): { data: BarcodeData | null; error?: string } => {
     try {
       console.log("Parsing Customer QR:", rawValue);
       
@@ -247,32 +374,27 @@ export const BarcodeScanner = ({
     try {
       console.log("Parsing barcode/QR:", rawValue);
       
-      // Check if it's Autoliv QR format (contains P and Q pattern)
+      // Autoliv QR: marker-based
       if (rawValue.includes('P') && rawValue.includes('Q')) {
-        const autolivResult = parseAutolivQR(rawValue);
-        if (autolivResult.data) {
-          return { data: autolivResult.data };
-        }
-        // If parsing failed but format was detected, return the error
-        if (autolivResult.error) {
-          return { data: null, error: autolivResult.error };
-        }
+        const autolivResult = parseAutolivLabel(rawValue);
+        if (autolivResult.data) return { data: autolivResult.data };
+        if (autolivResult.error) return { data: null, error: autolivResult.error };
       }
 
-      // Check if it's Customer QR format
-      // Try both multi-line (at least 3 lines) and single-line (space-delimited fields)
+      // Customer QR: fixed-position per nomenclature (preferred)
+      if (rawValue.length >= 51) {
+        const customerFixed = parseCustomerLabelFixed(rawValue);
+        if (customerFixed.data) return { data: customerFixed.data };
+        if (customerFixed.error) return { data: null, error: customerFixed.error };
+      }
+
+      // Customer QR: legacy format fallback (space-delimited)
       const lines = rawValue.split(/\r?\n/).filter(line => line.trim().length > 0);
       const fields = rawValue.split(/\s{2,}/).map(field => field.trim()).filter(field => field.length > 0);
-      
       if (lines.length >= 3 || fields.length >= 2) {
-        const customerResult = parseCustomerQR(rawValue);
-        if (customerResult.data) {
-          return { data: customerResult.data };
-        }
-        // If parsing failed but format was detected, return the error
-        if (customerResult.error) {
-          return { data: null, error: customerResult.error };
-        }
+        const customerLegacy = parseCustomerQRLegacy(rawValue);
+        if (customerLegacy.data) return { data: customerLegacy.data };
+        if (customerLegacy.error) return { data: null, error: customerLegacy.error };
       }
 
       // Fallback: Try old format (Part_code-{value},Quantity-{value},Bin_number-{value})
@@ -487,6 +609,11 @@ export const BarcodeScanner = ({
       }
 
       console.log("Barcode scanned from wired scanner:", scannedValue);
+
+      const normalized = canonicalizeBarcodePayload(scannedValue);
+      if (normalized.decoded) {
+        console.log('✅ Decoded ASCII-triplet scanner payload to canonical QR text');
+      }
       
       // Prevent duplicate scans
       const now = Date.now();
@@ -500,7 +627,7 @@ export const BarcodeScanner = ({
       };
       const threshold = effectivePrefs.duplicateScanThresholdMs;
       
-      if (scannedValue === lastScannedBarcodeRef.current && timeSinceLastScan < threshold) {
+      if (normalized.canonical === lastScannedBarcodeRef.current && timeSinceLastScan < threshold) {
         console.log("Duplicate scan ignored");
         toast.info("Duplicate scan ignored", {
           description: "Same barcode scanned too quickly. Please wait before scanning again.",
@@ -511,21 +638,26 @@ export const BarcodeScanner = ({
         return;
       }
 
-      lastScannedBarcodeRef.current = scannedValue;
+      lastScannedBarcodeRef.current = normalized.canonical;
       lastScanTimeRef.current = now;
       setIsProcessing(true);
 
       // Parse the barcode data
-      const parseResult = parseBarcodeData(scannedValue);
+      const parseResult = parseBarcodeData(normalized.canonical);
       
       if (parseResult.data) {
-        console.log("Parsed barcode data:", parseResult.data);
+        const data: BarcodeData = {
+          ...parseResult.data,
+          rawValue: normalized.canonical,
+          originalRawValue: normalized.original
+        };
+        console.log("Parsed barcode data:", data);
         
-        const qrTypeLabel = parseResult.data.qrType === 'autoliv' ? 'Autoliv QR' : 
-                           parseResult.data.qrType === 'customer' ? 'Customer QR' : 'Barcode';
-        const description = parseResult.data.binQuantity 
-          ? `Part: ${parseResult.data.partCode}, Bin Qty: ${parseResult.data.binQuantity}`
-          : `Part: ${parseResult.data.partCode}, Qty: ${parseResult.data.quantity}`;
+        const qrTypeLabel = data.qrType === 'autoliv' ? 'Autoliv QR' : 
+                           data.qrType === 'customer' ? 'Customer QR' : 'Barcode';
+        const description = data.binQuantity 
+          ? `Part: ${data.partCode}, Bin Qty: ${data.binQuantity}`
+          : `Part: ${data.partCode}, Qty: ${data.quantity}`;
         
         toast.success(`✅ ${qrTypeLabel} scanned successfully!`, {
           description: description,
@@ -538,7 +670,7 @@ export const BarcodeScanner = ({
         setIsProcessing(false);
         
         // Send the parsed barcode data to parent
-        onScan(parseResult.data);
+        onScan(data);
         
         // Close the dialog
         onClose();
@@ -799,30 +931,36 @@ export const BarcodeScanner = ({
       (result, error) => {
         if (result) {
           const rawValue = result.getText();
-          console.log("Barcode detected:", rawValue);
+          const normalized = canonicalizeBarcodePayload(rawValue);
+          console.log("Barcode detected:", normalized.canonical);
 
           // Prevent duplicate scans (same barcode within 2 seconds)
           const now = Date.now();
-          if (rawValue === lastScannedBarcodeRef.current && (now - lastScanTimeRef.current) < 2000) {
+          if (normalized.canonical === lastScannedBarcodeRef.current && (now - lastScanTimeRef.current) < 2000) {
             console.log("Duplicate scan ignored (same barcode within 2 seconds)");
             return;
           }
 
-          lastScannedBarcodeRef.current = rawValue;
+          lastScannedBarcodeRef.current = normalized.canonical;
           lastScanTimeRef.current = now;
 
           // Parse the barcode data
-          const parseResult = parseBarcodeData(rawValue);
+          const parseResult = parseBarcodeData(normalized.canonical);
           
           if (parseResult.data) {
-            console.log("Parsed barcode data:", parseResult.data);
+            const data: BarcodeData = {
+              ...parseResult.data,
+              rawValue: normalized.canonical,
+              originalRawValue: normalized.original
+            };
+            console.log("Parsed barcode data:", data);
             
             // Show success message with QR type-specific info
-            const qrTypeLabel = parseResult.data.qrType === 'autoliv' ? 'Autoliv QR' : 
-                               parseResult.data.qrType === 'customer' ? 'Customer QR' : 'Barcode';
-            const description = parseResult.data.binQuantity 
-              ? `Part: ${parseResult.data.partCode}, Bin Qty: ${parseResult.data.binQuantity}`
-              : `Part: ${parseResult.data.partCode}, Qty: ${parseResult.data.quantity}`;
+            const qrTypeLabel = data.qrType === 'autoliv' ? 'Autoliv QR' : 
+                               data.qrType === 'customer' ? 'Customer QR' : 'Barcode';
+            const description = data.binQuantity 
+              ? `Part: ${data.partCode}, Bin Qty: ${data.binQuantity}`
+              : `Part: ${data.partCode}, Qty: ${data.quantity}`;
             
             toast.success(`✅ ${qrTypeLabel} scanned successfully!`, {
               description: description,
@@ -833,7 +971,7 @@ export const BarcodeScanner = ({
             stopScanning();
             
             // Send the parsed barcode data to parent
-            onScan(parseResult.data);
+            onScan(data);
             
             // Close the dialog immediately
             onClose();

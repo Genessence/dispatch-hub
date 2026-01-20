@@ -56,7 +56,6 @@ const Dispatch = () => {
     sharedInvoices,
     scheduleData,
     getScheduledDispatchableInvoices,
-    getScheduleForCustomer,
     updateInvoiceDispatch,
     getDispatchLogs,
     refreshData,
@@ -1122,33 +1121,33 @@ const Dispatch = () => {
         {!scheduleData && (
           <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
             <p className="text-sm font-medium">
-              ⚠️ No schedule uploaded yet. Please go to <strong>Upload Sales Data</strong> to import both schedule and invoice files first.
+              ⚠️ Schedule not uploaded. Dispatch can still continue, but Doc Audit delivery time/unloading location options will be limited until schedule is uploaded.
             </p>
           </div>
         )}
-        
-        {scheduleData && getScheduledDispatchableInvoices().length === 0 && (
+
+        {getScheduledDispatchableInvoices().length === 0 && (
           <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
             <p className="text-sm font-medium mb-2">
-              📋 No scheduled invoices available for dispatch.
+              📋 No invoices available for dispatch.
             </p>
             <p className="text-xs text-muted-foreground">
               {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 
                 ? `✅ All scheduled invoices have been dispatched. Upload new data or complete pending audits.`
-                : `Please complete document audit for scheduled invoices before dispatch.`
+                : `Please complete document audit for invoices before dispatch.`
               }
             </p>
           </div>
         )}
         
-        {scheduleData && getScheduledDispatchableInvoices().length > 0 && (
+        {getScheduledDispatchableInvoices().length > 0 && (
           <div className="mb-4 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
             <p className="text-sm font-medium mb-2">
-              ✅ Scheduled Dispatch Available
+              ✅ Dispatch Available
             </p>
             <div className="text-xs text-muted-foreground space-y-1">
-              <p>• Showing {getScheduledDispatchableInvoices().length} audited invoice(s) with matching schedule</p>
-              <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
+              <p>• Showing {getScheduledDispatchableInvoices().length} audited invoice(s) ready for dispatch</p>
+              {scheduleData && <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>}
               <p>• Current user: <strong>{currentUser}</strong></p>
             </div>
           </div>
@@ -1273,7 +1272,6 @@ const Dispatch = () => {
                                 : null;
                               const isDifferentCustomer = currentCustomer && currentCustomer !== invoice.customer;
                               const isAlreadySelected = selectedInvoices.includes(invoice.id);
-                              const scheduleItems = getScheduleForCustomer(invoice.billTo || '');
 
                               return (
                                 <SelectItem 
@@ -1296,11 +1294,6 @@ const Dispatch = () => {
                                       <Badge variant="outline" className="text-xs">
                                         Qty: {invoice.totalQty}
                                       </Badge>
-                                      {scheduleItems.length > 0 && (
-                                        <Badge variant="secondary" className="text-xs">
-                                          {scheduleItems.length} items
-                                        </Badge>
-                                      )}
                                       <Badge variant="default" className="text-xs">
                                         <CheckCircle2 className="h-3 w-3 mr-1" />
                                         Audited
@@ -1312,7 +1305,7 @@ const Dispatch = () => {
                             })
                           ) : (
                             <div className="p-4 text-center text-sm text-muted-foreground">
-                              No scheduled audited invoices available for dispatch
+                              No audited invoices available for dispatch
                             </div>
                           )}
                         </SelectContent>

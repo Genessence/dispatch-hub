@@ -7,6 +7,7 @@
     "dev": "nodemon --exec ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "qr:test": "ts-node scripts/test-qr-nomenclature.ts",
     "db:migrate": "ts-node scripts/run-migrations.ts",
     "db:migrate:manual": "psql -d dispatch_hub -f migrations/001_initial.sql && psql -d dispatch_hub -f migrations/002_enhance_validated_barcodes.sql && psql -d dispatch_hub -f migrations/003_enhance_gatepass_invoices.sql",
     "db:reset": "ts-node scripts/reset-database.ts",

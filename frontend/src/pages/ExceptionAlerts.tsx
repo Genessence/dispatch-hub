@@ -20,11 +20,11 @@ import {
 
 const ExceptionAlerts = () => {
   const navigate = useNavigate();
-  const { currentUser, mismatchAlerts, updateMismatchStatus, updateInvoiceAudit } = useSession();
+  const { currentUser, currentUserRole, mismatchAlerts, updateMismatchStatus, updateInvoiceAudit } = useSession();
   const [selectedAlert, setSelectedAlert] = useState<string | null>(null);
 
   // Permission check
-  if (currentUser !== "Admin") {
+  if (currentUserRole !== "admin") {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
         <div className="text-center max-w-md mx-auto">

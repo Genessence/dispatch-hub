@@ -4,7 +4,6 @@ import * as XLSX from 'xlsx';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
-import { validateInvoiceItemsAgainstSchedule } from '../utils/validation';
 
 const router = Router();
 
@@ -14,6 +13,72 @@ const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
+
+// Helper: Excel date serial to JS Date (local date)
+const excelDateToJSDate = (serial: number): Date => {
+  const utc_days = Math.floor(serial - 25569);
+  const utc_value = utc_days * 86400;
+  const date_info = new Date(utc_value * 1000);
+  return new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate());
+};
+
+// Helper: parse invoice date from Excel serial, Date, or common string formats
+const parseInvoiceDate = (value: any): Date | null => {
+  if (value === null || value === undefined || value === '') return null;
+  if (value instanceof Date && !isNaN(value.getTime())) return value;
+  if (typeof value === 'number' && !isNaN(value)) return excelDateToJSDate(value);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // ISO-like YYYY-MM-DD or YYYY/MM/DD
+    const m1 = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (m1) {
+      const [, y, m, d] = m1;
+      const parsed = new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
+      return isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    // DD/MM/YYYY or MM/DD/YYYY (try both)
+    const m2 = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (m2) {
+      const [, a, b, y] = m2;
+      const try1 = new Date(parseInt(y, 10), parseInt(a, 10) - 1, parseInt(b, 10));
+      if (!isNaN(try1.getTime())) return try1;
+      const try2 = new Date(parseInt(y, 10), parseInt(b, 10) - 1, parseInt(a, 10));
+      return isNaN(try2.getTime()) ? null : try2;
+    }
+
+    const parsed = new Date(trimmed);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+};
+
+// Helper: case-insensitive column lookup
+const getColumnValue = (row: any, variations: string[]): any => {
+  for (const variation of variations) {
+    if (row[variation] !== undefined && row[variation] !== '') return row[variation];
+    const matchedKey = Object.keys(row).find(
+      (k) => k.toLowerCase().trim() === variation.toLowerCase().trim()
+    );
+    if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') return row[matchedKey];
+  }
+  return '';
+};
+
+// Helper: parse integer quantity from various formats
+const parseQuantityInt = (value: any): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return isNaN(value) ? null : Math.round(value);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = parseFloat(trimmed);
+    return isNaN(parsed) ? null : Math.round(parsed);
+  }
+  return null;
+};
 
 /**
  * GET /api/invoices
@@ -221,8 +286,17 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       return res.status(400).json({ error: 'No sheets found in file' });
     }
 
-    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-    const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false });
+    // Invoice files may contain multiple sheets. Line items might not be on the first sheet.
+    // Merge rows from all sheets to avoid "invoices imported but 0 items" when items live elsewhere.
+    const jsonData: any[] = [];
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+      const sheetRows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+      if (Array.isArray(sheetRows) && sheetRows.length > 0) {
+        jsonData.push(...sheetRows);
+      }
+    }
 
     if (!jsonData || jsonData.length === 0) {
       return res.status(400).json({ error: 'No data found in file' });
@@ -235,18 +309,53 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     const allItems: any[] = [];
     const foundCustomerCodes = new Set<string>();
     const sampleCustomerItems: string[] = [];
+    const rowErrors: Array<{ row: number; invoiceNumber?: string; message: string }> = [];
 
     jsonData.forEach((row: any, index: number) => {
-      const invoiceNum = row['Invoice Number'] || row['Invoice'] || row['invoice'] || `INV-${index + 1}`;
-      const customer = row['Cust Name'] || row['Customer'] || row['customer'] || 'Unknown Customer';
-      const qty = parseInt(row['Quantity Invoiced'] || row['Qty'] || row['qty'] || row['Quantity'] || '0');
-      const billTo = row['Bill To'] || row['BillTo'] || row['bill to'] || '';
-      const plant = row['Ship To'] || row['ShipTo'] || row['Plant'] || row['plant'] || '';
-      const part = row['Item Number'] || row['Part'] || row['part'] || row['Part Code'] || 'Unknown Part';
+      const invoiceNumRaw = getColumnValue(row, ['Invoice Number', 'Invoice', 'invoice', 'Invoice No', 'InvoiceNo']);
+      const invoiceNum = String(invoiceNumRaw || '').trim();
+
+      const customerRaw = getColumnValue(row, ['Customer Name', 'Cust Name', 'Customer', 'customer', 'CustomerName']);
+      const customer = String(customerRaw || '').trim();
+
+      const billToRaw = getColumnValue(row, ['Bill To', 'BillTo', 'bill to', 'Bill-To', 'BillTo Code', 'Customer Code']);
+      const billTo = String(billToRaw || '').trim();
+
+      const invoiceDateRaw = getColumnValue(row, ['Invoice Date', 'InvoiceDate', 'invoice date', 'Inv Date', 'Date']);
+      const invoiceDate = parseInvoiceDate(invoiceDateRaw);
+
+      // Optional (but used by Doc Audit now): delivery time + unloading location from invoice data
+      const deliveryTimeRaw = getColumnValue(row, ['Delivery Time', 'DeliveryTime', 'delivery time', 'Supply Time', 'SUPPLY TIME', 'Time']);
+      const deliveryTime = String(deliveryTimeRaw || '').trim() || null;
+
+      const unloadingLocRaw = getColumnValue(row, [
+        'UNLOADING LOC',
+        'Unloading Loc',
+        'UnloadingLoc',
+        'Unloading Location',
+        'UnloadingLocation',
+        'Unload Location',
+        'UnloadLocation',
+        'Location',
+        'location',
+      ]);
+      const unloadingLoc = String(unloadingLocRaw || '').trim() || null;
+
+      const qtyRaw = getColumnValue(row, ['Quantity Invoiced', 'Qty', 'qty', 'Quantity', 'quantity']);
+      const qty = parseQuantityInt(qtyRaw);
+
+      const plantRaw = getColumnValue(row, ['Ship To', 'ShipTo', 'Ship-To', 'Plant', 'plant']);
+      const plant = String(plantRaw || '').trim();
+
+      const itemNumberRaw = getColumnValue(row, ['Item Number', 'ItemNumber', 'Part', 'part', 'Part Code', 'PartCode', 'Part Number']);
+      const itemNumber = String(itemNumberRaw || '').trim();
+
       // Normalize customer item
-      const customerItemRaw = row['Customer Item'] || row['CustomerItem'] || row['customer item'] || '';
-      const customerItem = String(customerItemRaw).trim().replace(/\s+/g, ' ');
-      const partDescription = row['Part Description'] || row['Description'] || '';
+      const customerItemRaw = getColumnValue(row, ['Customer Item', 'CustomerItem', 'customer item', 'Customer-Item', 'Cust Item', 'CustItem', 'Customer Part', 'CustomerPart']);
+      const customerItem = String(customerItemRaw || '').trim().replace(/\s+/g, ' ');
+
+      const partDescriptionRaw = getColumnValue(row, ['Part Description', 'PartDescription', 'part description', 'Part-Description', 'Description', 'description']);
+      const partDescription = String(partDescriptionRaw || '').trim();
       
       // Collect sample customer items for diagnostics (first 10 unique)
       if (customerItem && sampleCustomerItems.length < 10 && !sampleCustomerItems.includes(customerItem)) {
@@ -258,49 +367,102 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         foundCustomerCodes.add(String(billTo).trim());
       }
 
-      let status = 'valid-unmatched';
-      let errorMessage = '';
+      // Invoice-first validation
+      const missing: string[] = [];
+      if (!invoiceNum) missing.push('Invoice Number');
+      if (!billTo) missing.push('Bill To');
+      if (!customer) missing.push('Customer Name');
+      if (!invoiceDate) missing.push('Invoice Date');
+      if (!customerItem) missing.push('Customer Item');
+      if (!itemNumber) missing.push('Item Number');
+      if (qty === null || qty === undefined || isNaN(qty)) missing.push('Quantity Invoiced');
 
-      if (!invoiceNum || invoiceNum.toString().trim() === '') {
-        status = 'error';
-        errorMessage = 'Missing invoice number';
-      } else if (!customer || customer.toString().trim() === '') {
-        status = 'error';
-        errorMessage = 'Missing customer name';
-      } else if (isNaN(qty)) {
-        status = 'error';
-        errorMessage = 'Invalid quantity';
-      } else if (!customerItem || customerItem.toString().trim() === '') {
-        // Missing customer_item is a validation error per requirements
-        status = 'error';
-        errorMessage = 'Missing Customer Item';
+      if (missing.length > 0) {
+        rowErrors.push({
+          row: index + 2, // +1 header row, +1 for 1-based
+          invoiceNumber: invoiceNum || undefined,
+          message: `Missing/invalid fields: ${missing.join(', ')}`,
+        });
+        return;
       }
 
-      if (!invoiceMap.has(invoiceNum.toString())) {
-        invoiceMap.set(invoiceNum.toString(), {
-          id: invoiceNum.toString(),
-          customer: customer.toString(),
-          billTo: billTo.toString(),
+      if (!invoiceMap.has(invoiceNum)) {
+        invoiceMap.set(invoiceNum, {
+          id: invoiceNum,
+          customer,
+          billTo,
+          invoiceDate,
+          deliveryTime,
+          unloadingLoc,
           totalQty: 0,
           binCapacity: Math.random() < 0.5 ? 50 : 80,
           expectedBins: 0,
-          plant: plant ? plant.toString() : null
+          plant: plant ? plant : null
         });
+      } else {
+        const existing = invoiceMap.get(invoiceNum);
+        if (existing.billTo && String(existing.billTo).trim() !== billTo) {
+          rowErrors.push({
+            row: index + 2,
+            invoiceNumber: invoiceNum,
+            message: `Bill To mismatch for invoice ${invoiceNum}: "${existing.billTo}" vs "${billTo}"`,
+          });
+          return;
+        }
+        if (existing.customer && String(existing.customer).trim() !== customer) {
+          rowErrors.push({
+            row: index + 2,
+            invoiceNumber: invoiceNum,
+            message: `Customer Name mismatch for invoice ${invoiceNum}: "${existing.customer}" vs "${customer}"`,
+          });
+          return;
+        }
+
+        // Keep invoice-level delivery fields consistent if present across rows
+        if (deliveryTime && existing.deliveryTime && String(existing.deliveryTime).trim() !== deliveryTime) {
+          rowErrors.push({
+            row: index + 2,
+            invoiceNumber: invoiceNum,
+            message: `Delivery Time mismatch for invoice ${invoiceNum}: "${existing.deliveryTime}" vs "${deliveryTime}"`,
+          });
+          return;
+        }
+        if (unloadingLoc && existing.unloadingLoc && String(existing.unloadingLoc).trim() !== unloadingLoc) {
+          rowErrors.push({
+            row: index + 2,
+            invoiceNumber: invoiceNum,
+            message: `Unloading Location mismatch for invoice ${invoiceNum}: "${existing.unloadingLoc}" vs "${unloadingLoc}"`,
+          });
+          return;
+        }
+
+        // If previously missing, fill from later rows
+        if (!existing.deliveryTime && deliveryTime) existing.deliveryTime = deliveryTime;
+        if (!existing.unloadingLoc && unloadingLoc) existing.unloadingLoc = unloadingLoc;
       }
 
-      const invoice = invoiceMap.get(invoiceNum.toString());
-      invoice.totalQty += Math.abs(qty);
+      const invoice = invoiceMap.get(invoiceNum);
+      const qtyValue = qty ?? 0;
+      invoice.totalQty += Math.abs(qtyValue);
 
       allItems.push({
-        invoiceId: invoiceNum.toString(),
-        part: part.toString(),
-        customerItem: customerItem ? customerItem.toString() : null,
-        partDescription: partDescription ? partDescription.toString() : null,
-        qty: qty,
-        status: status,
-        errorMessage: errorMessage || null
+        invoiceId: invoiceNum,
+        part: itemNumber,
+        customerItem,
+        partDescription: partDescription || null,
+        qty: qtyValue,
+        status: 'valid',
+        errorMessage: null
       });
     });
+
+    if (rowErrors.length > 0) {
+      return res.status(400).json({
+        error: 'Invoice file validation failed',
+        message: `Found ${rowErrors.length} invalid row(s). Fix the file and re-upload.`,
+        sampleErrors: rowErrors.slice(0, 10),
+      });
+    }
 
     // Validate customer code if provided
     if (expectedCustomerCode) {
@@ -345,7 +507,6 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     console.log('================================\n');
 
     // Insert into database using transaction
-    let validationStats;
     await transaction(async (client) => {
       for (const [invoiceId, invoice] of invoiceMap) {
         // Check if invoice already exists
@@ -356,9 +517,23 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
 
         if (existingResult.rows.length === 0) {
           await client.query(
-            `INSERT INTO invoices (id, customer, bill_to, total_qty, bin_capacity, expected_bins, plant, uploaded_by, uploaded_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)`,
-            [invoiceId, invoice.customer, invoice.billTo, invoice.totalQty, invoice.binCapacity, invoice.expectedBins, invoice.plant, req.user?.username]
+            `INSERT INTO invoices (id, customer, bill_to, invoice_date, delivery_date, delivery_time, unloading_loc, total_qty, bin_capacity, expected_bins, plant, uploaded_by, uploaded_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)`,
+            [
+              invoiceId,
+              invoice.customer,
+              invoice.billTo,
+              invoice.invoiceDate,
+              // Invoice Date is the Delivery Date (per new requirements)
+              invoice.invoiceDate,
+              invoice.deliveryTime,
+              invoice.unloadingLoc,
+              invoice.totalQty,
+              invoice.binCapacity,
+              invoice.expectedBins,
+              invoice.plant,
+              req.user?.username
+            ]
           );
 
           // Insert items
@@ -372,9 +547,6 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
           }
         }
       }
-
-      // Validate invoice items against schedule items
-      validationStats = await validateInvoiceItemsAgainstSchedule(client);
 
       // Log the upload
       await client.query(
@@ -402,11 +574,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         uniqueCustomerItems: uniqueCustomerItems.size,
         sampleCustomerItems: sampleCustomerItems.slice(0, 5)
       },
-      validationStats: validationStats || {
-        matchedCount: 0,
-        unmatchedCount: 0,
-        errorCount: 0
-      }
+      // Schedule-matching validation removed (invoice is source-of-truth)
     });
   } catch (error) {
     console.error('Upload invoices error:', error);
@@ -440,4 +608,5 @@ router.delete('/:id', authenticateToken, async (req: AuthRequest, res: Response)
 });
 
 export default router;
+
 

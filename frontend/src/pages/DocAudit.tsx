@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -81,6 +82,8 @@ const DocAudit = () => {
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
   const [selectedUnloadingLocs, setSelectedUnloadingLocs] = useState<string[]>([]);
   const [selectedDeliveryTimes, setSelectedDeliveryTimes] = useState<string[]>([]);
+  const [manualDeliveryTime, setManualDeliveryTime] = useState<string>('');
+  const [manualUnloadingLoc, setManualUnloadingLoc] = useState<string>('');
   
   // Invoice QR scanning
   const [showInvoiceQRScanner, setShowInvoiceQRScanner] = useState(false);
@@ -121,247 +124,59 @@ const DocAudit = () => {
     return matched;
   }, [getInvoicesWithSchedule]);
 
-  // Get available delivery dates
+  // Delivery date options come from invoice data (Invoice Date is the Delivery Date)
   const availableDeliveryDates = useMemo(() => {
-    if (!scheduleData || !invoicesWithSchedule.length) {
-      console.log('=== DOC AUDIT DEBUG: availableDeliveryDates ===');
-      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
-      console.log('invoicesWithSchedule.length:', invoicesWithSchedule.length);
-      return [];
-    }
-    
     const dates = new Set<string>();
-    const customerItemsSet = new Set<string>();
-    
-    // Debug: Log the first invoice item structure
-    console.log('=== DOC AUDIT DEBUG: Invoice items check ===');
-    console.log('Number of invoicesWithSchedule:', invoicesWithSchedule.length);
-    if (invoicesWithSchedule.length > 0) {
-      console.log('First invoice ID:', invoicesWithSchedule[0].id);
-      console.log('First invoice items:', invoicesWithSchedule[0].items);
-      console.log('First invoice items length:', invoicesWithSchedule[0].items?.length);
-      
-      if (invoicesWithSchedule[0].items && invoicesWithSchedule[0].items.length > 0) {
-        console.log('First item FULL:', JSON.stringify(invoicesWithSchedule[0].items[0], null, 2));
-        console.log('Fields available:', Object.keys(invoicesWithSchedule[0].items[0]));
-        console.log('part field:', invoicesWithSchedule[0].items[0].part);
-        console.log('customerItem field:', invoicesWithSchedule[0].items[0].customerItem);
-        console.log('status field:', invoicesWithSchedule[0].items[0].status);
-        
-        // Show first 5 items' part numbers
-        const first5Parts = invoicesWithSchedule[0].items.slice(0, 5).map((item: any) => ({
-          part: item.part,
-          customerItem: item.customerItem,
-          combined: item.customerItem || item.part
-        }));
-        console.log('First 5 items (part info):', first5Parts);
-      } else {
-        console.log('WARNING: First invoice has no items or items is undefined/empty!');
-      }
-    }
-    
-    invoicesWithSchedule.forEach(invoice => {
-      invoice.items?.forEach((item: any) => {
-        // Check both customerItem and part fields (they might be the same)
-        const partNum = item.customerItem || item.part;
-        // Include all items with a part number (no status check - we already filter by scheduled customer codes)
-        if (partNum) {
-          customerItemsSet.add(String(partNum).trim());
-        }
-      });
+    invoicesWithSchedule.forEach((inv) => {
+      if (inv.invoiceDate) dates.add(formatDateAsLocalString(inv.invoiceDate));
     });
-    
-    scheduleData.items.forEach(item => {
-      if (item.deliveryDate && item.partNumber && customerItemsSet.has(String(item.partNumber).trim())) {
-        dates.add(formatDateAsLocalString(item.deliveryDate));
-      }
-    });
-    
-    console.log('=== DOC AUDIT DEBUG: availableDeliveryDates ===');
-    console.log('Customer items from invoices:', Array.from(customerItemsSet).slice(0, 10));
-    console.log('Total customer items:', customerItemsSet.size);
-    console.log('Schedule items with deliveryDate:', scheduleData.items.filter(i => i.deliveryDate).length);
-    console.log('Schedule items with partNumber:', scheduleData.items.filter(i => i.partNumber).length);
-    console.log('Schedule part numbers (first 10):', scheduleData.items.filter(i => i.partNumber).map(i => i.partNumber).slice(0, 10));
-    
-    // Check for matching - compare first few items
-    const invoiceParts = Array.from(customerItemsSet).slice(0, 5);
-    const scheduleParts = scheduleData.items.filter(i => i.partNumber).map(i => String(i.partNumber).trim()).slice(0, 5);
-    console.log('Comparing invoice parts:', invoiceParts);
-    console.log('With schedule parts:', scheduleParts);
-    
-    // Check if any match
-    invoiceParts.forEach(invPart => {
-      const found = scheduleParts.find(schPart => schPart === invPart);
-      console.log(`Invoice part "${invPart}" matches schedule: ${found ? 'YES' : 'NO'}`);
-    });
-    
-    console.log('Matching schedule items:', scheduleData.items.filter(i => 
-      i.deliveryDate && i.partNumber && customerItemsSet.has(String(i.partNumber).trim())
-    ).length);
-    console.log('Available dates:', Array.from(dates).sort());
-    
     return Array.from(dates).sort();
-  }, [scheduleData, invoicesWithSchedule]);
+  }, [invoicesWithSchedule]);
 
-  // Get available delivery times for selected date (Step 2 - NEW ORDER)
+  // Delivery time options come from schedule for the selected invoice date (InvoiceDate == SupplyDate)
   const availableDeliveryTimes = useMemo(() => {
-    if (!selectedDeliveryDate || !scheduleData || !invoicesWithSchedule.length) {
-      console.log('=== DOC AUDIT DEBUG: availableDeliveryTimes ===');
-      console.log('selectedDeliveryDate:', selectedDeliveryDate);
-      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
-      console.log('invoicesWithSchedule.length:', invoicesWithSchedule.length);
-      return [];
-    }
-    
+    if (!selectedDeliveryDate || !scheduleData) return [];
+    const selected = formatDateAsLocalString(selectedDeliveryDate);
     const times = new Set<string>();
-    const customerItemsSet = new Set<string>();
-    
-    invoicesWithSchedule.forEach(invoice => {
-      invoice.items?.forEach((item: any) => {
-        const partNum = item.customerItem || item.part;
-        if (partNum) {
-          customerItemsSet.add(String(partNum).trim());
-        }
-      });
-    });
-    
-    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
-    scheduleData.items.forEach(item => {
-      if (item.deliveryDate && item.deliveryTime && item.partNumber) {
-        const itemDate = formatDateAsLocalString(item.deliveryDate);
-        if (itemDate === selectedDate && customerItemsSet.has(String(item.partNumber).trim())) {
-          times.add(item.deliveryTime);
-        }
+    scheduleData.items.forEach((item) => {
+      if (!item.deliveryDate || !item.deliveryTime) return;
+      if (formatDateAsLocalString(item.deliveryDate) === selected) {
+        times.add(item.deliveryTime);
       }
     });
-    
-    console.log('=== DOC AUDIT DEBUG: availableDeliveryTimes ===');
-    console.log('Selected date:', selectedDate);
-    console.log('Customer items:', Array.from(customerItemsSet).slice(0, 5));
-    console.log('Schedule items with date+time+partNumber:', scheduleData.items.filter(i => 
-      i.deliveryDate && i.deliveryTime && i.partNumber
-    ).length);
-    console.log('Matching items for date:', scheduleData.items.filter(i => {
-      if (!i.deliveryDate || !i.deliveryTime || !i.partNumber) return false;
-      const itemDate = formatDateAsLocalString(i.deliveryDate);
-      return itemDate === selectedDate 
-        && customerItemsSet.has(String(i.partNumber).trim());
-    }).length);
-    console.log('Available times:', Array.from(times).sort());
-    
     return Array.from(times).sort();
-  }, [selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
+  }, [selectedDeliveryDate, scheduleData]);
 
-  // Get available unloading locations (Unloading Doc) for selected date and time (Step 3 - NEW ORDER)
+  // Unloading location options come from schedule for the selected invoice date + selected time(s)
   const availableUnloadingLocs = useMemo(() => {
-    if (!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || !scheduleData || !invoicesWithSchedule.length) {
-      console.log('=== DOC AUDIT DEBUG: availableUnloadingLocs ===');
-      console.log('selectedDeliveryDate:', selectedDeliveryDate);
-      console.log('selectedDeliveryTimes.length:', selectedDeliveryTimes.length);
-      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
-      console.log('invoicesWithSchedule.length:', invoicesWithSchedule.length);
-      return [];
-    }
-    
+    if (!selectedDeliveryDate || !scheduleData) return [];
+    const selected = formatDateAsLocalString(selectedDeliveryDate);
     const locs = new Set<string>();
-    const customerItemsSet = new Set<string>();
-    
-    invoicesWithSchedule.forEach(invoice => {
-      invoice.items?.forEach((item: any) => {
-        const partNum = item.customerItem || item.part;
-        if (partNum) {
-          customerItemsSet.add(String(partNum).trim());
-        }
-      });
-    });
-    
-    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
-    scheduleData.items.forEach(item => {
-      if (item.deliveryDate && item.deliveryTime && item.unloadingLoc && item.partNumber) {
-        const itemDate = formatDateAsLocalString(item.deliveryDate);
-        if (itemDate === selectedDate 
-            && selectedDeliveryTimes.includes(item.deliveryTime)
-            && customerItemsSet.has(String(item.partNumber).trim())) {
+    scheduleData.items.forEach((item) => {
+      if (!item.deliveryDate || !item.unloadingLoc) return;
+      if (formatDateAsLocalString(item.deliveryDate) !== selected) return;
+      if (selectedDeliveryTimes.length > 0) {
+        if (item.deliveryTime && selectedDeliveryTimes.includes(item.deliveryTime)) {
           locs.add(item.unloadingLoc);
         }
+      } else {
+        // If times are not selected yet, still show all locations for that day
+        locs.add(item.unloadingLoc);
       }
     });
-    
-    console.log('=== DOC AUDIT DEBUG: availableUnloadingLocs ===');
-    console.log('Selected date:', selectedDate);
-    console.log('Selected times:', selectedDeliveryTimes);
-    console.log('Customer items:', Array.from(customerItemsSet).slice(0, 5));
-    console.log('Schedule items with date+time+unloadingLoc+partNumber:', scheduleData.items.filter(i => 
-      i.deliveryDate && i.deliveryTime && i.unloadingLoc && i.partNumber
-    ).length);
-    console.log('Matching items for date+time:', scheduleData.items.filter(i => {
-      if (!i.deliveryDate || !i.deliveryTime || !i.unloadingLoc || !i.partNumber) return false;
-      const itemDate = formatDateAsLocalString(i.deliveryDate);
-      return itemDate === selectedDate 
-        && selectedDeliveryTimes.includes(i.deliveryTime)
-        && customerItemsSet.has(String(i.partNumber).trim());
-    }).length);
-    console.log('Available unloading locations:', Array.from(locs).sort());
-    
     return Array.from(locs).sort();
-  }, [selectedDeliveryDate, selectedDeliveryTimes, scheduleData, invoicesWithSchedule]);
+  }, [selectedDeliveryDate, selectedDeliveryTimes, scheduleData]);
 
 
-  // Get filtered invoices based on selections (Date → Time → Unloading Doc)
+  // Invoices are filtered by selected delivery date (which is Invoice Date).
+  // Delivery time + unloading location selection is only used for logging on completion.
   const invoices = useMemo(() => {
-    if (!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0 || !scheduleData) {
-      console.log('=== DOC AUDIT DEBUG: invoices (filtered) ===');
-      console.log('selectedDeliveryDate:', selectedDeliveryDate);
-      console.log('selectedDeliveryTimes.length:', selectedDeliveryTimes.length);
-      console.log('selectedUnloadingLocs.length:', selectedUnloadingLocs.length);
-      console.log('scheduleData:', scheduleData ? 'exists' : 'null');
-      return [];
-    }
-    
-    const customerItemsSet = new Set<string>();
-    invoicesWithSchedule.forEach(invoice => {
-      invoice.items?.forEach((item: any) => {
-        const partNum = item.customerItem || item.part;
-        if (partNum) {
-          customerItemsSet.add(String(partNum).trim());
-        }
-      });
-    });
-    
-    const selectedDate = formatDateAsLocalString(selectedDeliveryDate);
-    const matchingScheduleItems = scheduleData.items.filter(item => {
-      if (!item.deliveryDate || !item.deliveryTime || !item.partNumber || !item.unloadingLoc) return false;
-      const itemDate = formatDateAsLocalString(item.deliveryDate);
-      return itemDate === selectedDate 
-        && selectedDeliveryTimes.includes(item.deliveryTime)
-        && selectedUnloadingLocs.includes(item.unloadingLoc)
-        && customerItemsSet.has(String(item.partNumber).trim());
-    });
-    
-    const matchingPartNumbers = new Set(matchingScheduleItems.map(item => String(item.partNumber).trim()));
-    
-    const filtered = invoicesWithSchedule.filter(invoice => {
-      return invoice.items?.some((item: any) => {
-        const partNum = item.customerItem || item.part;
-        return partNum && matchingPartNumbers.has(String(partNum).trim());
-      });
-    });
-    
-    console.log('=== DOC AUDIT DEBUG: invoices (filtered) ===');
-    console.log('Selected date:', selectedDate);
-    console.log('Selected times:', selectedDeliveryTimes);
-    console.log('Selected unloading locs:', selectedUnloadingLocs);
-    console.log('Customer items from invoices:', Array.from(customerItemsSet).slice(0, 10));
-    console.log('Matching schedule items:', matchingScheduleItems.length);
-    console.log('Matching part numbers:', Array.from(matchingPartNumbers).slice(0, 10));
-    console.log('Filtered invoices:', filtered.length);
-    if (filtered.length > 0) {
-      console.log('Sample filtered invoice ID:', filtered[0].id);
-    }
-    
-    return filtered.sort((a, b) => a.id.localeCompare(b.id));
-  }, [selectedDeliveryDate, selectedDeliveryTimes, selectedUnloadingLocs, invoicesWithSchedule, scheduleData]);
+    if (!selectedDeliveryDate) return [];
+    const selected = formatDateAsLocalString(selectedDeliveryDate);
+    return [...invoicesWithSchedule]
+      .filter((inv) => inv.invoiceDate && formatDateAsLocalString(inv.invoiceDate) === selected)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }, [selectedDeliveryDate, invoicesWithSchedule]);
 
   // Get all selected invoices
   const selectedInvoiceObjects = invoices.filter(inv => selectedInvoices.includes(inv.id));
@@ -1111,34 +926,29 @@ const DocAudit = () => {
       </header>
 
       <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8">
-        {!scheduleData && (
+        {invoices.length === 0 && selectedDeliveryDate && (
           <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
             <p className="text-sm font-medium">
-              ⚠️ No schedule uploaded yet. Please go to <strong>Upload Sales Data</strong> to import both schedule and invoice files first.
+              ⚠️ No invoices found for the selected delivery date. Try a different date.
             </p>
           </div>
         )}
         
-        {scheduleData && invoices.length === 0 && selectedDeliveryDate && selectedDeliveryTimes.length > 0 && selectedUnloadingLocs.length > 0 && (
-          <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
-            <p className="text-sm font-medium">
-              ⚠️ No invoices match the selected criteria. Try different delivery date, delivery time, or unloading doc.
-            </p>
-          </div>
-        )}
-        
-        {scheduleData && invoicesWithSchedule.length > 0 && (
+        {invoicesWithSchedule.length > 0 && (
           <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
               <p className="text-sm font-medium">
-                📊 Schedule-Based Doc Audit with Multi-Invoice Support
+                📊 Invoice-Based Doc Audit with Multi-Invoice Support
               </p>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
-              <p>• Select delivery date, delivery time, and unloading doc to filter invoices</p>
+              <p>• Select delivery date (from invoice date) to filter invoices</p>
+              <p>• Delivery time + unloading location are taken from invoice data (or can be entered manually if missing)</p>
               <p>• Select multiple invoices to audit them sequentially</p>
-              <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
               <p>• Current user: <strong>{currentUser}</strong></p>
+              {scheduleData?.uploadedAt && (
+                <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
+              )}
               {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 && (
                 <p>• ✅ <strong>{sharedInvoices.filter(inv => inv.dispatchedBy).length}</strong> invoice(s) already dispatched</p>
               )}
@@ -1147,11 +957,11 @@ const DocAudit = () => {
         )}
         
         {/* Selection Fields: Delivery Date, Delivery Time, Unloading Doc */}
-        {scheduleData && (
+        {invoicesWithSchedule.length > 0 && (
           <Card className="mb-6 border-2 border-primary">
             <CardHeader>
               <CardTitle>Configure Dispatch Details</CardTitle>
-              <CardDescription>Select delivery date, delivery time(s), and unloading doc before selecting invoices</CardDescription>
+              <CardDescription>Select delivery date (invoice date). Delivery time + unloading location are from invoice data.</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
@@ -1170,6 +980,8 @@ const DocAudit = () => {
                       setSelectedDeliveryTimes([]);
                       setSelectedUnloadingLocs([]);
                       setSelectedInvoices([]);
+                      setManualDeliveryTime('');
+                      setManualUnloadingLoc('');
                     }}
                   >
                     <SelectTrigger className={!selectedDeliveryDate ? "border-destructive" : ""}>
@@ -1241,10 +1053,20 @@ const DocAudit = () => {
                     </div>
                     
                     {availableDeliveryTimes.length === 0 ? (
-                      <div className="p-4 bg-muted rounded-lg text-center">
+                      <div className="space-y-2 p-4 bg-muted/50 rounded-lg border-2 border-muted">
                         <p className="text-sm text-muted-foreground">
-                          No delivery times available for the selected date
+                          No delivery times found in invoice data for this date. Enter manually:
                         </p>
+                        <Input
+                          value={manualDeliveryTime}
+                          onChange={(e) => {
+                            setManualDeliveryTime(e.target.value);
+                            setSelectedDeliveryTimes([]);
+                            setSelectedUnloadingLocs([]);
+                            setSelectedInvoices([]);
+                          }}
+                          placeholder="e.g., 10:30 AM"
+                        />
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 p-4 bg-muted/50 rounded-lg border-2 border-muted">
@@ -1274,14 +1096,14 @@ const DocAudit = () => {
                       </div>
                     )}
                     
-                    {selectedDeliveryTimes.length === 0 && availableDeliveryTimes.length > 0 && (
+                    {selectedDeliveryTimes.length === 0 && manualDeliveryTime.trim().length === 0 && availableDeliveryTimes.length > 0 && (
                       <p className="text-xs text-destructive">⚠️ Please select at least one delivery time</p>
                     )}
                   </div>
                 )}
 
                 {/* Step 3: Unloading Doc Selection */}
-                {selectedDeliveryDate && selectedDeliveryTimes.length > 0 && (
+                {selectedDeliveryDate && (selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0 || availableDeliveryTimes.length === 0) && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm font-medium flex items-center gap-2">
@@ -1320,10 +1142,19 @@ const DocAudit = () => {
                     </div>
                     
                     {availableUnloadingLocs.length === 0 ? (
-                      <div className="p-4 bg-muted rounded-lg text-center">
+                      <div className="space-y-2 p-4 bg-muted/50 rounded-lg border-2 border-muted">
                         <p className="text-sm text-muted-foreground">
-                          No unloading docs available for the selected date and time(s)
+                          No unloading locations found in invoice data for this date. Enter manually:
                         </p>
+                        <Input
+                          value={manualUnloadingLoc}
+                          onChange={(e) => {
+                            setManualUnloadingLoc(e.target.value);
+                            setSelectedUnloadingLocs([]);
+                            setSelectedInvoices([]);
+                          }}
+                          placeholder="Enter unloading location"
+                        />
                       </div>
                     ) : (
                       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 p-4 bg-muted/50 rounded-lg border-2 border-muted">
@@ -1352,7 +1183,7 @@ const DocAudit = () => {
                       </div>
                     )}
                     
-                    {selectedUnloadingLocs.length === 0 && availableUnloadingLocs.length > 0 && (
+                    {selectedUnloadingLocs.length === 0 && manualUnloadingLoc.trim().length === 0 && availableUnloadingLocs.length > 0 && (
                       <p className="text-xs text-destructive">⚠️ Please select at least one unloading doc</p>
                     )}
                   </div>
@@ -1384,11 +1215,25 @@ const DocAudit = () => {
                   <Badge variant={selectedDeliveryDate ? "default" : "outline"}>
                     Delivery Date: {selectedDeliveryDate ? selectedDeliveryDate.toLocaleDateString() : "Not selected"}
                   </Badge>
-                  <Badge variant={selectedDeliveryTimes.length > 0 ? "default" : "outline"}>
-                    Delivery Time(s): {selectedDeliveryTimes.length > 0 ? `${selectedDeliveryTimes.length} selected` : "Not selected"}
+                  <Badge
+                    variant={selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0 ? "default" : "outline"}
+                  >
+                    Delivery Time(s):{" "}
+                    {selectedDeliveryTimes.length > 0
+                      ? `${selectedDeliveryTimes.length} selected`
+                      : manualDeliveryTime.trim().length > 0
+                        ? manualDeliveryTime.trim()
+                        : "Not selected"}
                   </Badge>
-                  <Badge variant={selectedUnloadingLocs.length > 0 ? "default" : "outline"}>
-                    Unloading Doc: {selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} selected` : "Not selected"}
+                  <Badge
+                    variant={selectedUnloadingLocs.length > 0 || manualUnloadingLoc.trim().length > 0 ? "default" : "outline"}
+                  >
+                    Unloading Doc:{" "}
+                    {selectedUnloadingLocs.length > 0
+                      ? `${selectedUnloadingLocs.length} selected`
+                      : manualUnloadingLoc.trim().length > 0
+                        ? manualUnloadingLoc.trim()
+                        : "Not selected"}
                   </Badge>
                 </div>
               </div>
@@ -1402,12 +1247,16 @@ const DocAudit = () => {
             <CardTitle>Step 4: Select Invoice(s)</CardTitle>
             <CardDescription>
               Scan invoice QR codes or manually select invoices to audit
-              {selectedDeliveryDate && selectedDeliveryTimes.length > 0 && selectedUnloadingLocs.length > 0 && (
+              {selectedDeliveryDate &&
+                (selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0 || availableDeliveryTimes.length === 0) &&
+                (selectedUnloadingLocs.length > 0 || manualUnloadingLoc.trim().length > 0 || availableUnloadingLocs.length === 0) && (
                 <span className="block mt-1 text-success text-sm font-medium">
                   ✅ All filters applied - Invoice selection is now enabled
                 </span>
               )}
-              {(!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0) && (
+              {(!selectedDeliveryDate ||
+                (selectedDeliveryTimes.length === 0 && manualDeliveryTime.trim().length === 0 && availableDeliveryTimes.length > 0) ||
+                (selectedUnloadingLocs.length === 0 && manualUnloadingLoc.trim().length === 0 && availableUnloadingLocs.length > 0)) && (
                 <span className="block mt-1 text-destructive text-sm font-medium">
                   ⚠️ Please complete all filter selections above first
                 </span>
@@ -1418,7 +1267,9 @@ const DocAudit = () => {
             {invoices.length === 0 ? (
               <div className="p-4 bg-muted rounded-lg text-center">
                 <p className="text-sm text-muted-foreground">
-                  {!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0
+                  {!selectedDeliveryDate ||
+                  (selectedDeliveryTimes.length === 0 && manualDeliveryTime.trim().length === 0 && availableDeliveryTimes.length > 0) ||
+                  (selectedUnloadingLocs.length === 0 && manualUnloadingLoc.trim().length === 0 && availableUnloadingLocs.length > 0)
                     ? "Please complete the filter selections above to see invoices"
                     : "No invoices matching your selections"}
                 </p>
@@ -1429,7 +1280,11 @@ const DocAudit = () => {
                 <div className="relative">
                   <Button
                     onClick={() => setShowInvoiceQRScanner(true)}
-                    disabled={!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0}
+                    disabled={
+                      !selectedDeliveryDate ||
+                      (selectedDeliveryTimes.length === 0 && manualDeliveryTime.trim().length === 0 && availableDeliveryTimes.length > 0) ||
+                      (selectedUnloadingLocs.length === 0 && manualUnloadingLoc.trim().length === 0 && availableUnloadingLocs.length > 0)
+                    }
                     className="w-full h-16 text-lg font-bold bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 shadow-lg hover:shadow-xl transition-all duration-200"
                   >
                     <ScanBarcode className="h-8 w-8 mr-3" />
@@ -1445,8 +1300,10 @@ const DocAudit = () => {
                   <p className="text-xs text-blue-700 dark:text-blue-300">
                     📅 {invoices.length} invoice(s) available | 
                     {selectedDeliveryDate && ` ${selectedDeliveryDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
-                    {selectedDeliveryTimes.length > 0 && ` | ⏰ ${selectedDeliveryTimes.length} time(s)`}
-                    {selectedUnloadingLocs.length > 0 && ` | 📍 ${selectedUnloadingLocs.length} unloading doc(s)`}
+                    {(selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0) &&
+                      ` | ⏰ ${selectedDeliveryTimes.length > 0 ? `${selectedDeliveryTimes.length} time(s)` : manualDeliveryTime.trim()}`}
+                    {(selectedUnloadingLocs.length > 0 || manualUnloadingLoc.trim().length > 0) &&
+                      ` | 📍 ${selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} unloading doc(s)` : manualUnloadingLoc.trim()}`}
                     {selectedInvoices.length > 0 && (
                       <span className="block mt-1 font-semibold text-blue-900 dark:text-blue-100">
                         ✅ {selectedInvoices.length} invoice(s) selected for audit
@@ -1463,7 +1320,11 @@ const DocAudit = () => {
                       <Button
                         variant="outline"
                         className="w-full h-12 justify-between text-base"
-                        disabled={!selectedDeliveryDate || selectedDeliveryTimes.length === 0 || selectedUnloadingLocs.length === 0}
+                        disabled={
+                          !selectedDeliveryDate ||
+                          (selectedDeliveryTimes.length === 0 && manualDeliveryTime.trim().length === 0 && availableDeliveryTimes.length > 0) ||
+                          (selectedUnloadingLocs.length === 0 && manualUnloadingLoc.trim().length === 0 && availableUnloadingLocs.length > 0)
+                        }
                       >
                         <span className="text-muted-foreground">
                           {selectedInvoices.length > 0 
@@ -2200,19 +2061,35 @@ const DocAudit = () => {
                             </div>
                             <Button
                               onClick={() => {
-                                // Get Unloading Doc - use first selected if multiple
-                                const unloadingLocValue = selectedUnloadingLocs.length > 0 
-                                  ? selectedUnloadingLocs[0] 
-                                  : undefined;
-                                
+                                const deliveryTimeValue =
+                                  selectedDeliveryTimes.length > 0
+                                    ? selectedDeliveryTimes.join(', ')
+                                    : manualDeliveryTime.trim().length > 0
+                                      ? manualDeliveryTime.trim()
+                                      : undefined;
+
+                                const unloadingLocValue =
+                                  selectedUnloadingLocs.length > 0
+                                    ? selectedUnloadingLocs[0]
+                                    : manualUnloadingLoc.trim().length > 0
+                                      ? manualUnloadingLoc.trim()
+                                      : undefined;
+
+                                if (!deliveryTimeValue) {
+                                  toast.error("Please select or enter delivery time");
+                                  return;
+                                }
+                                if (!unloadingLocValue) {
+                                  toast.error("Please select or enter unloading location");
+                                  return;
+                                }
+
                                 updateInvoiceAudit(invoiceId, {
                                   auditComplete: true,
                                   auditDate: new Date(),
                                   deliveryDate: selectedDeliveryDate,
-                                  deliveryTime: selectedDeliveryTimes.length > 0 
-                                    ? selectedDeliveryTimes.join(', ') 
-                                    : undefined,
-                                  unloadingLoc: unloadingLocValue
+                                  deliveryTime: deliveryTimeValue,
+                                  unloadingLoc: unloadingLocValue,
                                 }, currentUser);
                                 toast.success(`🎉 Audit completed for ${invoiceId}!`);
                               }}

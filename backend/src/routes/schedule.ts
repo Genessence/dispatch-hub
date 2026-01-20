@@ -4,7 +4,6 @@ import * as XLSX from 'xlsx';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
-import { validateInvoiceItemsAgainstSchedule } from '../utils/validation';
 
 const router = Router();
 
@@ -187,19 +186,51 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     let rowsFilteredOut = 0; // Rows where quantity === quantityDispatched
     let rowsExcludedMissingColumns = 0; // Rows with both columns missing
     let rowsWithoutPartNumber = 0; // Rows missing PART NUMBER
+    let rowsExcludedNoUsefulFields = 0; // Rows that passed qty filter but had no usable data for logging
+
+    const sheetDiagnostics: Array<{
+      sheetName: string;
+      rowsInSheet: number;
+      usedHeaderFallback: boolean;
+      partNumberColumnExists: boolean;
+      importedFromSheet: number;
+      filteredOutFromSheet: number;
+      excludedNoUsefulFieldsFromSheet: number;
+      sampleHeaders: string[];
+      headerHints: string[];
+    }> = [];
     
     console.log('\n📤 ===== SCHEDULE UPLOAD: Starting =====');
     console.log(`📊 Sheets found: ${workbook.SheetNames.join(', ')}`);
     console.log(`📊 Single sheet mode: ${isSingleSheet}`);
 
+    const expectedHeaderHints = [
+      'SUPPLY DATE',
+      'SUPPLY TIME',
+      'DELIVERY DATE',
+      'DELIVERY TIME',
+      'UNLOADING LOC',
+      'PLANT',
+      'PART NUMBER',
+      'QUANTITY',
+      'QUANTITY DISPATCHED',
+    ];
+
+    const normalizeHeader = (v: any) => String(v ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+
+    const hasAnyHint = (headers: string[]) => {
+      const normalized = headers.map(normalizeHeader);
+      const hintsFound: string[] = [];
+      for (const hint of expectedHeaderHints) {
+        if (normalized.some((h) => h.includes(hint))) hintsFound.push(hint);
+      }
+      return hintsFound;
+    };
+
     // Parse each sheet
     workbook.SheetNames.forEach((sheetName: string) => {
-      // Skip generic sheet names only if there are multiple sheets
-      // If it's a single sheet, process it regardless of name
-      if (!isSingleSheet && (sheetName.toLowerCase() === 'sheet1' || sheetName.toLowerCase() === 'sheet2')) {
-        console.log(`⏭️  Skipping generic sheet: ${sheetName}`);
-        return;
-      }
+      // Do NOT skip "Sheet1/Sheet2" etc.
+      // Many customer files keep real data in default sheet names, and skipping them causes "0 schedule items imported".
 
       console.log(`\n📄 Processing sheet: "${sheetName}"`);
       const sheet = workbook.Sheets[sheetName];
@@ -209,13 +240,191 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       }
 
       try {
-        const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-        
+        const beforeCount = allScheduleItems.length;
+        let usedHeaderFallback = false;
+
+        const processRows = (jsonData: any[], partNumberColumnExists: boolean) => {
+          const sheetHeaders = jsonData.length > 0 && typeof jsonData[0] === 'object' ? Object.keys(jsonData[0] || {}) : [];
+          const headerHints = hasAnyHint(sheetHeaders);
+
+          if (sheetHeaders.length > 0) {
+            console.log(`🧾 Detected headers (sample):`, sheetHeaders.slice(0, 15));
+            console.log(`🔎 Header hints found:`, headerHints.length ? headerHints : 'NONE');
+          }
+
+          const firstFiveRows = jsonData.slice(0, Math.min(5, jsonData.length));
+          const filteredOutFromSheetStart = rowsFilteredOut;
+          const excludedNoUsefulFieldsFromSheetStart = rowsExcludedNoUsefulFields;
+
+          jsonData.forEach((row: any) => {
+            totalRowsProcessed++;
+
+            const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
+            const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
+
+            // Only extract PART NUMBER if detected (legacy). If not detected, keep empty and still import rows for logging.
+            const partNumberRaw = partNumberColumnExists
+              ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || ''
+              : '';
+            const partNumber = String(partNumberRaw).trim().replace(/\s+/g, ' ');
+            const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
+            const description = getColumnValue(row, ['Description', 'description']) || '';
+            const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
+            const bin = parseInt(getColumnValue(row, ['Bin', 'bin']) || '0') || 0;
+
+            const quantityStr = getColumnValue(row, ['Quantity', 'quantity', 'Qty', 'qty', 'QUANTITY']);
+            const quantityDispatchedStr = getColumnValue(row, [
+              'Quantity Dispatched',
+              'QuantityDispatched',
+              'quantity dispatched',
+              'Qty Dispatched',
+              'QtyDispatched',
+              'QUANTITY DISPATCHED',
+            ]);
+
+            const quantity = parseQuantity(quantityStr);
+            const quantityDispatched = parseQuantity(quantityDispatchedStr);
+
+            if (quantity !== null && quantity === quantityDispatched) {
+              rowsFilteredOut++;
+              return;
+            }
+
+            const deliveryDateTime = getColumnValue(row, [
+              'SUPPLY DATE',
+              'Supply Date',
+              'SupplyDate',
+              'supply date',
+              'Delivery Date & Time',
+              'Delivery Date and Time',
+              'DeliveryDateTime',
+              'Delivery Date',
+              'delivery date',
+            ]);
+
+            const supplyTime = getColumnValue(row, [
+              'Supply Time',
+              'SupplyTime',
+              'SUPPLY TIME',
+              'supply time',
+              'Delivery Time',
+              'DeliveryTime',
+              'delivery time',
+            ]);
+
+            // Some files put the date inside SUPPLY TIME (or only populate that column).
+            const deliveryDate = parseDate(deliveryDateTime) || parseDate(supplyTime);
+
+            let timeStr: string | null = null;
+            if (supplyTime) {
+              timeStr = supplyTime.toString();
+            } else if (deliveryDateTime && typeof deliveryDateTime === 'string') {
+              const timeMatch = deliveryDateTime.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/);
+              if (timeMatch) {
+                timeStr = timeMatch[1];
+              }
+            }
+
+            const plant = getColumnValue(row, [
+              'Plant',
+              'plant',
+              'PLANT',
+              'Plant Code',
+              'PlantCode',
+              'Delivery Location',
+              'DeliveryLocation',
+              'delivery location',
+            ]);
+
+            const unloadingLoc = getColumnValue(row, [
+              'UNLOADING LOC',
+              'UnloadingLoc',
+              'Unloading Location',
+              'UnloadingLocation',
+              'Unload Location',
+              'UnloadLocation',
+              'Location',
+              'unloading loc',
+              'unloading location',
+              'unload location',
+              'location',
+              'LOCATION',
+            ]);
+
+            const hasAnyUsefulField =
+              !!partNumber ||
+              !!deliveryDate ||
+              !!timeStr ||
+              (!!unloadingLoc && String(unloadingLoc).trim() !== '') ||
+              (!!plant && String(plant).trim() !== '') ||
+              (!!customerPart && String(customerPart).trim() !== '') ||
+              (!!qadPart && String(qadPart).trim() !== '') ||
+              (!!description && String(description).trim() !== '');
+
+            if (!hasAnyUsefulField) {
+              rowsExcludedNoUsefulFields++;
+              return;
+            }
+
+            allScheduleItems.push({
+              customerCode: customerCode ? customerCode.toString() : null,
+              customerPart: customerPart.toString(),
+              partNumber: partNumber ? partNumber.toString() : null,
+              qadPart: qadPart.toString(),
+              description: description.toString(),
+              snp,
+              bin,
+              sheetName,
+              deliveryDate,
+              deliveryTime: timeStr,
+              plant: plant ? plant.toString() : null,
+              unloadingLoc: unloadingLoc ? unloadingLoc.toString() : null,
+              quantity: quantity !== null ? Math.round(quantity) : null,
+            });
+
+            if (!partNumber) {
+              rowsWithoutPartNumber++;
+            }
+          });
+
+          const importedFromSheet = allScheduleItems.length - beforeCount;
+          const filteredOutFromSheet = rowsFilteredOut - filteredOutFromSheetStart;
+          const excludedNoUsefulFieldsFromSheet = rowsExcludedNoUsefulFields - excludedNoUsefulFieldsFromSheetStart;
+
+          sheetDiagnostics.push({
+            sheetName,
+            rowsInSheet: jsonData.length,
+            usedHeaderFallback,
+            partNumberColumnExists,
+            importedFromSheet,
+            filteredOutFromSheet,
+            excludedNoUsefulFieldsFromSheet,
+            sampleHeaders: sheetHeaders.slice(0, 20),
+            headerHints,
+          });
+
+          // If headers look wrong and we imported nothing, caller may try fallback parsing.
+          return { importedFromSheet, headerHints, sheetHeaders };
+        };
+
+        // First pass: default header parsing (first row as header)
+        let jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false }) as any[];
         if (!jsonData || jsonData.length === 0) {
           console.warn(`⚠️  No data found in sheet "${sheetName}"`);
+          sheetDiagnostics.push({
+            sheetName,
+            rowsInSheet: 0,
+            usedHeaderFallback: false,
+            partNumberColumnExists: false,
+            importedFromSheet: 0,
+            filteredOutFromSheet: 0,
+            excludedNoUsefulFieldsFromSheet: 0,
+            sampleHeaders: [],
+            headerHints: [],
+          });
           return;
         }
-        
+
         console.log(`📊 Rows in sheet: ${jsonData.length}`);
         
         // Check first 5 rows to see if PART NUMBER column exists (like frontend does)
@@ -231,121 +440,56 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         }
         
         if (!partNumberColumnExists) {
-          console.warn(`⚠️  PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Items from this sheet will be skipped.`);
+          console.warn(
+            `⚠️  PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Continuing without part numbers (still importing rows for logging).`
+          );
         } else {
           console.log(`✓ PART NUMBER column detected in sheet "${sheetName}"`);
         }
 
-        jsonData.forEach((row: any) => {
-          totalRowsProcessed++;
-          
-          const customerCode = getColumnValue(row, ['Customer Code', 'CustomerCode', 'customer code']) || '';
-          const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
-          
-          // Only extract PART NUMBER if column was found in first 5 rows
-          // Normalize part number: convert to string and trim to handle Excel formatting issues
-          const partNumberRaw = partNumberColumnExists ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
-          const partNumber = String(partNumberRaw).trim().replace(/\s+/g, ' '); // Normalize: trim and collapse spaces
-          const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
-          const description = getColumnValue(row, ['Description', 'description']) || '';
-          const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
-          const bin = parseInt(getColumnValue(row, ['Bin', 'bin']) || '0') || 0;
-          
-          // Extract Quantity and Quantity Dispatched columns
-          const quantityStr = getColumnValue(row, ['Quantity', 'quantity', 'Qty', 'qty', 'QUANTITY']);
-          const quantityDispatchedStr = getColumnValue(row, [
-            'Quantity Dispatched', 'QuantityDispatched', 'quantity dispatched', 
-            'Qty Dispatched', 'QtyDispatched', 'QUANTITY DISPATCHED'
-          ]);
-          
-          // Parse numeric values
-          const quantity = parseQuantity(quantityStr);
-          const quantityDispatched = parseQuantity(quantityDispatchedStr);
-          
-          // Filtering logic (per user requirements):
-          // - Exclude row ONLY if quantity === quantityDispatched (fully dispatched)
-          // - Include all other cases (even if one or both values are null)
-          // - User confirmed: "both columns being empty can never be the case"
-          
-          if (quantity !== null && quantity === quantityDispatched) {
-            // Quantities match - row is fully dispatched, exclude it
-            rowsFilteredOut++;
-            console.log(`Row filtered out: Quantity (${quantity}) equals Quantity Dispatched (${quantityDispatched}) for part ${partNumber || customerPart}`);
-            return; // Skip this row
-          }
-          
-          // Include all other cases:
-          // - quantity !== quantityDispatched (partially dispatched or not dispatched)
-          // - quantity is null or quantityDispatched is null
-          // - both are null (shouldn't happen per user, but include anyway)
-          
-          const deliveryDateTime = getColumnValue(row, [
-            'SUPPLY DATE', 'Supply Date', 'SupplyDate', 'supply date',
-            'Delivery Date & Time', 'Delivery Date and Time', 'DeliveryDateTime', 
-            'Delivery Date', 'delivery date'
-          ]);
-          
-          const supplyTime = getColumnValue(row, [
-            'Supply Time', 'SupplyTime', 'SUPPLY TIME', 'supply time',
-            'Delivery Time', 'DeliveryTime', 'delivery time'
-          ]);
-          
-          const deliveryDate = parseDate(deliveryDateTime);
-          
-          let timeStr: string | null = null;
-          if (supplyTime) {
-            timeStr = supplyTime.toString();
-          } else if (deliveryDateTime && typeof deliveryDateTime === 'string') {
-            const timeMatch = deliveryDateTime.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/);
-            if (timeMatch) {
-              timeStr = timeMatch[1];
+        const firstPass = processRows(jsonData, partNumberColumnExists);
+
+        // Fallback: if we imported nothing and headers look wrong, try to detect a header row
+        if (firstPass.importedFromSheet === 0 && firstPass.headerHints.length === 0) {
+          const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false }) as any[][];
+          if (Array.isArray(matrix) && matrix.length > 0) {
+            let headerRowIdx = -1;
+            for (let r = 0; r < Math.min(matrix.length, 30); r++) {
+              const rowCells = matrix[r] || [];
+              const normalizedCells = rowCells.map(normalizeHeader).filter(Boolean);
+              const foundHints = hasAnyHint(normalizedCells);
+              if (foundHints.length >= 2) {
+                headerRowIdx = r;
+                break;
+              }
+            }
+
+            if (headerRowIdx >= 0) {
+              usedHeaderFallback = true;
+              const headerRow = (matrix[headerRowIdx] || []).map((c) => String(c ?? ''));
+              const dataRows = matrix.slice(headerRowIdx + 1);
+              const objects: any[] = dataRows.map((cells) => {
+                const obj: any = {};
+                headerRow.forEach((h, idx) => {
+                  if (!h) return;
+                  obj[h] = (cells && cells[idx] !== undefined) ? cells[idx] : '';
+                });
+                return obj;
+              });
+
+              // Re-check part number col existence based on detected header row
+              const headerHints = hasAnyHint(headerRow);
+              const partNumberDetected = headerRow.some((h) => normalizeHeader(h).includes('PART NUMBER'));
+
+              // Replace the last diagnostics row for this sheet (from first pass) with a fallback one
+              // by removing it and re-processing with fallback rows.
+              sheetDiagnostics.pop();
+              processRows(objects, partNumberDetected || partNumberColumnExists);
+
+              console.log(`🧠 Header fallback used for "${sheetName}" (row ${headerRowIdx + 1}). Hints: ${headerHints.join(', ') || 'NONE'}`);
             }
           }
-          
-          const plant = getColumnValue(row, [
-            'Plant', 'plant', 'PLANT', 'Plant Code', 'PlantCode',
-            'Delivery Location', 'DeliveryLocation', 'delivery location'
-          ]);
-          
-          const unloadingLoc = getColumnValue(row, [
-            'UNLOADING LOC', 'UnloadingLoc', 'Unloading Location', 'UnloadingLocation',
-            'Unload Location', 'UnloadLocation', 'Location', 'unloading loc',
-            'unloading location', 'unload location', 'location', 'LOCATION'
-          ]);
-          
-          // Schedule files no longer contain customer code - include all items with part number
-          // Only require part number to be present for the item to be valid
-          if (partNumber) {
-            // Debug: Log specific part numbers being added
-            if (partNumber === '73112M66T00' || partNumber === '73910M66T00') {
-              const partNumberRaw = getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '';
-              console.log(`\n🔍 DEBUG: Adding schedule item with partNumber="${partNumber}"`);
-              console.log(`  Original raw value: "${partNumberRaw}"`);
-              console.log(`  Normalized value: "${partNumber}"`);
-              console.log(`  Quantity: ${quantity}, QuantityDispatched: ${quantityDispatched}`);
-              console.log(`  Will be included: ${!(quantity !== null && quantity === quantityDispatched)}`);
-            }
-            
-            allScheduleItems.push({
-              customerCode: customerCode ? customerCode.toString() : null, // Nullable now - migration 007 has been applied
-              customerPart: customerPart.toString(),
-              partNumber: partNumber.toString(),
-              qadPart: qadPart.toString(),
-              description: description.toString(),
-              snp,
-              bin,
-              sheetName,
-              deliveryDate,
-              deliveryTime: timeStr,
-              plant: plant ? plant.toString() : null,
-              unloadingLoc: unloadingLoc ? unloadingLoc.toString() : null,
-              quantity: quantity !== null ? Math.round(quantity) : null // Store as integer
-            });
-          } else {
-            // Track rows without part number
-            rowsWithoutPartNumber++;
-          }
-        });
+        }
         
         console.log(`✅ Processed ${jsonData.length} rows from sheet "${sheetName}"`);
       } catch (sheetError) {
@@ -359,6 +503,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     console.log(`  Rows filtered (qty matched): ${rowsFilteredOut}`);
     console.log(`  Rows excluded (missing columns): ${rowsExcludedMissingColumns}`);
     console.log(`  Rows without part number: ${rowsWithoutPartNumber}`);
+    console.log(`  Rows excluded (no useful fields): ${rowsExcludedNoUsefulFields}`);
     console.log(`  Rows imported: ${allScheduleItems.length}`);
     
     // Sample part numbers for debugging
@@ -373,12 +518,31 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     console.log(`📊 Unique part numbers: ${uniquePartNumbers.size}`);
     console.log('================================\n');
 
+    // If 0 items were imported, log a clear reason breakdown (and store it in DB logs) but do not crash.
+    if (allScheduleItems.length === 0) {
+      const reasons: string[] = [];
+      if (totalRowsProcessed === 0) reasons.push('No rows were processed from any sheet (sheet_to_json returned empty).');
+      if (rowsFilteredOut > 0 && rowsFilteredOut === totalRowsProcessed) {
+        reasons.push('All rows were filtered because Quantity == Quantity Dispatched.');
+      }
+      if (rowsExcludedNoUsefulFields > 0 && rowsExcludedNoUsefulFields + rowsFilteredOut === totalRowsProcessed) {
+        reasons.push('All remaining rows had no usable fields (date/time/unloading/plant/etc.) — likely header row not detected or columns renamed.');
+      }
+      if (reasons.length === 0) {
+        reasons.push('Unknown: parsed rows did not produce any schedule items. Check sheet diagnostics in logs.');
+      }
+
+      console.warn('🧯 ===== SCHEDULE UPLOAD RESULT: 0 ITEMS =====');
+      console.warn('Reasons:', reasons);
+      console.warn('Sheet diagnostics:', sheetDiagnostics);
+      console.warn('===========================================');
+    }
+
     // Customer code validation removed - schedule files no longer contain customer codes
     // Schedule items are matched globally by PART NUMBER only
     // No need to validate customer codes since they don't exist in schedule files
 
     // Insert into database using transaction
-    let validationStats;
     await transaction(async (client) => {
       // Clear existing schedule
       await client.query('DELETE FROM schedule_items');
@@ -421,16 +585,13 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       }
       console.log(`✅ Successfully inserted ${allScheduleItems.length} schedule items`);
 
-      // Re-validate all existing invoice items against the newly uploaded schedule
-      validationStats = await validateInvoiceItemsAgainstSchedule(client);
-
       // Log the upload with filtering statistics
       const logDetails = [
         `Total rows processed: ${totalRowsProcessed}`,
         `Rows imported: ${allScheduleItems.length}`,
         `Rows filtered out (quantity matched): ${rowsFilteredOut}`,
         `Rows excluded (missing columns): ${rowsExcludedMissingColumns}`,
-        `Validation: ${validationStats.matchedCount} matched, ${validationStats.unmatchedCount} unmatched, ${validationStats.errorCount} errors`
+        `Validation: schedule matching disabled (invoice-first)`
       ].join(' | ');
 
       await client.query(
@@ -439,7 +600,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         [
           req.user?.username,
           `Uploaded schedule with ${allScheduleItems.length} item(s)`,
-          logDetails
+          `${logDetails} | Sheets: ${workbook.SheetNames.join(', ')} | 0-items? ${allScheduleItems.length === 0}`
         ]
       );
     });
@@ -465,17 +626,15 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         rowsImported: allScheduleItems.length,
         rowsFilteredOut,
         rowsExcludedMissingColumns,
-        rowsWithoutPartNumber
+        rowsWithoutPartNumber,
+        rowsExcludedNoUsefulFields
       },
       diagnostics: {
         uniquePartNumbers: uniquePartNumbers.size,
-        samplePartNumbers: samplePartNumbersForResponse
+        samplePartNumbers: samplePartNumbersForResponse,
+        sheetDiagnostics
       },
-      validationStats: validationStats || {
-        matchedCount: 0,
-        unmatchedCount: 0,
-        errorCount: 0
-      }
+      // Schedule-matching validation removed (invoice is source-of-truth)
     });
   } catch (error: any) {
     console.error('Upload schedule error:', error);
