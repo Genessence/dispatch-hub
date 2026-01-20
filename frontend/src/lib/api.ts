@@ -4,18 +4,15 @@
 
 // Get API URL - use proxy in development, or configured URL
 const getApiUrl = () => {
-  // If VITE_API_URL is set, use it (allows overriding proxy)
+  // If VITE_API_URL is set, use it (allows overriding for custom deployments)
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
   
-  // In development, use relative URL to leverage Vite proxy
-  if (import.meta.env.DEV) {
-    return '';
-  }
-  
-  // Fallback for production
-  return 'http://localhost:3001';
+  // Default to empty string - endpoints already start with /api/
+  // In dev: Vite proxy handles /api -> backend
+  // In prod: Nginx handles /api -> backend
+  return '';
 };
 
 const API_URL = getApiUrl();
@@ -76,7 +73,7 @@ const fetchWithAuth = async (endpoint: string, options: RequestInit = {}): Promi
 
 export const authApi = {
   login: async (usernameOrEmail: string, password: string) => {
-    const response = await fetch(`${API_URL}/api/auth/login`, {
+    const response = await fetch(`${API_URL || ''}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ usernameOrEmail, password })
@@ -152,7 +149,7 @@ export const invoicesApi = {
     }
 
     const token = getAuthToken();
-    const response = await fetch(`${API_URL}/api/invoices/upload`, {
+    const response = await fetch(`${API_URL || ''}/api/invoices/upload`, {
       method: 'POST',
       headers: {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -197,7 +194,7 @@ export const scheduleApi = {
     }
 
     const token = getAuthToken();
-    const response = await fetch(`${API_URL}/api/schedule/upload`, {
+    const response = await fetch(`${API_URL || ''}/api/schedule/upload`, {
       method: 'POST',
       headers: {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -388,7 +385,7 @@ export const adminApi = {
 
 export const checkHealth = async () => {
   try {
-    const response = await fetch(`${API_URL}/api/health`);
+    const response = await fetch(`${API_URL || ''}/api/health`);
     return response.json();
   } catch (error) {
     return { status: 'error', message: 'Cannot connect to server' };

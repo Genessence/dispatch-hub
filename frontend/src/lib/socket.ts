@@ -11,13 +11,10 @@ const getWsUrl = () => {
     return import.meta.env.VITE_API_URL;
   }
   
-  // In development, use current origin (Vite proxy handles WebSocket)
-  if (import.meta.env.DEV) {
-    return window.location.origin;
-  }
-  
-  // Fallback
-  return 'http://localhost:3001';
+  // Use current origin - Socket.IO handles protocol conversion
+  // In dev: Vite proxy handles WebSocket upgrade
+  // In prod: Nginx handles WebSocket upgrade
+  return window.location.origin;
 };
 
 const WS_URL = getWsUrl();
