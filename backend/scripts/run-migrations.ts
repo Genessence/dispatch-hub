@@ -30,6 +30,23 @@ async function runMigrations() {
     console.log('✅ Connected to database');
 
     const migrationsDir = path.join(__dirname, '../migrations');
+    // If the DB is already initialized, we should NOT re-run 001_initial.sql because it contains
+    // CREATE OR REPLACE VIEW definitions that may not be compatible with an existing view column layout.
+    // (Postgres disallows changing view column names via CREATE OR REPLACE VIEW.)
+    const alreadyInitialized = await (async () => {
+      try {
+        const r = await client.query(
+          `SELECT 1
+           FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_name = 'users'
+           LIMIT 1`
+        );
+        return r.rows.length > 0;
+      } catch {
+        return false;
+      }
+    })();
+
     const migrationFiles = [
       '001_initial.sql',
       '002_enhance_validated_barcodes.sql',
@@ -40,10 +57,15 @@ async function runMigrations() {
       '007_make_schedule_customer_code_nullable.sql',
       '008_add_validation_step_to_mismatch_alerts.sql',
       '009_add_scanner_preferences.sql',
-      '010_doc_audit_dual_counters.sql'
+      '010_doc_audit_dual_counters.sql',
+      '011_validated_barcodes_bin_numbers.sql'
     ];
 
     for (const migrationFile of migrationFiles) {
+      if (alreadyInitialized && migrationFile === '001_initial.sql') {
+        console.log(`\n⏭️  Skipping ${migrationFile} (database already initialized)`);
+        continue;
+      }
       const migrationPath = path.join(migrationsDir, migrationFile);
       
       if (!fs.existsSync(migrationPath)) {
@@ -65,6 +87,9 @@ async function runMigrations() {
         // Ignore errors for columns that already exist (IF NOT EXISTS)
         if (error.message?.includes('already exists') || error.message?.includes('duplicate')) {
           console.log(`⚠️  Migration ${migrationFile} had some conflicts (columns may already exist), continuing...`);
+        } else if (alreadyInitialized && migrationFile === '001_initial.sql' && error.code === '42P16') {
+          // Postgres: cannot change name of view column via CREATE OR REPLACE VIEW
+          console.log(`⚠️  Skipping ${migrationFile} due to existing view layout (42P16). Continuing...`);
         } else {
           console.error(`❌ Error running ${migrationFile}:`, error.message);
           console.error(`   Full error:`, error);

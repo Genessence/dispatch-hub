@@ -73,6 +73,48 @@ const UploadData = () => {
     return new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate());
   };
 
+  // Helper function to parse date from various formats (shared for invoice and schedule parsing)
+  const parseDate = (dateStr: any): Date | undefined => {
+    if (!dateStr) return undefined;
+    if (dateStr instanceof Date) return dateStr;
+    if (typeof dateStr === 'number') {
+      return excelDateToJSDate(dateStr);
+    }
+    if (typeof dateStr === 'string') {
+      const trimmed = dateStr.trim();
+      if (!trimmed) return undefined;
+      
+      const dateFormats = [
+        /^(\d{4})-(\d{1,2})-(\d{1,2})$/,
+        /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,
+        /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,
+        /^(\d{1,2})-(\d{1,2})-(\d{4})/,
+      ];
+      
+      for (const format of dateFormats) {
+        const match = trimmed.match(format);
+        if (match) {
+          if (format === dateFormats[0] || format === dateFormats[1]) {
+            const [_, year, month, day] = match;
+            const parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+            if (!isNaN(parsed.getTime())) return parsed;
+          } else {
+            const [_, part1, part2, year] = match;
+            let parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
+            if (!isNaN(parsed.getTime())) return parsed;
+            parsed = new Date(parseInt(year), parseInt(part2) - 1, parseInt(part1));
+            if (!isNaN(parsed.getTime())) return parsed;
+          }
+        }
+      }
+      
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
+    
+    return undefined;
+  };
+
   // Helper function to format date as YYYY-MM-DD in local timezone
   const formatDateAsLocalString = (date: Date): string => {
     const year = date.getFullYear();
@@ -304,13 +346,7 @@ const UploadData = () => {
 
             const invoiceDateCell =
               rowObj['Invoice Date'] || rowObj['InvoiceDate'] || rowObj['invoice date'] || rowObj['Inv Date'] || rowObj['Date'] || '';
-            let invoiceDate: Date | undefined = undefined;
-            if (typeof invoiceDateCell === 'number') {
-              invoiceDate = excelDateToJSDate(invoiceDateCell);
-            } else if (invoiceDateCell) {
-              const parsed = new Date(String(invoiceDateCell).trim());
-              invoiceDate = isNaN(parsed.getTime()) ? undefined : parsed;
-            }
+            const invoiceDate = parseDate(invoiceDateCell);
             
             let status: 'valid' | 'error' | 'warning' = 'valid';
             let errorMessage = '';
@@ -459,48 +495,6 @@ const UploadData = () => {
           }
           
           const allScheduleItems: ScheduleItem[] = [];
-          
-          // Helper function to parse date from various formats
-          const parseDate = (dateStr: any): Date | undefined => {
-            if (!dateStr) return undefined;
-            if (dateStr instanceof Date) return dateStr;
-            if (typeof dateStr === 'number') {
-              return excelDateToJSDate(dateStr);
-            }
-            if (typeof dateStr === 'string') {
-              const trimmed = dateStr.trim();
-              if (!trimmed) return undefined;
-              
-              const dateFormats = [
-                /^(\d{4})-(\d{1,2})-(\d{1,2})$/,
-                /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,
-                /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,
-                /^(\d{1,2})-(\d{1,2})-(\d{4})/,
-              ];
-              
-              for (const format of dateFormats) {
-                const match = trimmed.match(format);
-                if (match) {
-                  if (format === dateFormats[0] || format === dateFormats[1]) {
-                    const [_, year, month, day] = match;
-                    const parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-                    if (!isNaN(parsed.getTime())) return parsed;
-                  } else {
-                    const [_, part1, part2, year] = match;
-                    let parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
-                    if (!isNaN(parsed.getTime())) return parsed;
-                    parsed = new Date(parseInt(year), parseInt(part2) - 1, parseInt(part1));
-                    if (!isNaN(parsed.getTime())) return parsed;
-                  }
-                }
-              }
-              
-              const parsed = new Date(trimmed);
-              if (!isNaN(parsed.getTime())) return parsed;
-            }
-            
-            return undefined;
-          };
           
           // Helper function for case-insensitive column lookup
           const getColumnValue = (row: any, variations: string[]): string => {

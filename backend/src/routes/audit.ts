@@ -335,7 +335,14 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
     } else if (scanContext === 'loading-dispatch' && canonicalCustomerBarcode) {
       // For loading-dispatch: Match by customer_item from customer barcode
       const customerPartNumber = derivedCustomerItem;
-      if (customerPartNumber) {
+      if (!customerPartNumber) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Customer item not found in scanned barcode. Please rescan the customer label.',
+        });
+      }
+      
         const itemMatchResult = await query(
           `SELECT * FROM invoice_items 
            WHERE invoice_id = $1 
@@ -343,10 +350,119 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
            LIMIT 1`,
           [invoiceId, customerPartNumber]
         );
-        if (itemMatchResult.rows.length > 0) {
+      
+      if (itemMatchResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: `Customer item "${customerPartNumber}" not found in invoice ${invoiceId}`,
+        });
+      }
+      
           matchedInvoiceItem = itemMatchResult.rows[0];
           invoiceItemId = matchedInvoiceItem.id;
-        }
+      
+      // Enforce bin-based validation for loading-dispatch
+      if (!derivedBinNumber) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Bin number not found in scanned barcode. Please rescan the customer label.',
+        });
+      }
+      
+      // Check for duplicate bin scan (same bin_number for same invoice_item in loading-dispatch context)
+      const duplicateCheck = await query(
+        `SELECT id FROM validated_barcodes 
+         WHERE invoice_item_id = $1 
+           AND scan_context = $2
+           AND customer_bin_number = $3
+         LIMIT 1`,
+        [invoiceItemId, 'loading-dispatch', derivedBinNumber]
+      );
+      
+      if (duplicateCheck.rows.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: 'Duplicate scan',
+          message: `Bin number "${derivedBinNumber}" has already been scanned for this item.`,
+          validationStep: 'duplicate_bin_scan_loading',
+        });
+      }
+      
+      // Compute expected bins for this item (priority: cust_scanned_bins_count > number_of_bins > fallback count)
+      let expectedBinsForItem = matchedInvoiceItem.cust_scanned_bins_count || 0;
+      
+      if (expectedBinsForItem === 0) {
+        expectedBinsForItem = matchedInvoiceItem.number_of_bins || 0;
+      }
+      
+      // Fallback: count distinct customer bins from doc-audit scans for this item
+      if (expectedBinsForItem === 0) {
+        const docAuditBinsResult = await query(
+          `SELECT COUNT(DISTINCT customer_bin_number) as bin_count
+           FROM validated_barcodes
+           WHERE invoice_item_id = $1
+             AND scan_context = 'doc-audit'
+             AND customer_bin_number IS NOT NULL`,
+          [invoiceItemId]
+        );
+        expectedBinsForItem = parseInt(docAuditBinsResult.rows[0]?.bin_count || '0') || 0;
+      }
+      
+      // Count existing loading-dispatch scans for this item
+      const loadedBinsResult = await query(
+        `SELECT COUNT(*) as loaded_count
+         FROM validated_barcodes
+         WHERE invoice_item_id = $1
+           AND scan_context = 'loading-dispatch'`,
+        [invoiceItemId]
+      );
+      const loadedBinsForItem = parseInt(loadedBinsResult.rows[0]?.loaded_count || '0') || 0;
+      
+      // Enforce expected bins limit
+      if (expectedBinsForItem > 0 && loadedBinsForItem >= expectedBinsForItem) {
+        // Hard fail-safe: block invoice and create mismatch alert
+        await query(
+          `INSERT INTO mismatch_alerts 
+           (user_name, customer, invoice_id, step, validation_step,
+            customer_scan_part_code, customer_scan_quantity, customer_scan_bin_number, customer_scan_raw_value)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            req.user?.username,
+            customerName,
+            invoiceId,
+            'loading-dispatch',
+            'over_scan_loading',
+            customerPartNumber,
+            derivedBinQuantityStr || 'N/A',
+            derivedBinNumber,
+            canonicalCustomerBarcode || 'N/A',
+          ]
+        );
+        
+        await query(
+          'UPDATE invoices SET blocked = true, blocked_at = CURRENT_TIMESTAMP WHERE id = $1',
+          [invoiceId]
+        );
+        
+        // Broadcast alert to admins
+        const io: SocketIOServer = req.app.get('io');
+        io.emit('alert:new', {
+          type: 'mismatch',
+          invoiceId,
+          customer: customerName,
+          reportedBy: req.user?.username,
+        });
+        
+        return res.status(409).json({
+          success: false,
+          error: 'Over-scan prevented',
+          message: `Cannot scan more bins. Expected ${expectedBinsForItem} bins for item "${customerPartNumber}", but ${loadedBinsForItem} already loaded. Invoice blocked for admin review.`,
+          validationStep: 'over_scan_loading',
+          expectedBins: expectedBinsForItem,
+          loadedBins: loadedBinsForItem,
+        });
       }
     }
 
@@ -392,11 +508,12 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
     }
 
     // Insert validated barcode with all fields including customer info and scan context
+    // Include customer_bin_number for loading-dispatch scans (and doc-audit if available)
     const insertResult = await query(
       `INSERT INTO validated_barcodes 
        (invoice_id, customer_barcode, autoliv_barcode, customer_item, item_number, part_description, 
-        quantity, bin_quantity, invoice_item_id, status, scanned_by, scan_context, customer_name, customer_code)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        quantity, bin_quantity, invoice_item_id, status, scanned_by, scan_context, customer_name, customer_code, customer_bin_number)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING id`,
       [
         invoiceId, 
@@ -412,7 +529,8 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
         req.user?.username || null,
         scanContext, // 'doc-audit' or 'loading-dispatch'
         customerName,
-        customerCode
+        customerCode,
+        derivedBinNumber || null // customer_bin_number for de-duplication
       ]
     );
 
@@ -460,14 +578,55 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
       scanContext
     });
 
+    // For loading-dispatch, include expected/loaded bin counts
+    let expectedBinsForItem = null;
+    let loadedBinsForItem = null;
+    
+    if (scanContext === 'loading-dispatch' && invoiceItemId) {
+      // Recompute expected bins (same logic as validation above)
+      if (matchedInvoiceItem) {
+        expectedBinsForItem = matchedInvoiceItem.cust_scanned_bins_count || 0;
+        if (expectedBinsForItem === 0) {
+          expectedBinsForItem = matchedInvoiceItem.number_of_bins || 0;
+        }
+      }
+      
+      // Fallback count if still 0
+      if (expectedBinsForItem === 0) {
+        const docAuditBinsResult = await query(
+          `SELECT COUNT(DISTINCT customer_bin_number) as bin_count
+           FROM validated_barcodes
+           WHERE invoice_item_id = $1
+             AND scan_context = 'doc-audit'
+             AND customer_bin_number IS NOT NULL`,
+          [invoiceItemId]
+        );
+        expectedBinsForItem = parseInt(docAuditBinsResult.rows[0]?.bin_count || '0') || 0;
+      }
+      
+      // Count loaded bins (including the one we just inserted)
+      const loadedBinsResult = await query(
+        `SELECT COUNT(*) as loaded_count
+         FROM validated_barcodes
+         WHERE invoice_item_id = $1
+           AND scan_context = 'loading-dispatch'`,
+        [invoiceItemId]
+      );
+      loadedBinsForItem = parseInt(loadedBinsResult.rows[0]?.loaded_count || '0') || 0;
+    }
+
     res.json({ 
       success: true, 
       message: 'Scan recorded',
+      scanId: insertResult.rows[0]?.id || null, // Include scan ID for deletion
       scanContext,
       customerName,
       customerCode,
       invoiceItemId,
       binQuantity: derivedBinQuantityInt,
+      customerBinNumber: derivedBinNumber || null,
+      expectedBinsForItem,
+      loadedBinsForItem,
       matchedInvoiceItem: matchedInvoiceItem ? {
         id: matchedInvoiceItem.id,
         customerItem: matchedInvoiceItem.customer_item,
@@ -475,7 +634,8 @@ router.post('/:invoiceId/scan', authenticateToken, async (req: AuthRequest, res:
         qty: matchedInvoiceItem.qty,
         number_of_bins: matchedInvoiceItem.number_of_bins,
         scanned_quantity: matchedInvoiceItem.scanned_quantity,
-        scanned_bins_count: matchedInvoiceItem.scanned_bins_count
+        scanned_bins_count: matchedInvoiceItem.scanned_bins_count,
+        cust_scanned_bins_count: matchedInvoiceItem.cust_scanned_bins_count || 0
       } : null
     });
   } catch (error: any) {
@@ -516,6 +676,7 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
   } = req.body || {};
 
   const username = req.user?.username || null;
+  const io: SocketIOServer = req.app.get('io');
 
   try {
     if (scanContext !== 'doc-audit') {
@@ -542,6 +703,107 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
     const invoice = invoiceResult.rows[0];
     const customerName = invoice.customer || 'Unknown';
     const customerCode = invoice.bill_to || invoice.billTo || null;
+
+    const reportMismatchAndBlock = async (args: {
+      validationStep: string;
+      message: string;
+      customerScan: {
+        partCode: string;
+        quantity: string;
+        binNumber: string;
+        rawValue: string;
+      };
+      autolivScan?: {
+        partCode: string;
+        quantity: string;
+        binNumber: string;
+        rawValue: string;
+      };
+    }) => {
+      // Insert mismatch alert
+      await query(
+        `INSERT INTO mismatch_alerts 
+         (user_name, customer, invoice_id, step, validation_step,
+          customer_scan_part_code, customer_scan_quantity, customer_scan_bin_number, customer_scan_raw_value,
+          autoliv_scan_part_code, autoliv_scan_quantity, autoliv_scan_bin_number, autoliv_scan_raw_value)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          req.user?.username,
+          customerName,
+          invoiceId,
+          'doc-audit',
+          args.validationStep,
+          args.customerScan.partCode || 'N/A',
+          args.customerScan.quantity || 'N/A',
+          args.customerScan.binNumber || 'N/A',
+          args.customerScan.rawValue || 'N/A',
+          args.autolivScan?.partCode || 'N/A',
+          args.autolivScan?.quantity || 'N/A',
+          args.autolivScan?.binNumber || 'N/A',
+          args.autolivScan?.rawValue || 'N/A',
+        ]
+      );
+
+      // Block invoice
+      await query(
+        'UPDATE invoices SET blocked = true, blocked_at = CURRENT_TIMESTAMP WHERE id = $1',
+        [invoiceId]
+      );
+
+      // Broadcast alert to admins
+      io.emit('alert:new', {
+        type: 'mismatch',
+        invoiceId,
+        customer: customerName,
+        reportedBy: req.user?.username,
+      });
+
+      return res.status(409).json({
+        success: false,
+        error: 'Duplicate scan / blocked',
+        message: args.message,
+      });
+    };
+
+    const recomputeAndUpdateInvoiceProgress = async () => {
+      const totals = await query(
+        `SELECT 
+            COUNT(*)::int AS total_items,
+            COUNT(*) FILTER (
+              WHERE qty = COALESCE(cust_scanned_quantity, 0)
+                AND qty = COALESCE(inbd_scanned_quantity, 0)
+            )::int AS completed_items
+         FROM invoice_items
+         WHERE invoice_id = $1`,
+        [invoiceId]
+      );
+      const totalItems = totals.rows[0]?.total_items || 0;
+      const completedItems = totals.rows[0]?.completed_items || 0;
+      const auditComplete = totalItems > 0 && completedItems >= totalItems;
+
+      // Update invoice header progress (items completed out of items expected)
+      await query(
+        `UPDATE invoices
+         SET expected_bins = $1,
+             scanned_bins = $2,
+             audit_complete = $3,
+             audit_date = CASE WHEN $3 THEN COALESCE(audit_date, CURRENT_TIMESTAMP) ELSE audit_date END,
+             audited_by = CASE WHEN $3 THEN COALESCE(audited_by, $4) ELSE audited_by END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $5`,
+        [totalItems, completedItems, auditComplete, req.user?.username, invoiceId]
+      );
+
+      io.emit('audit:progress', {
+        invoiceId,
+        scannedBins: completedItems,
+        expectedBins: totalItems,
+        auditComplete,
+        auditedBy: req.user?.username,
+      });
+
+      return { totalItems, completedItems, auditComplete };
+    };
 
     // Canonicalize inputs
     const canonicalCustomerBarcode = customerBarcode ? canonicalizeBarcode(customerBarcode) : null;
@@ -571,6 +833,7 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
       const customerPart = parsedCustomer.partNumber;
       const binQtyStr = parsedCustomer.quantity;
       const binQty = /^\d+$/.test(binQtyStr) ? parseInt(binQtyStr, 10) : 0;
+      const customerBinNumber = parsedCustomer.binNumber;
       if (!binQty || binQty <= 0) {
         return res.status(400).json({
           success: false,
@@ -608,16 +871,44 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
 
       const item = itemRows.rows[0];
       const totalQty = Number(item.qty || 0);
-      const nextCustQty = Number(item.cust_scanned_quantity || 0) + binQty;
-      if (nextCustQty > totalQty) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation error',
-          message: `Over-scan prevented: customer scanned qty would exceed item qty (${nextCustQty} > ${totalQty}).`,
+      const invoiceItemId = item.id as string;
+
+      // De-dupe: if this bin was ever scanned for this invoice_item in this context, block + alert
+      const existingBin = await query(
+        `SELECT id
+         FROM validated_barcodes
+         WHERE invoice_item_id = $1
+           AND scan_context = $2
+           AND customer_bin_number = $3
+         LIMIT 1`,
+        [invoiceItemId, scanContext, customerBinNumber]
+      );
+      if (existingBin.rows.length > 0) {
+        return reportMismatchAndBlock({
+          validationStep: 'duplicate_customer_bin_scan',
+          message: `Duplicate customer bin scan ignored. Bin "${customerBinNumber}" was already scanned; invoice blocked for admin review.`,
+          customerScan: {
+            partCode: customerPart,
+            quantity: binQtyStr,
+            binNumber: customerBinNumber,
+            rawValue: canonicalCustomerBarcode || '',
+          },
         });
       }
 
-      const invoiceItemId = item.id as string;
+      const nextCustQty = Number(item.cust_scanned_quantity || 0) + binQty;
+      if (nextCustQty > totalQty) {
+        return reportMismatchAndBlock({
+          validationStep: 'over_scan_customer',
+          message: `Over-scan prevented: customer scanned qty would exceed item qty (${nextCustQty} > ${totalQty}). Invoice blocked for admin review.`,
+          customerScan: {
+            partCode: customerPart,
+            quantity: binQtyStr,
+            binNumber: customerBinNumber,
+            rawValue: canonicalCustomerBarcode || '',
+          },
+        });
+      }
 
       const updated = await transaction(async (client) => {
         const updatedItem = await client.query(
@@ -634,9 +925,9 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
         const insert = await client.query(
           `INSERT INTO validated_barcodes
            (invoice_id, customer_barcode, autoliv_barcode, customer_item, item_number, part_description,
-            quantity, bin_quantity, invoice_item_id, status, scanned_by, scan_context, customer_name, customer_code, scan_stage)
+            quantity, bin_quantity, invoice_item_id, status, scanned_by, scan_context, customer_name, customer_code, scan_stage, customer_bin_number)
            VALUES ($1, $2, NULL, $3, NULL, NULL,
-                   $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                   $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            RETURNING id`,
           [
             invoiceId,
@@ -651,14 +942,16 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
             customerName,
             customerCode,
             'customer',
+            customerBinNumber,
           ]
         );
 
         return { updatedItem: updatedItem.rows[0], scanId: insert.rows[0]?.id };
       });
 
+      await recomputeAndUpdateInvoiceProgress();
+
       // Broadcast a lightweight event; clients should refresh for full consistency.
-      const io: SocketIOServer = req.app.get('io');
       io.emit('audit:stage-scan', {
         invoiceId,
         invoiceItemId,
@@ -684,19 +977,98 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
     }
 
     // Stage 2: inbound/autoliv label scanned (pair with pending customer scan)
-    if (!canonicalCustomerBarcode || !canonicalAutolivBarcode) {
+    // Supports "resume" mode: customerBarcode can be omitted, in which case we use the latest pending customer scan
+    // already stored in validated_barcodes for the matched invoice_item.
+    if (!canonicalAutolivBarcode) {
       return res.status(400).json({
         success: false,
         error: 'Validation error',
-        message: 'customerBarcode and autolivBarcode are required for stage="inbd".',
+        message: 'autolivBarcode is required for stage="inbd".',
       });
     }
 
-    let parsedCustomer: ReturnType<typeof parseCustomerLabel> | null = null;
+    const isResumeMode = !canonicalCustomerBarcode;
+
     let parsedAutoliv: ReturnType<typeof parseAutolivLabel> | null = null;
     try {
-      parsedCustomer = parseCustomerLabel(canonicalCustomerBarcode);
       parsedAutoliv = parseAutolivLabel(canonicalAutolivBarcode);
+    } catch (e: any) {
+      const message =
+        e instanceof QrParseError
+          ? `${e.labelType.toUpperCase()} parse error: ${e.message}`
+          : `QR parse error: ${e?.message || 'Unknown error'}`;
+      return res.status(400).json({ success: false, error: 'Invalid QR code', message });
+    }
+
+    // If customer barcode isn't provided, we'll locate the correct invoice_item by Autoliv part,
+    // then fetch the latest pending customer scan for that invoice_item to derive customer barcode.
+    let derivedCustomerBarcode: string | null = canonicalCustomerBarcode;
+    if (isResumeMode) {
+      const autolivPartFromLabel = parsedAutoliv.partNumber;
+      if (!autolivPartFromLabel) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Missing part number after Autoliv QR parsing. Please rescan.',
+        });
+      }
+
+      const itemByPart = await query(
+        `SELECT id
+         FROM invoice_items
+         WHERE invoice_id = $1 AND part = $2`,
+        [invoiceId, autolivPartFromLabel]
+      );
+
+      if (itemByPart.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: `No invoice_item match for part="${autolivPartFromLabel}" in invoice ${invoiceId}. Please scan the customer label.`,
+        });
+      }
+      if (itemByPart.rows.length > 1) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: `Ambiguous match: multiple invoice_items for part="${autolivPartFromLabel}" in invoice ${invoiceId}. Please scan the customer label to disambiguate.`,
+        });
+      }
+
+      const invoiceItemIdForPending = itemByPart.rows[0].id as string;
+      const pendingCustomerScan = await query(
+        `SELECT customer_barcode
+         FROM validated_barcodes
+         WHERE invoice_item_id = $1
+           AND scan_context = $2
+           AND scan_stage = 'customer'
+           AND status = 'pending'
+         ORDER BY scanned_at DESC
+         LIMIT 1`,
+        [invoiceItemIdForPending, scanContext]
+      );
+
+      if (pendingCustomerScan.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'No pending customer scan found for this item. Please scan the customer label first.',
+        });
+      }
+
+      derivedCustomerBarcode = pendingCustomerScan.rows[0].customer_barcode || null;
+      if (!derivedCustomerBarcode) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Pending customer scan is missing customer barcode. Please rescan the customer label.',
+        });
+      }
+    }
+
+    let parsedCustomer: ReturnType<typeof parseCustomerLabel> | null = null;
+    try {
+      parsedCustomer = parseCustomerLabel(derivedCustomerBarcode as string);
     } catch (e: any) {
       const message =
         e instanceof QrParseError
@@ -724,6 +1096,8 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
 
     const customerPart = parsedCustomer.partNumber;
     const autolivPart = parsedAutoliv.partNumber;
+    const customerBinNumber = parsedCustomer.binNumber;
+    const autolivBinNumber = parsedAutoliv.binNumber;
 
     // Match exactly one invoice_item by (customer_item, part)
     const itemRows = await query(
@@ -758,30 +1132,72 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
     const item = itemRows.rows[0];
     const invoiceItemId = item.id as string;
     const totalQty = Number(item.qty || 0);
+
+    // De-dupe: if this autoliv bin was ever scanned for this invoice_item in this context, block + alert
+    const existingInbdBin = await query(
+      `SELECT id
+       FROM validated_barcodes
+       WHERE invoice_item_id = $1
+         AND scan_context = $2
+         AND autoliv_bin_number = $3
+       LIMIT 1`,
+      [invoiceItemId, scanContext, autolivBinNumber]
+    );
+    if (existingInbdBin.rows.length > 0) {
+      return reportMismatchAndBlock({
+        validationStep: 'duplicate_inbd_bin_scan',
+        message: `Duplicate INBD bin scan ignored. Bin "${autolivBinNumber}" was already scanned; invoice blocked for admin review.`,
+        customerScan: {
+          partCode: customerPart,
+          quantity: parsedCustomer.quantity,
+          binNumber: customerBinNumber,
+          rawValue: derivedCustomerBarcode || '',
+        },
+        autolivScan: {
+          partCode: autolivPart,
+          quantity: parsedAutoliv.quantity,
+          binNumber: autolivBinNumber,
+          rawValue: canonicalAutolivBarcode || '',
+        },
+      });
+    }
+
     const nextInbdQty = Number(item.inbd_scanned_quantity || 0) + binQty;
     if (nextInbdQty > totalQty) {
-      return res.status(400).json({
-        success: false,
-        error: 'Validation error',
-        message: `Over-scan prevented: INBD scanned qty would exceed item qty (${nextInbdQty} > ${totalQty}).`,
+      return reportMismatchAndBlock({
+        validationStep: 'over_scan_inbd',
+        message: `Over-scan prevented: INBD scanned qty would exceed item qty (${nextInbdQty} > ${totalQty}). Invoice blocked for admin review.`,
+        customerScan: {
+          partCode: customerPart,
+          quantity: parsedCustomer.quantity,
+          binNumber: customerBinNumber,
+          rawValue: derivedCustomerBarcode || '',
+        },
+        autolivScan: {
+          partCode: autolivPart,
+          quantity: parsedAutoliv.quantity,
+          binNumber: autolivBinNumber,
+          rawValue: canonicalAutolivBarcode || '',
+        },
       });
     }
 
     const numberOfBins = Math.ceil(totalQty / (binQty || 1));
 
     const updated = await transaction(async (client) => {
-      // Lock the latest pending customer-stage scan for this item by this user
+      // Lock the latest pending customer-stage scan for this item.
+      // In resume mode, do NOT require scanned_by=current user (user may resume later / different user).
       const pending = await client.query(
         `SELECT id
          FROM validated_barcodes
          WHERE invoice_item_id = $1
            AND scan_context = $2
            AND scan_stage = 'customer'
-           AND scanned_by = $3
+           ${isResumeMode ? '' : 'AND scanned_by = $3'}
          ORDER BY scanned_at DESC
          LIMIT 1
          FOR UPDATE`,
-        [invoiceItemId, scanContext, username]
+        isResumeMode ? [invoiceItemId, scanContext] : [invoiceItemId, scanContext, username]
       );
 
       if (pending.rows.length === 0) {
@@ -799,9 +1215,10 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
              bin_quantity = $4,
              status = $5,
              scan_stage = $6,
+             autoliv_bin_number = $7,
              scanned_at = CURRENT_TIMESTAMP
-         WHERE id = $7`,
-        [canonicalAutolivBarcode, autolivPart, totalQty, binQty, 'matched', 'paired', pendingId]
+         WHERE id = $8`,
+        [canonicalAutolivBarcode, autolivPart, totalQty, binQty, 'matched', 'paired', autolivBinNumber, pendingId]
       );
 
       // Update invoice item inbound counters (+ keep legacy counters in sync)
@@ -834,8 +1251,9 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
       });
     }
 
+    await recomputeAndUpdateInvoiceProgress();
+
     // Broadcast a lightweight event; clients should refresh for full consistency.
-    const io: SocketIOServer = req.app.get('io');
     io.emit('audit:stage-scan', {
       invoiceId,
       invoiceItemId,
@@ -900,6 +1318,9 @@ router.get('/:invoiceId/scans', authenticateToken, async (req: AuthRequest, res:
         itemNumber: scan.item_number,
         partDescription: scan.part_description,
         quantity: scan.quantity,
+        binQuantity: scan.bin_quantity,
+        customerBinNumber: scan.customer_bin_number,
+        autolivBinNumber: scan.autoliv_bin_number,
         status: scan.status,
         scannedBy: scan.scanned_by,
         scannedAt: scan.scanned_at,
@@ -911,6 +1332,80 @@ router.get('/:invoiceId/scans', authenticateToken, async (req: AuthRequest, res:
   } catch (error) {
     console.error('Get scans error:', error);
     res.status(500).json({ error: 'Failed to fetch scans' });
+  }
+});
+
+/**
+ * DELETE /api/audit/:invoiceId/scans/:scanId
+ * Delete a loading-dispatch scan (for removing incorrectly scanned bins)
+ */
+router.delete('/:invoiceId/scans/:scanId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { invoiceId, scanId } = req.params;
+
+    // Verify the scan exists, belongs to the invoice, and is a loading-dispatch scan
+    const scanResult = await query(
+      `SELECT id, scan_context, invoice_item_id, customer_bin_number, customer_item
+       FROM validated_barcodes
+       WHERE id = $1 AND invoice_id = $2`,
+      [scanId, invoiceId]
+    );
+
+    if (scanResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Scan not found',
+        message: `Scan ${scanId} not found for invoice ${invoiceId}`
+      });
+    }
+
+    const scan = scanResult.rows[0];
+
+    // Only allow deletion of loading-dispatch scans (safety measure)
+    if (scan.scan_context !== 'loading-dispatch') {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden',
+        message: 'Only loading-dispatch scans can be deleted. Doc-audit scans cannot be deleted.'
+      });
+    }
+
+    // Delete the scan
+    await query(
+      `DELETE FROM validated_barcodes WHERE id = $1`,
+      [scanId]
+    );
+
+    // Log the deletion
+    await query(
+      `INSERT INTO logs (user_name, action, details, log_type, invoice_id)
+       VALUES ($1, $2, $3, 'dispatch', $4)`,
+      [
+        req.user?.username,
+        `Deleted loading-dispatch scan`,
+        `Scan ID: ${scanId}, Customer Item: ${scan.customer_item || 'N/A'}, Bin Number: ${scan.customer_bin_number || 'N/A'}`,
+        invoiceId
+      ]
+    );
+
+    // Broadcast update
+    const io: SocketIOServer = req.app.get('io');
+    io.emit('audit:scan-deleted', {
+      invoiceId,
+      scanId,
+      deletedBy: req.user?.username
+    });
+
+    res.json({
+      success: true,
+      message: 'Scan deleted successfully'
+    });
+  } catch (error: any) {
+    console.error('Delete scan error:', error);
+    res.status(500).json({
+      error: 'Failed to delete scan',
+      message: error?.message || 'Unknown error occurred'
+    });
   }
 });
 

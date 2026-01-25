@@ -49,7 +49,8 @@ const DocAudit = () => {
     addMismatchAlert,
     selectedCustomer,
     selectedSite,
-    getInvoicesWithSchedule
+    getInvoicesWithSchedule,
+    refreshData
   } = useSession();
 
   // Route guard: Check if customer and site are selected
@@ -97,10 +98,6 @@ const DocAudit = () => {
     itemNumber: string;
     partDescription: string;
     quantity: number;
-    binQuantity?: number;
-    scannedQuantity?: number;
-    number_of_bins?: number;
-    scanned_bins_count?: number;
     status: string;
     scannedBy: string;
     time: string;
@@ -133,39 +130,91 @@ const DocAudit = () => {
     return Array.from(dates).sort();
   }, [invoicesWithSchedule]);
 
-  // Delivery time options come from schedule for the selected invoice date (InvoiceDate == SupplyDate)
+  // Delivery time options come from invoice-level deliveryTime + schedule for the selected invoice date
   const availableDeliveryTimes = useMemo(() => {
-    if (!selectedDeliveryDate || !scheduleData) return [];
+    if (!selectedDeliveryDate) return [];
     const selected = formatDateAsLocalString(selectedDeliveryDate);
     const times = new Set<string>();
-    scheduleData.items.forEach((item) => {
-      if (!item.deliveryDate || !item.deliveryTime) return;
-      if (formatDateAsLocalString(item.deliveryDate) === selected) {
-        times.add(item.deliveryTime);
+    
+    // 1) First: Check invoice-level deliveryTime for invoices matching the selected date
+    invoicesWithSchedule.forEach((inv) => {
+      if (!inv.invoiceDate) return;
+      if (formatDateAsLocalString(inv.invoiceDate) !== selected) return;
+      const deliveryTime = (inv.deliveryTime || '').trim();
+      if (deliveryTime) {
+        times.add(deliveryTime);
       }
     });
+    
+    // 2) Second: Add schedule times for the selected date only (no cross-date fallback)
+    if (scheduleData?.items) {
+      scheduleData.items.forEach((item) => {
+        if (!item.deliveryDate || !item.deliveryTime) return;
+        if (formatDateAsLocalString(item.deliveryDate) === selected) {
+          const time = String(item.deliveryTime).trim();
+          if (time) {
+            times.add(time);
+          }
+        }
+      });
+    }
+    
     return Array.from(times).sort();
-  }, [selectedDeliveryDate, scheduleData]);
+  }, [selectedDeliveryDate, invoicesWithSchedule, scheduleData]);
 
-  // Unloading location options come from schedule for the selected invoice date + selected time(s)
+  // Unloading location options come from invoice-level unloadingLoc + schedule for the selected invoice date + selected time(s)
   const availableUnloadingLocs = useMemo(() => {
-    if (!selectedDeliveryDate || !scheduleData) return [];
+    if (!selectedDeliveryDate) return [];
     const selected = formatDateAsLocalString(selectedDeliveryDate);
     const locs = new Set<string>();
-    scheduleData.items.forEach((item) => {
-      if (!item.deliveryDate || !item.unloadingLoc) return;
-      if (formatDateAsLocalString(item.deliveryDate) !== selected) return;
-      if (selectedDeliveryTimes.length > 0) {
-        if (item.deliveryTime && selectedDeliveryTimes.includes(item.deliveryTime)) {
-          locs.add(item.unloadingLoc);
+    
+    const timeFilter = selectedDeliveryTimes.length > 0 
+      ? new Set(selectedDeliveryTimes.map(t => t.trim())) 
+      : null;
+    
+    // 1) First: Check invoice-level unloadingLoc for invoices matching the selected date
+    invoicesWithSchedule.forEach((inv) => {
+      if (!inv.invoiceDate) return;
+      if (formatDateAsLocalString(inv.invoiceDate) !== selected) return;
+      const unloadingLoc = (inv.unloadingLoc || '').trim();
+      if (!unloadingLoc) return;
+      
+      // If times are selected, only include if invoice deliveryTime matches
+      if (timeFilter) {
+        const invTime = (inv.deliveryTime || '').trim();
+        if (invTime && timeFilter.has(invTime)) {
+          locs.add(unloadingLoc);
         }
       } else {
-        // If times are not selected yet, still show all locations for that day
-        locs.add(item.unloadingLoc);
+        // If no times selected yet, include all locations for that date
+        locs.add(unloadingLoc);
       }
     });
+    
+    // 2) Second: Add schedule unloading locs for the selected date only (no cross-date fallback)
+    if (scheduleData?.items) {
+      scheduleData.items.forEach((item) => {
+        if (!item.deliveryDate || !item.unloadingLoc) return;
+        if (formatDateAsLocalString(item.deliveryDate) !== selected) return;
+        
+        const loc = String(item.unloadingLoc).trim();
+        if (!loc) return;
+        
+        if (timeFilter) {
+          // Filter by selected times
+          const itemTime = (item.deliveryTime || '').toString().trim();
+          if (itemTime && timeFilter.has(itemTime)) {
+            locs.add(loc);
+          }
+        } else {
+          // If times are not selected yet, still show all locations for that day
+          locs.add(loc);
+        }
+      });
+    }
+    
     return Array.from(locs).sort();
-  }, [selectedDeliveryDate, selectedDeliveryTimes, scheduleData]);
+  }, [selectedDeliveryDate, selectedDeliveryTimes, invoicesWithSchedule, scheduleData]);
 
 
   // Invoices are filtered by selected delivery date (which is Invoice Date).
@@ -177,6 +226,50 @@ const DocAudit = () => {
       .filter((inv) => inv.invoiceDate && formatDateAsLocalString(inv.invoiceDate) === selected)
       .sort((a, b) => a.id.localeCompare(b.id));
   }, [selectedDeliveryDate, invoicesWithSchedule]);
+
+  // Mismatch diagnostics: Check if schedule has rows matching selected invoice date
+  const mismatchDiagnostics = useMemo(() => {
+    if (!selectedDeliveryDate) {
+      return { scheduleMatchesForDate: 0, invoiceDeliveryFieldsForDate: 0, hasMismatch: false };
+    }
+    
+    const selected = formatDateAsLocalString(selectedDeliveryDate);
+    let scheduleMatchesForDate = 0;
+    let invoiceDeliveryFieldsForDate = 0;
+    
+    // Count schedule items matching the selected date
+    if (scheduleData?.items) {
+      scheduleMatchesForDate = scheduleData.items.filter((item) => {
+        if (!item.deliveryDate) return false;
+        return formatDateAsLocalString(item.deliveryDate) === selected;
+      }).length;
+    }
+    
+    // Count invoices with deliveryTime or unloadingLoc for the selected date
+    invoicesWithSchedule.forEach((inv) => {
+      if (!inv.invoiceDate) return;
+      if (formatDateAsLocalString(inv.invoiceDate) !== selected) return;
+      if ((inv.deliveryTime || '').trim() || (inv.unloadingLoc || '').trim()) {
+        invoiceDeliveryFieldsForDate++;
+      }
+    });
+    
+    // Has mismatch if schedule exists but has 0 matches for selected date
+    const hasMismatch = scheduleData && scheduleData.items.length > 0 && scheduleMatchesForDate === 0;
+    
+    // Console logging for diagnostics
+    if (selectedDeliveryDate) {
+      console.log('🔍 DocAudit Date Mismatch Diagnostics:', {
+        selectedDate: selected,
+        scheduleTotalItems: scheduleData?.items.length || 0,
+        scheduleMatchesForDate,
+        invoiceDeliveryFieldsForDate,
+        hasMismatch
+      });
+    }
+    
+    return { scheduleMatchesForDate, invoiceDeliveryFieldsForDate, hasMismatch };
+  }, [selectedDeliveryDate, scheduleData, invoicesWithSchedule]);
 
   // Get all selected invoices
   const selectedInvoiceObjects = invoices.filter(inv => selectedInvoices.includes(inv.id));
@@ -214,10 +307,14 @@ const DocAudit = () => {
   };
   
   // Calculate total progress across all selected invoices
-  const totalScannedItems = Object.values(validatedBins).reduce((sum, bins) => sum + bins.length, 0);
+  const totalScannedItems = selectedInvoiceObjects.reduce((sum, invoice) => {
+    const inv = sharedInvoices.find(i => i.id === invoice.id) || invoice;
+    return sum + (inv.scannedBins || 0);
+  }, 0);
   const totalExpectedItems = selectedInvoiceObjects.reduce((sum, invoice) => {
-    const unique = getUniqueCustomerItems(invoice);
-    return sum + unique.length;
+    const inv = sharedInvoices.find(i => i.id === invoice.id) || invoice;
+    const fallback = getUniqueCustomerItems(invoice).length;
+    return sum + ((inv.expectedBins && inv.expectedBins > 0) ? inv.expectedBins : fallback);
   }, 0);
 
   // Clear validated bins when invoice selection changes
@@ -226,6 +323,48 @@ const DocAudit = () => {
     setCustomerScan(null);
     setAutolivScan(null);
   }, [selectedInvoices]);
+
+  const refreshInvoiceScans = async (invoiceIds: string[]) => {
+    try {
+      const results = await Promise.all(
+        invoiceIds.map(async (id) => {
+          const resp = await auditApi.getScans(id, 'doc-audit');
+          return { invoiceId: id, resp };
+        })
+      );
+
+      setValidatedBins(prev => {
+        const next = { ...prev };
+        for (const { invoiceId, resp } of results) {
+          if (!resp?.success || !Array.isArray(resp.scans)) continue;
+          const rows = resp.scans
+            .filter((s: any) => s?.status === 'matched')
+            .map((s: any) => ({
+              customerItem: s.customerItem || 'N/A',
+              itemNumber: s.itemNumber || 'N/A',
+              partDescription: s.partDescription || 'N/A',
+              quantity: (s.binQuantity ?? s.quantity ?? 0) as number,
+              status: s.status || 'unknown',
+              scannedBy: s.scannedBy || 'N/A',
+              time: s.scannedAt
+                ? new Date(s.scannedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+                : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            }));
+          next[invoiceId] = rows;
+        }
+        return next;
+      });
+    } catch (e) {
+      console.error('Failed to refresh invoice scans:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedInvoices.length > 0) {
+      refreshInvoiceScans(selectedInvoices);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedInvoices.join(',')]);
   
   // Handle invoice QR scan - Randomly picks unscanned invoice
   const handleInvoiceQRScan = (data: BarcodeData) => {
@@ -280,20 +419,11 @@ const DocAudit = () => {
   useEffect(() => {
     // If customer QR is scanned and it's a customer QR type
     if (customerScan && customerScan.qrType === 'customer') {
-      // Reset previous matches if scanning a new QR
-      if (matchedCustomerItem || matchedAutolivItem) {
-        setMatchedCustomerItem(null);
-        setMatchedAutolivItem(null);
-      }
-      handleCustomerQRValidation();
+      handleCustomerQRValidation().catch((e) => console.error('Customer QR validation error:', e));
     }
     // If customer QR is scanned but it's actually an Autoliv QR (wrong button)
     else if (customerScan && customerScan.qrType === 'autoliv') {
       // User scanned Autoliv QR in customer scanner - handle it
-      if (matchedCustomerItem || matchedAutolivItem) {
-        setMatchedCustomerItem(null);
-        setMatchedAutolivItem(null);
-      }
       setAutolivScan(customerScan);
       setCustomerScan(null);
     }
@@ -302,20 +432,11 @@ const DocAudit = () => {
   useEffect(() => {
     // If Autoliv QR is scanned and it's an Autoliv QR type
     if (autolivScan && autolivScan.qrType === 'autoliv') {
-      // Reset previous matches if scanning a new QR
-      if (matchedCustomerItem || matchedAutolivItem) {
-        setMatchedCustomerItem(null);
-        setMatchedAutolivItem(null);
-      }
-      handleAutolivQRValidation();
+      handleAutolivQRValidation().catch((e) => console.error('Autoliv QR validation error:', e));
     }
     // If Autoliv QR is scanned but it's actually a Customer QR (wrong button)
     else if (autolivScan && autolivScan.qrType === 'customer') {
       // User scanned Customer QR in Autoliv scanner - handle it
-      if (matchedCustomerItem || matchedAutolivItem) {
-        setMatchedCustomerItem(null);
-        setMatchedAutolivItem(null);
-      }
       setCustomerScan(autolivScan);
       setAutolivScan(null);
     }
@@ -329,7 +450,7 @@ const DocAudit = () => {
   }, [matchedCustomerItem, matchedAutolivItem]);
 
   // Step 1: Validate Customer QR - Match with customer_item
-  const handleCustomerQRValidation = () => {
+  const handleCustomerQRValidation = async () => {
     if (!customerScan || customerScan.qrType !== 'customer') {
       return;
     }
@@ -481,6 +602,27 @@ const DocAudit = () => {
     // STEP 1 SUCCESS: Customer QR matched
     const { invoiceId, item } = matchedItems[0];
     setMatchedCustomerItem({ invoiceId, item });
+
+    // Update counters immediately on customer scan (server source of truth)
+    try {
+      await auditApi.recordStageScan(invoiceId, {
+        stage: 'customer',
+        customerBarcode: customerScan.rawValue,
+        scanContext: 'doc-audit'
+      });
+      await refreshData();
+      await refreshInvoiceScans([invoiceId]);
+    } catch (error: any) {
+      console.error('Customer stage scan error:', error);
+      toast.error("⚠️ Customer scan rejected", {
+        description: error?.message || "Scan failed. Invoice may be blocked; check Exception Alerts.",
+        duration: 6000,
+      });
+      await refreshData();
+      setCustomerScan(null);
+      setMatchedCustomerItem(null);
+      return;
+    }
     
     toast.success("✅ Step 1: Customer QR validated!", {
       description: `Part code "${customerPartCode}" matched. Please scan Autoliv QR.`,
@@ -489,7 +631,7 @@ const DocAudit = () => {
   };
 
   // Step 2: Validate Autoliv QR - Match with part (item_number)
-  const handleAutolivQRValidation = () => {
+  const handleAutolivQRValidation = async () => {
     if (!autolivScan || autolivScan.qrType !== 'autoliv') {
       return;
     }
@@ -642,8 +784,39 @@ const DocAudit = () => {
 
     // STEP 2 SUCCESS: Autoliv QR matched
     const { invoiceId, item } = matchedItems[0];
+    // RESUME MODE: If the customer label was scanned earlier (already stored in DB) but the user is resuming
+    // from the Autoliv step, customerScan state will be empty. In this case, call INBD stage with autolivBarcode only.
+    if (!customerScan?.rawValue) {
+      try {
+        await auditApi.recordStageScan(invoiceId, {
+          stage: 'inbd',
+          autolivBarcode: autolivScan.rawValue,
+          scanContext: 'doc-audit'
+        });
+        await refreshData();
+        await refreshInvoiceScans([invoiceId]);
+        toast.success("✅ INBD scan recorded!", {
+          description: `Autoliv label matched and paired with existing customer scan.`,
+          duration: 3000,
+        });
+      } catch (error: any) {
+        console.error('INBD resume scan error:', error);
+        toast.error('Failed to record INBD scan', {
+          description: error?.message || 'You may need to scan the customer label again.',
+          duration: 6000
+        });
+        await refreshData();
+      } finally {
+        // Reset state for next scan
+        setAutolivScan(null);
+        setMatchedAutolivItem(null);
+      }
+      return;
+    }
+
+    // Normal flow: customerScan is present in UI state; proceed to steps 3 & 4
     setMatchedAutolivItem({ invoiceId, item });
-    
+
     toast.success("✅ Step 2: Autoliv QR validated!", {
       description: `Part number "${autolivPartNumber}" matched. Validating invoice consistency...`,
       duration: 3000,
@@ -796,90 +969,28 @@ const DocAudit = () => {
     }
 
     // STEP 4 SUCCESS: All validations passed!
-    const binQuantity = parseInt(customerBinQty) || 0;
-    const matchedInvoiceItem = matchedCustomerItem.item;
-
-    // Check if this specific invoice_item was already scanned
-    const invoiceBins = validatedBins[invoiceId] || [];
-    const alreadyScanned = invoiceBins.some(bin => 
-      bin.customerItem === (matchedInvoiceItem.customerItem || matchedInvoiceItem.part) &&
-      bin.itemNumber === matchedInvoiceItem.part
-    );
-    
-    if (alreadyScanned) {
-      toast.warning("⚠️ This item was already scanned for this invoice!", {
-        description: `Invoice: ${invoiceId}`,
-        duration: 3000,
+    try {
+      await auditApi.recordStageScan(invoiceId, {
+        stage: 'inbd',
+        customerBarcode: customerScan.rawValue,
+        autolivBarcode: autolivScan.rawValue,
+        scanContext: 'doc-audit'
       });
+      await refreshData();
+      await refreshInvoiceScans([invoiceId]);
+    } catch (error: any) {
+      console.error('INBD stage scan error:', error);
+      toast.error('Failed to record INBD scan', {
+        description: error?.message || 'Invoice may be blocked; check Exception Alerts.',
+        duration: 6000
+      });
+      await refreshData();
       setCustomerScan(null);
       setAutolivScan(null);
       setMatchedCustomerItem(null);
       setMatchedAutolivItem(null);
       return;
     }
-
-    const newScannedItem = {
-      customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
-      itemNumber: matchedInvoiceItem.part || 'N/A',
-      partDescription: matchedInvoiceItem.partDescription || 'N/A',
-      quantity: matchedInvoiceItem.qty,
-      binQuantity: binQuantity,
-      status: 'matched',
-      scannedBy: currentUser,
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    };
-
-    const uniqueCustomerItems = getUniqueCustomerItems(invoice);
-    const totalCustomerItems = uniqueCustomerItems.length;
-    const newScannedCount = invoiceBins.length + 1;
-    const isComplete = newScannedCount >= totalCustomerItems;
-
-    // Save scan to database immediately
-    try {
-      const scanResult = await auditApi.recordScan(invoiceId, {
-        customerBarcode: customerScan.rawValue,
-        autolivBarcode: autolivScan.rawValue,
-        customerItem: matchedInvoiceItem.customerItem || matchedInvoiceItem.part || 'N/A',
-        itemNumber: matchedInvoiceItem.part || 'N/A',
-        partDescription: matchedInvoiceItem.partDescription || 'N/A',
-        quantity: matchedInvoiceItem.qty || 0,
-        binQuantity: binQuantity,
-        binNumber: customerScan.binNumber || autolivScan.binNumber || null,
-        status: 'matched',
-        scanContext: 'doc-audit'
-      });
-
-      if (scanResult?.matchedInvoiceItem) {
-        const updatedItem = scanResult.matchedInvoiceItem;
-        newScannedItem.binQuantity = updatedItem.number_of_bins ? 
-          Math.ceil(matchedInvoiceItem.qty / (binQuantity || 1)) : 
-          binQuantity;
-      }
-    } catch (error: any) {
-      console.error('Error saving scan to database:', error);
-      toast.error('Failed to save scan to database', {
-        description: error.message || 'Please try again',
-        duration: 5000
-      });
-    }
-
-    // Update local state
-    setValidatedBins(prev => ({
-      ...prev,
-      [invoiceId]: [...(prev[invoiceId] || []), newScannedItem]
-    }));
-
-    // Update invoice audit status
-    updateInvoiceAudit(invoiceId, {
-      scannedBins: newScannedCount,
-      expectedBins: totalCustomerItems,
-      auditComplete: isComplete
-    }, currentUser);
-
-    toast.success(`✅ All validations passed! Item scanned for Invoice ${invoiceId}!`, {
-      description: `${matchedInvoiceItem.customerItem || matchedInvoiceItem.part} | Bin Qty: ${binQuantity} | Progress: ${newScannedCount}/${totalCustomerItems}`,
-      duration: 4000,
-    });
 
     // Reset state for next scan
     setCustomerScan(null);
@@ -904,7 +1015,7 @@ const DocAudit = () => {
                 <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
               </Button>
               <div className="flex-1">
-                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Document Audit</h1>
+                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Doc Audit</h1>
                 <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Scan and validate BIN labels</p>
               </div>
             </div>
@@ -943,7 +1054,7 @@ const DocAudit = () => {
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
               <p>• Select delivery date (from invoice date) to filter invoices</p>
-              <p>• Delivery time + unloading location are taken from invoice data (or can be entered manually if missing)</p>
+              <p>• Delivery time + unloading loc are taken from invoice data (or can be entered manually if missing)</p>
               <p>• Select multiple invoices to audit them sequentially</p>
               <p>• Current user: <strong>{currentUser}</strong></p>
               {scheduleData?.uploadedAt && (
@@ -956,12 +1067,12 @@ const DocAudit = () => {
           </div>
         )}
         
-        {/* Selection Fields: Delivery Date, Delivery Time, Unloading Doc */}
+        {/* Selection Fields: Delivery Date, Delivery Time, Unloading Loc */}
         {invoicesWithSchedule.length > 0 && (
           <Card className="mb-6 border-2 border-primary">
             <CardHeader>
               <CardTitle>Configure Dispatch Details</CardTitle>
-              <CardDescription>Select delivery date (invoice date). Delivery time + unloading location are from invoice data.</CardDescription>
+              <CardDescription>Select delivery date (invoice date). Delivery time + unloading loc are from invoice data.</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
@@ -1014,6 +1125,20 @@ const DocAudit = () => {
                   )}
                 </div>
 
+                {/* Date Mismatch Warning Banner */}
+                {selectedDeliveryDate && mismatchDiagnostics.hasMismatch && (
+                  <div className="p-3 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200 mb-1">
+                      ⚠️ Date Mismatch Detected
+                    </p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      Selected Invoice Date ({formatDateAsLocalString(selectedDeliveryDate)}) doesn't match any Schedule SUPPLY DATE. 
+                      Schedule has {scheduleData?.items.length || 0} items, but none match this date. 
+                      You'll need to enter Delivery Time and Unloading Loc manually.
+                    </p>
+                  </div>
+                )}
+
                 {/* Step 2: Delivery Time Selection */}
                 {selectedDeliveryDate && (
                   <div className="space-y-3">
@@ -1055,7 +1180,7 @@ const DocAudit = () => {
                     {availableDeliveryTimes.length === 0 ? (
                       <div className="space-y-2 p-4 bg-muted/50 rounded-lg border-2 border-muted">
                         <p className="text-sm text-muted-foreground">
-                          No delivery times found in invoice data for this date. Enter manually:
+                          No delivery times found for this date. This usually means Invoice Date doesn't match Schedule SUPPLY DATE. Enter manually:
                         </p>
                         <Input
                           value={manualDeliveryTime}
@@ -1102,7 +1227,7 @@ const DocAudit = () => {
                   </div>
                 )}
 
-                {/* Step 3: Unloading Doc Selection */}
+                {/* Step 3: Unloading Loc Selection */}
                 {selectedDeliveryDate && (selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0 || availableDeliveryTimes.length === 0) && (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
@@ -1111,7 +1236,7 @@ const DocAudit = () => {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                         </svg>
-                        Step 3: Unloading Doc <span className="text-destructive">*</span>
+                        Step 3: Unloading Loc <span className="text-destructive">*</span>
                       </Label>
                       {availableUnloadingLocs.length > 1 && (
                         <div className="flex gap-2">
@@ -1144,7 +1269,7 @@ const DocAudit = () => {
                     {availableUnloadingLocs.length === 0 ? (
                       <div className="space-y-2 p-4 bg-muted/50 rounded-lg border-2 border-muted">
                         <p className="text-sm text-muted-foreground">
-                          No unloading locations found in invoice data for this date. Enter manually:
+                          No unloading locs found for this date. This usually means Invoice Date doesn't match Schedule SUPPLY DATE. Enter manually:
                         </p>
                         <Input
                           value={manualUnloadingLoc}
@@ -1153,7 +1278,7 @@ const DocAudit = () => {
                             setSelectedUnloadingLocs([]);
                             setSelectedInvoices([]);
                           }}
-                          placeholder="Enter unloading location"
+                          placeholder="Enter unloading loc"
                         />
                       </div>
                     ) : (
@@ -1184,7 +1309,7 @@ const DocAudit = () => {
                     )}
                     
                     {selectedUnloadingLocs.length === 0 && manualUnloadingLoc.trim().length === 0 && availableUnloadingLocs.length > 0 && (
-                      <p className="text-xs text-destructive">⚠️ Please select at least one unloading doc</p>
+                      <p className="text-xs text-destructive">⚠️ Please select at least one unloading loc</p>
                     )}
                   </div>
                 )}
@@ -1228,7 +1353,7 @@ const DocAudit = () => {
                   <Badge
                     variant={selectedUnloadingLocs.length > 0 || manualUnloadingLoc.trim().length > 0 ? "default" : "outline"}
                   >
-                    Unloading Doc:{" "}
+                    Unloading Loc:{" "}
                     {selectedUnloadingLocs.length > 0
                       ? `${selectedUnloadingLocs.length} selected`
                       : manualUnloadingLoc.trim().length > 0
@@ -1303,7 +1428,7 @@ const DocAudit = () => {
                     {(selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0) &&
                       ` | ⏰ ${selectedDeliveryTimes.length > 0 ? `${selectedDeliveryTimes.length} time(s)` : manualDeliveryTime.trim()}`}
                     {(selectedUnloadingLocs.length > 0 || manualUnloadingLoc.trim().length > 0) &&
-                      ` | 📍 ${selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} unloading doc(s)` : manualUnloadingLoc.trim()}`}
+                      ` | 📍 ${selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} unloading loc(s)` : manualUnloadingLoc.trim()}`}
                     {selectedInvoices.length > 0 && (
                       <span className="block mt-1 font-semibold text-blue-900 dark:text-blue-100">
                         ✅ {selectedInvoices.length} invoice(s) selected for audit
@@ -1519,9 +1644,12 @@ const DocAudit = () => {
                 {selectedInvoiceObjects.map(invoice => {
                   const uniqueItems = getUniqueCustomerItems(invoice);
                   const invoiceBins = validatedBins[invoice.id] || [];
-                  const scannedCount = invoiceBins.length;
-                  const totalCount = uniqueItems.length;
-                  const isComplete = scannedCount >= totalCount;
+                  const invoiceState = sharedInvoices.find(inv => inv.id === invoice.id) || invoice;
+                  const scannedCount = invoiceState.scannedBins || 0;
+                  const totalCount = (invoiceState.expectedBins && invoiceState.expectedBins > 0)
+                    ? invoiceState.expectedBins
+                    : uniqueItems.length;
+                  const isComplete = !!invoiceState.auditComplete || (totalCount > 0 && scannedCount >= totalCount);
                   
                   return (
                     <div key={invoice.id} className={`p-4 rounded-lg border-2 ${isComplete ? 'border-green-500 bg-green-50 dark:bg-green-950/20' : 'border-border bg-muted'}`}>
@@ -1556,58 +1684,41 @@ const DocAudit = () => {
                             </thead>
                             <tbody>
                               {uniqueItems.map((item, index) => {
-                                const scannedBin = invoiceBins.find(bin => 
-                                  bin.customerItem === item.customerItem && bin.itemNumber === item.itemNumber
-                                );
-                                const isScanned = !!scannedBin;
-                                
-                                // Get bin tracking data from invoice item if available
-                                const invoiceItem = invoice.items?.find((invItem: UploadedRow) => 
+                                const invoiceItem: any = invoice.items?.find((invItem: UploadedRow) => 
                                   (invItem.customerItem || invItem.part) === item.customerItem &&
                                   invItem.part === item.itemNumber
                                 );
-                                
-                                const binQuantity = scannedBin?.binQuantity || 
-                                  (invoiceItem as any)?.binQuantity || 
-                                  scannedBin?.binQuantity || 0;
-                                const scannedQuantity = scannedBin?.scannedQuantity || 
-                                  (invoiceItem as any)?.scanned_quantity || 0;
-                                const numberOfBins = scannedBin?.number_of_bins || 
-                                  (invoiceItem as any)?.number_of_bins || 0;
-                                const scannedBinsCount = scannedBin?.scanned_bins_count || 
-                                  (invoiceItem as any)?.scanned_bins_count || 0;
-                                
-                                const remainingQuantity = (item.quantity || 0) - scannedQuantity;
+
+                                const totalQty = Number(item.quantity || 0);
+                                const custBins = Number(invoiceItem?.cust_scanned_bins_count || 0);
+                                const custQty = Number(invoiceItem?.cust_scanned_quantity || 0);
+                                const inbdBins = Number(invoiceItem?.inbd_scanned_bins_count || 0);
+                                const inbdQty = Number(invoiceItem?.inbd_scanned_quantity || 0);
+                                const isLineComplete = totalQty > 0 && custQty === totalQty && inbdQty === totalQty;
                                 
                                 return (
-                                  <tr key={index} className={`border-t ${isScanned ? 'bg-green-100 dark:bg-green-950/40' : ''}`}>
+                                  <tr key={index} className={`border-t ${isLineComplete ? 'bg-green-100 dark:bg-green-950/40' : ''}`}>
                                     <td className="p-2 font-medium">{item.customerItem}</td>
                                     <td className="p-2">{item.itemNumber}</td>
                                     <td className="p-2 text-muted-foreground">{item.partDescription || 'N/A'}</td>
                                     <td className="p-2 font-semibold">{item.quantity || 0}</td>
-                                    <td className="p-2">{binQuantity || '-'}</td>
-                                    <td className="p-2">
-                                      {scannedQuantity > 0 ? (
-                                        <span className="font-semibold text-green-600 dark:text-green-400">
-                                          {scannedQuantity} / {item.quantity || 0}
-                                        </span>
-                                      ) : (
-                                        <span className="text-muted-foreground">-</span>
-                                      )}
+                                    <td className="p-2 font-semibold">{custBins}</td>
+                                    <td className="p-2 font-semibold">
+                                      <span className={custQty > 0 ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}>
+                                        {custQty} / {item.quantity || 0}
+                                      </span>
                                     </td>
-                                    <td className="p-2">{numberOfBins > 0 ? numberOfBins : '-'}</td>
-                                    <td className="p-2">
-                                      {numberOfBins > 0 ? (
-                                        <span className="font-semibold">
-                                          {scannedBinsCount} / {numberOfBins}
-                                        </span>
-                                      ) : (
-                                        <span className="text-muted-foreground">-</span>
-                                      )}
+                                    <td className="p-2 font-semibold">{inbdBins}</td>
+                                    <td className="p-2 font-semibold">
+                                      <span className={inbdQty > 0 ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}>
+                                        {inbdQty} / {item.quantity || 0}
+                                      </span>
                                     </td>
                                     <td className="p-2">
-                                      {isScanned ? (
-                                        <Badge variant="default" className="text-xs">✓ Scanned</Badge>
+                                      {isLineComplete ? (
+                                        <Badge variant="default" className="text-xs">✓ Complete</Badge>
+                                      ) : (custQty > 0 || inbdQty > 0) ? (
+                                        <Badge variant="secondary" className="text-xs">In Progress</Badge>
                                       ) : (
                                         <Badge variant="outline" className="text-xs">Pending</Badge>
                                       )}
@@ -2042,8 +2153,11 @@ const DocAudit = () => {
                       if (!invoiceData) return null;
                       
                       const uniqueItems = getUniqueCustomerItems(invoiceData);
-                      const bins = validatedBins[invoiceId] || [];
-                      const isComplete = bins.length >= uniqueItems.length;
+                      const expected = (invoiceData.expectedBins && invoiceData.expectedBins > 0)
+                        ? invoiceData.expectedBins
+                        : uniqueItems.length;
+                      const scanned = invoiceData.scannedBins || 0;
+                      const isComplete = !!invoiceData.auditComplete || (expected > 0 && scanned >= expected);
                       const alreadyAudited = invoiceInShared?.auditComplete;
                       
                       if (!isComplete || alreadyAudited) return null;
@@ -2056,7 +2170,7 @@ const DocAudit = () => {
                                 ✅ All items scanned for {invoiceId}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                {bins.length}/{uniqueItems.length} customer items validated. Click to complete audit.
+                                {scanned}/{expected} customer items complete. Click to complete audit.
                               </p>
                             </div>
                             <Button
@@ -2080,7 +2194,7 @@ const DocAudit = () => {
                                   return;
                                 }
                                 if (!unloadingLocValue) {
-                                  toast.error("Please select or enter unloading location");
+                                  toast.error("Please select or enter unloading loc");
                                   return;
                                 }
 
@@ -2417,7 +2531,7 @@ const DocAudit = () => {
       <LogsDialog
         open={showAuditLogs}
         onOpenChange={setShowAuditLogs}
-        title="Document Audit Logs"
+        title="Doc Audit Logs"
         logs={getAuditLogs()}
       />
     </div>

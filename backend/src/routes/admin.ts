@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { query } from '../config/database';
+import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { requireAdmin } from '../middleware/roleGuard';
 import { Server as SocketIOServer } from 'socket.io';
@@ -150,12 +150,71 @@ router.put('/exceptions/:id', async (req: AuthRequest, res: Response) => {
 
     const alert = result.rows[0];
 
-    // If approved, unblock the invoice
+    // If approved, unblock the invoice.
+    // Only clear/rollback pending customer scans for CUSTOMER-stage issues.
+    // For AUTOLIV/INBD-stage issues we must preserve the customer scan so users can resume from Autoliv step.
     if (status === 'approved' && alert.invoice_id) {
-      await query(
-        'UPDATE invoices SET blocked = false, blocked_at = NULL WHERE id = $1',
-        [alert.invoice_id]
-      );
+      await transaction(async (client) => {
+        // Unblock the invoice
+        await client.query(
+          'UPDATE invoices SET blocked = false, blocked_at = NULL WHERE id = $1',
+          [alert.invoice_id]
+        );
+
+        const validationStep = String(alert.validation_step || '');
+        const shouldCleanupCustomerStage =
+          validationStep === 'customer_qr_no_match' ||
+          validationStep === 'duplicate_customer_bin_scan' ||
+          validationStep === 'over_scan_customer';
+
+        if (!shouldCleanupCustomerStage) {
+          return;
+        }
+
+        // Get the mismatch alert's created_at timestamp to find scans created before the mismatch
+        const alertCreatedAt = alert.created_at;
+
+        // Find all pending customer scans for this invoice that were created before the mismatch alert
+        // These are scans that were recorded before the mismatch occurred
+        const pendingScans = await client.query(
+          `SELECT id, invoice_item_id, bin_quantity
+           FROM validated_barcodes
+           WHERE invoice_id = $1
+             AND scan_context = 'doc-audit'
+             AND scan_stage = 'customer'
+             AND status = 'pending'
+             AND scanned_at < $2`,
+          [alert.invoice_id, alertCreatedAt]
+        );
+
+        // Rollback counters for each pending scan
+        for (const scan of pendingScans.rows) {
+          const binQty = scan.bin_quantity || 0;
+          if (binQty > 0 && scan.invoice_item_id) {
+            // Decrement counters for this invoice item
+            await client.query(
+              `UPDATE invoice_items
+               SET cust_scanned_quantity = GREATEST(COALESCE(cust_scanned_quantity, 0) - $1, 0),
+                   cust_scanned_bins_count = GREATEST(COALESCE(cust_scanned_bins_count, 0) - 1, 0)
+               WHERE id = $2`,
+              [binQty, scan.invoice_item_id]
+            );
+          }
+        }
+
+        // Delete the pending scans
+        if (pendingScans.rows.length > 0) {
+          await client.query(
+            `DELETE FROM validated_barcodes
+             WHERE invoice_id = $1
+               AND scan_context = 'doc-audit'
+               AND scan_stage = 'customer'
+               AND status = 'pending'
+               AND scanned_at < $2`,
+            [alert.invoice_id, alertCreatedAt]
+          );
+        }
+      });
     }
 
     // Broadcast update

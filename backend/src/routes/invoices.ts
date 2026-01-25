@@ -133,7 +133,11 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
           partDescription: item.part_description,
           number_of_bins: item.number_of_bins || 0,
           scanned_quantity: item.scanned_quantity || 0,
-          scanned_bins_count: item.scanned_bins_count || 0
+          scanned_bins_count: item.scanned_bins_count || 0,
+          cust_scanned_quantity: item.cust_scanned_quantity || 0,
+          cust_scanned_bins_count: item.cust_scanned_bins_count || 0,
+          inbd_scanned_quantity: item.inbd_scanned_quantity || 0,
+          inbd_scanned_bins_count: item.inbd_scanned_bins_count || 0,
         }))
       };
     }));
@@ -253,7 +257,11 @@ router.get('/:id', authenticateToken, async (req: AuthRequest, res: Response) =>
           partDescription: item.part_description,
           number_of_bins: item.number_of_bins || 0,
           scanned_quantity: item.scanned_quantity || 0,
-          scanned_bins_count: item.scanned_bins_count || 0
+          scanned_bins_count: item.scanned_bins_count || 0,
+          cust_scanned_quantity: item.cust_scanned_quantity || 0,
+          cust_scanned_bins_count: item.cust_scanned_bins_count || 0,
+          inbd_scanned_quantity: item.inbd_scanned_quantity || 0,
+          inbd_scanned_bins_count: item.inbd_scanned_bins_count || 0,
         })),
         validatedBarcodes: barcodesResult.rows.map((b: any) => ({
           customerBarcode: b.customer_barcode,

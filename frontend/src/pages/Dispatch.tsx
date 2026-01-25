@@ -39,6 +39,7 @@ interface UploadedRow {
 }
 
 interface ValidatedBarcodePair {
+  id?: string; // Scan ID from database (for deletion)
   customerBarcode: string;
   autolivBarcode: string;
   binNumber?: string;
@@ -120,6 +121,67 @@ const Dispatch = () => {
     setSelectInvoiceValue("");
   }, []);
 
+  // Hydrate loadedBarcodes with existing loading-dispatch scans when invoices are selected
+  // This ensures cross-device consistency and allows resuming a dispatch session
+  useEffect(() => {
+    const loadExistingScans = async () => {
+      if (selectedInvoices.length === 0) {
+        setLoadedBarcodes([]);
+        return;
+      }
+
+      try {
+        const allScans: ValidatedBarcodePair[] = [];
+        
+        // Fetch loading-dispatch scans for each selected invoice
+        for (const invoiceId of selectedInvoices) {
+          try {
+            const scansResponse = await auditApi.getScans(invoiceId, 'loading-dispatch');
+            if (scansResponse.success && scansResponse.scans) {
+              const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+              
+              scansResponse.scans.forEach((scan: any) => {
+                // Find matching invoice item for this scan
+                const matchedItem = invoice?.items?.find((item: any) => 
+                  item.customerItem === scan.customerItem
+                );
+                
+                allScans.push({
+                  id: scan.id, // Include scan ID for deletion
+                  customerBarcode: scan.customerBarcode || '',
+                  autolivBarcode: scan.autolivBarcode || '',
+                  binNumber: scan.customerBinNumber || scan.binNumber || undefined,
+                  quantity: scan.binQuantity?.toString() || scan.quantity?.toString() || undefined, // Bin quantity from QR scan
+                  partCode: scan.customerItem || undefined,
+                  customerItem: scan.customerItem || undefined,
+                  itemNumber: scan.itemNumber || matchedItem?.part || undefined,
+                  actualQuantity: matchedItem?.qty || undefined // Total quantity from invoice item (for reference only)
+                });
+              });
+            }
+          } catch (error) {
+            console.error(`Error loading scans for invoice ${invoiceId}:`, error);
+            // Continue with other invoices even if one fails
+          }
+        }
+        
+        // Update loadedBarcodes state with fetched scans
+        setLoadedBarcodes(allScans);
+        
+        if (allScans.length > 0) {
+          toast.info(`Loaded ${allScans.length} existing bin scan(s)`, {
+            duration: 3000
+          });
+        }
+      } catch (error) {
+        console.error('Error loading existing scans:', error);
+        // Don't show error toast - this is a background sync operation
+      }
+    };
+
+    loadExistingScans();
+  }, [selectedInvoices]); // Re-run when selected invoices change
+
   // Helper function to extract unique Customer Items
   const getUniqueCustomerItems = (invoice: InvoiceData | undefined) => {
     if (!invoice || !invoice.items || invoice.items.length === 0) return [];
@@ -151,12 +213,29 @@ const Dispatch = () => {
     return Array.from(customerItemMap.values());
   };
 
-  const getExpectedBarcodes = () => {
+  // Get expected total bins across all selected invoices (based on customer-bin counts from Doc Audit)
+  const getExpectedBins = () => {
     const selectedInvoiceData = sharedInvoices.filter(inv => 
       selectedInvoices.includes(inv.id) && inv.auditComplete
     );
-    return selectedInvoiceData.reduce((total, inv) => total + (inv.scannedBins || 0), 0);
+    
+    let totalExpectedBins = 0;
+    
+    selectedInvoiceData.forEach(invoice => {
+      if (invoice.items && invoice.items.length > 0) {
+        invoice.items.forEach((item: any) => {
+          // Priority: cust_scanned_bins_count > number_of_bins
+          const expectedBinsForItem = item.cust_scanned_bins_count || item.number_of_bins || 0;
+          totalExpectedBins += expectedBinsForItem;
+        });
+      }
+    });
+    
+    return totalExpectedBins;
   };
+  
+  // Legacy function name for backward compatibility (now uses bin-based counting)
+  const getExpectedBarcodes = getExpectedBins;
 
   const getNextUnscannedBarcodePair = () => {
     const selectedInvoiceData = sharedInvoices.filter(inv => 
@@ -247,38 +326,50 @@ const Dispatch = () => {
     let matchedInvoiceId: string | undefined;
     const scannedPartCode = dispatchCustomerScan.partCode?.trim();
     
-    // Try to find matching invoice item
-    for (const invoiceId of selectedInvoices) {
-      const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-      if (invoice && invoice.items && scannedPartCode) {
-        matchedInvoiceItem = invoice.items.find((item: UploadedRow) => 
-          item.part && item.part.toString().trim() === scannedPartCode
+    if (!scannedPartCode) {
+      toast.error("⚠️ Invalid Scan!", {
+        description: "Customer label part code not found. Please rescan.",
+      });
+      setDispatchCustomerScan(null);
+      return;
+    }
+    
+    // Match customer label partCode to invoice_item.customerItem (not part/itemNumber)
+    // Customer barcode part number corresponds to customer_item in the invoice
+    const matchingInvoices: Array<{ invoiceId: string; item: UploadedRow }> = [];
+    
+        for (const invoiceId of selectedInvoices) {
+          const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
+          if (invoice && invoice.items) {
+        const matchedItem = invoice.items.find((item: UploadedRow) => 
+          item.customerItem && item.customerItem.trim() === scannedPartCode
         );
-        if (matchedInvoiceItem) {
-          matchedInvoiceId = invoiceId;
-          break;
+        if (matchedItem) {
+          matchingInvoices.push({ invoiceId, item: matchedItem });
         }
       }
     }
     
-    // If no match by part code, try to match by customer item (from customer barcode)
-    if (!matchedInvoiceItem && selectedInvoices.length > 0) {
-      const customerItemFromBarcode = dispatchCustomerScan.partCode?.trim();
-      if (customerItemFromBarcode) {
-        for (const invoiceId of selectedInvoices) {
-          const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-          if (invoice && invoice.items) {
-            // Match by customer_item (customer barcode part number should match customer_item)
-            matchedInvoiceItem = invoice.items.find((item: UploadedRow) => 
-              item.customerItem && item.customerItem.trim() === customerItemFromBarcode
-            );
-            if (matchedInvoiceItem) {
-              matchedInvoiceId = invoiceId;
-              break;
-            }
-          }
-        }
-      }
+    // Handle ambiguous matches (same customerItem in multiple selected invoices)
+    if (matchingInvoices.length === 0) {
+      toast.error("⚠️ Item Not Found!", {
+        description: `Customer item "${scannedPartCode}" not found in any selected invoice.`,
+      });
+      setDispatchCustomerScan(null);
+      return;
+    } else if (matchingInvoices.length > 1) {
+      // Ambiguous match: same customerItem exists in multiple invoices
+      // For now, use the first match but warn the user
+      toast.warning("⚠️ Ambiguous Match!", {
+        description: `Customer item "${scannedPartCode}" found in ${matchingInvoices.length} invoices. Using first match.`,
+        duration: 5000
+      });
+      matchedInvoiceItem = matchingInvoices[0].item;
+      matchedInvoiceId = matchingInvoices[0].invoiceId;
+    } else {
+      // Single match (ideal case)
+      matchedInvoiceItem = matchingInvoices[0].item;
+      matchedInvoiceId = matchingInvoices[0].invoiceId;
     }
 
     // Use first selected invoice if no match found
@@ -298,7 +389,7 @@ const Dispatch = () => {
     // Save scan to database immediately with bin_number and bin_quantity
     if (invoiceIdToUse) {
       try {
-        await auditApi.recordScan(invoiceIdToUse, {
+        const response = await auditApi.recordScan(invoiceIdToUse, {
           customerBarcode: dispatchCustomerScan.rawValue,
           autolivBarcode: null,
           customerItem: matchedInvoiceItem?.customerItem || dispatchCustomerScan.partCode || 'N/A',
@@ -310,19 +401,65 @@ const Dispatch = () => {
           status: 'matched',
           scanContext: 'loading-dispatch'
         });
+        
+        // Update newPair with scan ID from response
+        newPair.id = response.scanId || undefined;
+        
+        // Update local state only after successful API call
+        setLoadedBarcodes(prev => [...prev, newPair]);
+        
+        // Show progress info if available
+        if (response.expectedBinsForItem !== null && response.loadedBinsForItem !== null) {
+          const remaining = response.expectedBinsForItem - response.loadedBinsForItem;
+          if (remaining > 0) {
+            toast.success(`✅ Bin loaded! ${remaining} remaining for this item`, {
+              duration: 3000
+            });
+          } else {
+            toast.success(`✅ Bin loaded! All bins scanned for this item`, {
+              duration: 3000
+            });
+          }
+        }
       } catch (error: any) {
         console.error('Error saving loading scan to database:', error);
+        
+        // Handle specific error types from backend
+        const errorMessage = error?.message || error?.response?.message || 'Unknown error';
+        const isDuplicate = errorMessage.includes('Duplicate') || errorMessage.includes('already been scanned');
+        const isOverScan = errorMessage.includes('Over-scan') || errorMessage.includes('Cannot scan more bins');
+        const isBlocked = errorMessage.includes('blocked');
+        
+        if (isDuplicate || isOverScan) {
+          toast.error(`⚠️ ${isDuplicate ? 'Duplicate Scan' : 'Over-scan Prevented'}`, {
+            description: errorMessage,
+            duration: 6000
+          });
+        } else if (isBlocked) {
+          toast.error('⚠️ Invoice Blocked', {
+            description: errorMessage + ' Please contact admin.',
+            duration: 8000
+          });
+          // Refresh data to get updated blocked status
+          await refreshData();
+        } else {
         toast.error('Failed to save scan to database', {
-          description: error.message || 'Please try again',
+            description: errorMessage || 'Please try again',
           duration: 5000
         });
-        // Continue with local state update even if API fails
+        }
+        
+        // Don't update local state on error
+        setDispatchCustomerScan(null);
+        return;
       }
+    } else {
+      // No invoice matched, don't proceed
+      setDispatchCustomerScan(null);
+      return;
     }
     
-    // Update local state optimistically
-    setLoadedBarcodes(prev => [...prev, newPair]);
-    
+    // Update local invoice tracking (binsLoaded is legacy but kept for compatibility)
     selectedInvoices.forEach(invoiceId => {
       const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
       if (invoice) {
@@ -330,16 +467,86 @@ const Dispatch = () => {
       }
     });
     
-    const displayInfo = matchedInvoiceItem 
-      ? `${matchedInvoiceItem.customerItem || dispatchCustomerScan.partCode} - Qty: ${matchedInvoiceItem.qty || dispatchCustomerScan.quantity}`
-      : `${dispatchCustomerScan.partCode} - Qty: ${dispatchCustomerScan.quantity}`;
-    
-    toast.success("✅ Item loaded successfully!", {
-      description: displayInfo
-    });
-    
     setDispatchCustomerScan(null);
     setDispatchAutolivScan(null);
+  };
+
+  const handleDeleteBin = async (binIndex: number, binId?: string, invoiceId?: string) => {
+    const binToDelete = loadedBarcodes[binIndex];
+    
+    // Find invoice ID if not provided
+    if (!invoiceId) {
+      invoiceId = selectedInvoices.find(id => {
+        const invoice = sharedInvoices.find(inv => inv.id === id);
+        return invoice?.items?.some((item: any) => 
+          item.customerItem === binToDelete.customerItem
+        );
+      });
+    }
+    
+    if (!invoiceId) {
+      toast.error("Cannot delete bin", {
+        description: "Invoice ID not found. Please refresh and try again.",
+      });
+      return;
+    }
+    
+    // If no scan ID, try to find it from the backend
+    if (!binId) {
+      try {
+        const scansResponse = await auditApi.getScans(invoiceId, 'loading-dispatch');
+        if (scansResponse.success && scansResponse.scans) {
+          const matchingScan = scansResponse.scans.find((scan: any) => 
+            scan.customerBarcode === binToDelete.customerBarcode ||
+            (scan.customerBinNumber === binToDelete.binNumber && scan.customerItem === binToDelete.customerItem)
+          );
+          
+          if (matchingScan?.id) {
+            binId = matchingScan.id;
+          } else {
+            // If still not found, just remove from UI (optimistic)
+            setLoadedBarcodes(prev => prev.filter((_, idx) => idx !== binIndex));
+            toast.warning("Bin removed from UI", {
+              description: "Could not find scan in database. Removed from local view only.",
+            });
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Error finding scan ID:', error);
+        toast.error("Cannot delete bin", {
+          description: "Failed to find scan in database.",
+        });
+        return;
+      }
+    }
+    
+    // Confirm deletion
+    const binInfo = binToDelete.binNumber 
+      ? `Bin ${binToDelete.binNumber} (${binToDelete.customerItem || binToDelete.partCode || 'item'})`
+      : `${binToDelete.customerItem || binToDelete.partCode || 'item'}`;
+    
+    if (!confirm(`Delete bin scan for ${binInfo}?`)) {
+      return;
+    }
+    
+    try {
+      await auditApi.deleteScan(invoiceId, binId);
+      
+      // Remove from local state
+      setLoadedBarcodes(prev => prev.filter((_, idx) => idx !== binIndex));
+      
+      toast.success("✅ Bin deleted successfully", {
+        description: `Removed bin scan for ${binInfo}`,
+      });
+    } catch (error: any) {
+      console.error('Error deleting bin:', error);
+      const errorMessage = error?.message || error?.response?.message || 'Failed to delete bin';
+      toast.error("Failed to delete bin", {
+        description: errorMessage,
+        duration: 5000
+      });
+    }
   };
 
   const handleGenerateGatepass = async () => {
@@ -352,10 +559,10 @@ const Dispatch = () => {
       return;
     }
 
-    const expectedBarcodes = getExpectedBarcodes();
-    if (loadedBarcodes.length < expectedBarcodes) {
-      toast.error("⚠️ Not All Items Loaded!", {
-        description: `Please scan all items. Loaded: ${loadedBarcodes.length}/${expectedBarcodes}`,
+    const expectedBins = getExpectedBins();
+    if (loadedBarcodes.length < expectedBins) {
+      toast.error("⚠️ Not All Bins Loaded!", {
+        description: `Please scan all bins. Loaded: ${loadedBarcodes.length}/${expectedBins}`,
       });
       return;
     }
@@ -774,7 +981,7 @@ const Dispatch = () => {
               <div class="info-value">${totalQuantity}</div>
             </div>
             <div class="info-item">
-              <div class="info-label">Total Items</div>
+              <div class="info-label">Total Bins</div>
               <div class="info-value">${loadedBarcodes.length}</div>
             </div>
           </div>
@@ -785,7 +992,7 @@ const Dispatch = () => {
           </div>
 
           <div class="invoices-section">
-            <h3 style="margin-bottom: 10px; font-size: 16px;">Items Loaded:</h3>
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Bins Loaded:</h3>
             <table class="items-table">
               <thead>
                 <tr>
@@ -958,7 +1165,7 @@ const Dispatch = () => {
       yPos += 6;
       pdf.text(`Total Quantity: ${totalQuantity}`, margin, yPos);
       yPos += 6;
-      pdf.text(`Total Items: ${loadedBarcodes.length}`, margin, yPos);
+      pdf.text(`Total Bins: ${loadedBarcodes.length}`, margin, yPos);
       yPos += 10;
 
       // Invoice Details Table
@@ -1035,7 +1242,7 @@ const Dispatch = () => {
 
       pdf.setFont(undefined, 'bold');
       pdf.setFontSize(10);
-      pdf.text('Items Loaded:', margin, yPos);
+      pdf.text('Bins Loaded:', margin, yPos);
       yPos += 7;
 
       pdf.setFontSize(8);
@@ -1415,11 +1622,11 @@ const Dispatch = () => {
                       <div className="flex justify-between text-sm mb-2">
                         <span className="font-medium">Loading Progress</span>
                         <span className="text-muted-foreground">
-                          {loadedBarcodes.length} of {getExpectedBarcodes()} items loaded
+                          {loadedBarcodes.length} of {getExpectedBins()} bins loaded
                         </span>
                       </div>
                       <Progress 
-                        value={getExpectedBarcodes() > 0 ? (loadedBarcodes.length / getExpectedBarcodes()) * 100 : 0} 
+                        value={getExpectedBins() > 0 ? (loadedBarcodes.length / getExpectedBins()) * 100 : 0} 
                         className="h-2"
                       />
                     </div>
@@ -1495,39 +1702,66 @@ const Dispatch = () => {
                     {/* Loaded Items List */}
                     {loadedBarcodes.length > 0 && (
                       <div className="border rounded-lg p-3 sm:p-4 max-h-96 overflow-y-auto">
-                        <p className="text-xs sm:text-sm font-medium mb-3">Loaded Items:</p>
+                        <p className="text-xs sm:text-sm font-medium mb-3">Loaded Bins:</p>
                         <div className="space-y-3">
-                          {loadedBarcodes.map((barcodePair, index) => (
-                            <div key={index} className="border rounded-lg p-3 bg-muted">
-                              <div className="flex items-start justify-between mb-2">
-                                <span className="text-xs font-semibold text-muted-foreground">Item #{index + 1}</span>
-                                <Badge variant="default" className="text-xs">
-                                  <CheckCircle2 className="h-3 w-3 mr-1" />
-                                  Loaded
-                                </Badge>
+                          {loadedBarcodes.map((barcodePair, index) => {
+                            // Find the invoice ID for this bin (for deletion)
+                            const invoiceIdForBin = selectedInvoices.find(id => {
+                              const invoice = sharedInvoices.find(inv => inv.id === id);
+                              return invoice?.items?.some((item: any) => 
+                                item.customerItem === barcodePair.customerItem
+                              );
+                            });
+                            
+                            return (
+                              <div key={barcodePair.id || index} className="border rounded-lg p-3 bg-muted">
+                                <div className="flex items-start justify-between mb-2">
+                                  <span className="text-xs font-semibold text-muted-foreground">Bin #{index + 1}</span>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="default" className="text-xs">
+                                      <CheckCircle2 className="h-3 w-3 mr-1" />
+                                      Loaded
+                                    </Badge>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleDeleteBin(index, barcodePair.id, invoiceIdForBin)}
+                                      className="h-6 w-6 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                      title="Delete this bin scan"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                                <div className="space-y-2 text-sm">
+                                  {barcodePair.customerItem && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-muted-foreground min-w-[100px]">Customer Item:</span>
+                                      <span className="font-medium text-xs">{barcodePair.customerItem}</span>
+                                    </div>
+                                  )}
+                                  {barcodePair.binNumber && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-muted-foreground min-w-[100px]">Bin Number:</span>
+                                      <span className="font-mono text-xs">{barcodePair.binNumber}</span>
+                                    </div>
+                                  )}
+                                  {barcodePair.itemNumber && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-muted-foreground min-w-[100px]">Item Number:</span>
+                                      <span className="font-mono text-xs">{barcodePair.itemNumber}</span>
+                                    </div>
+                                  )}
+                                  {barcodePair.quantity && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-muted-foreground min-w-[100px]">Bin Quantity:</span>
+                                      <span className="font-semibold text-xs">{barcodePair.quantity}</span>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                              <div className="space-y-2 text-sm">
-                                {barcodePair.customerItem && (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs text-muted-foreground min-w-[100px]">Customer Item:</span>
-                                    <span className="font-medium text-xs">{barcodePair.customerItem}</span>
-                                  </div>
-                                )}
-                                {barcodePair.itemNumber && (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs text-muted-foreground min-w-[100px]">Item Number:</span>
-                                    <span className="font-mono text-xs">{barcodePair.itemNumber}</span>
-                                  </div>
-                                )}
-                                {(barcodePair.actualQuantity !== undefined) && (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs text-muted-foreground min-w-[100px]">Quantity:</span>
-                                    <span className="font-semibold text-xs">{barcodePair.actualQuantity}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -1537,7 +1771,7 @@ const Dispatch = () => {
             )}
 
             {/* Summary */}
-            {selectedInvoices.length > 0 && loadedBarcodes.length === getExpectedBarcodes() && (
+            {selectedInvoices.length > 0 && loadedBarcodes.length === getExpectedBins() && (
               <Card>
                 <CardHeader>
                   <CardTitle>Loading Summary</CardTitle>
@@ -1553,11 +1787,9 @@ const Dispatch = () => {
                       <span className="font-semibold">{selectedInvoices.length}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Total Items</span>
+                      <span className="text-muted-foreground">Total Bins</span>
                       <span className="font-semibold">
-                        {sharedInvoices
-                          .filter(inv => selectedInvoices.includes(inv.id))
-                          .reduce((sum, inv) => sum + inv.scannedBins, 0)}
+                        {getExpectedBins()}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -1719,16 +1951,12 @@ const Dispatch = () => {
                       <p className="text-xs font-semibold text-muted-foreground mb-2">QR Code Contains:</p>
                       <div className="text-xs space-y-1 text-foreground">
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Customer:</span>
-                          <span className="font-medium">{[...new Set(sharedInvoices.filter(inv => selectedInvoices.includes(inv.id)).map(inv => inv.customer))].join(", ")}</span>
+                          <span className="text-muted-foreground">Total Invoices:</span>
+                          <span className="font-medium">1</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Part Codes:</span>
-                          <span className="font-medium">{[...new Set(loadedBarcodes.map(b => b.partCode).filter(Boolean))].length} unique</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Bin Numbers:</span>
-                          <span className="font-medium">{[...new Set(loadedBarcodes.map(b => b.binNumber).filter(Boolean))].length} unique</span>
+                          <span className="text-muted-foreground">Total Bins:</span>
+                          <span className="font-medium">68</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Quantity:</span>

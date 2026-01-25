@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
-import { invoicesApi, scheduleApi, auditApi, logsApi } from "@/lib/api";
+import { invoicesApi, scheduleApi, auditApi, logsApi, adminApi } from "@/lib/api";
 import { getCustomerCode } from "@/lib/customerCodes";
 import { 
   initSocket, 
@@ -8,7 +8,9 @@ import {
   subscribeToScheduleUpdated,
   subscribeToAuditProgress,
   subscribeToAuditScan,
-  subscribeToDispatchCompleted 
+  subscribeToDispatchCompleted,
+  subscribeToNewAlert,
+  subscribeToAlertResolved
 } from "@/lib/socket";
 
 // Schedule data from the schedule file (each row from each sheet)
@@ -278,6 +280,36 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
           timestamp: new Date(log.timestamp)
         })));
       }
+
+      // Fetch exception alerts for admin (source of truth is backend)
+      const userRaw = localStorage.getItem('user');
+      let role: 'admin' | 'user' = 'user';
+      try {
+        const parsed = userRaw ? JSON.parse(userRaw) : null;
+        role = (parsed?.role === 'admin' ? 'admin' : 'user');
+      } catch {
+        role = 'user';
+      }
+
+      if (role === 'admin') {
+        const exceptionsResponse = await adminApi.getExceptions();
+        if (exceptionsResponse?.success && Array.isArray(exceptionsResponse.alerts)) {
+          setMismatchAlerts(exceptionsResponse.alerts.map((a: any) => ({
+            id: a.id,
+            user: a.user,
+            customer: a.customer,
+            invoiceId: a.invoiceId,
+            step: a.step,
+            validationStep: a.validationStep,
+            customerScan: a.customerScan,
+            autolivScan: a.autolivScan,
+            status: a.status,
+            reviewedBy: a.reviewedBy || undefined,
+            reviewedAt: a.reviewedAt ? new Date(a.reviewedAt) : undefined,
+            timestamp: a.timestamp ? new Date(a.timestamp) : new Date(),
+          })));
+        }
+      }
     } catch (error) {
       console.error('Error refreshing data:', error);
     } finally {
@@ -341,12 +373,22 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         refreshData();
       });
 
+      const unsubAlertNew = subscribeToNewAlert(() => {
+        refreshData();
+      });
+
+      const unsubAlertResolved = subscribeToAlertResolved(() => {
+        refreshData();
+      });
+
       return () => {
         unsubInvoices();
         unsubSchedule();
         unsubAudit();
         unsubAuditScan();
         unsubDispatch();
+        unsubAlertNew();
+        unsubAlertResolved();
         disconnectSocket();
       };
     }
@@ -477,6 +519,21 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
         ? { ...alert, status, reviewedBy, reviewedAt: new Date() }
         : alert
     ));
+
+    // Persist admin decisions to backend for real exception workflow
+    try {
+      const userRaw = localStorage.getItem('user');
+      const parsed = userRaw ? JSON.parse(userRaw) : null;
+      const role = parsed?.role === 'admin' ? 'admin' : 'user';
+      // Backend alerts use UUIDs; local-only alerts use "mismatch-..." ids.
+      if (role === 'admin' && !String(alertId).startsWith('mismatch-')) {
+        adminApi.resolveException(alertId, status).catch((e) => {
+          console.error('Failed to resolve exception:', e);
+        });
+      }
+    } catch (e) {
+      console.error('Failed to resolve exception:', e);
+    }
   }, []);
 
   const getPendingMismatches = useCallback(() => {

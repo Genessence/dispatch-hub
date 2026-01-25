@@ -107,18 +107,27 @@ const fetchWithAuth = async (endpoint: string, options: RequestInit = {}): Promi
 
 export const authApi = {
   login: async (usernameOrEmail: string, password: string) => {
-    const response = await fetch(`${API_URL || ''}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ usernameOrEmail, password })
-    });
+    try {
+      const response = await fetch(`${API_URL || ''}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usernameOrEmail, password })
+      });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Login failed');
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Login failed' }));
+        throw new Error(error.error || 'Login failed');
+      }
+
+      return response.json();
+    } catch (error: any) {
+      // Handle network errors (connection refused, unreachable, etc.)
+      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+        throw new Error('Cannot connect to server. Please ensure the backend server is running on port 3001.');
+      }
+      // Re-throw other errors as-is
+      throw error;
     }
-
-    return response.json();
   },
 
   verify: async () => {
@@ -287,9 +296,27 @@ export const auditApi = {
     });
   },
 
+  recordStageScan: async (invoiceId: string, scanData: {
+    stage: 'customer' | 'inbd';
+    customerBarcode?: string;
+    autolivBarcode?: string;
+    scanContext?: 'doc-audit' | 'loading-dispatch';
+  }) => {
+    return fetchWithAuth(`/api/audit/${invoiceId}/scan-stage`, {
+      method: 'POST',
+      body: JSON.stringify(scanData)
+    });
+  },
+
   getScans: async (invoiceId: string, scanContext?: 'doc-audit' | 'loading-dispatch') => {
     const query = scanContext ? `?scanContext=${scanContext}` : '';
     return fetchWithAuth(`/api/audit/${invoiceId}/scans${query}`);
+  },
+
+  deleteScan: async (invoiceId: string, scanId: string) => {
+    return fetchWithAuth(`/api/audit/${invoiceId}/scans/${scanId}`, {
+      method: 'DELETE'
+    });
   },
 
   reportMismatch: async (data: {
