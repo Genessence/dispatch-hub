@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import jsPDF from "jspdf";
@@ -21,11 +22,13 @@ import {
   Download
 } from "lucide-react";
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
+import { useKeyboardBarcodeScanner } from "@/hooks/useKeyboardBarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
 import { QRCodeSVG } from "qrcode.react";
 import { auditApi, dispatchApi } from "@/lib/api";
+import { buildGatepassSummary } from "@/lib/gatepassSummary";
 
 interface UploadedRow {
   invoice: string;
@@ -40,6 +43,7 @@ interface UploadedRow {
 
 interface ValidatedBarcodePair {
   id?: string; // Scan ID from database (for deletion)
+  invoiceId: string; // Source invoice for this bin scan (required for correct grouping/deletion)
   customerBarcode: string;
   autolivBarcode: string;
   binNumber?: string;
@@ -48,6 +52,7 @@ interface ValidatedBarcodePair {
   customerItem?: string;
   itemNumber?: string;
   actualQuantity?: number;
+  scannedAt?: string;
 }
 
 const Dispatch = () => {
@@ -75,9 +80,11 @@ const Dispatch = () => {
   // State management
   const [vehicleNumber, setVehicleNumber] = useState("");
   const [selectedInvoices, setSelectedInvoices] = useState<string[]>([]);
+  const [activeInvoiceId, setActiveInvoiceId] = useState<string | null>(null);
+  const [selectedInvoicesExpandedId, setSelectedInvoicesExpandedId] = useState<string | null>(null);
   const [gatepassGenerated, setGatepassGenerated] = useState(false);
   const [dispatchCustomerScan, setDispatchCustomerScan] = useState<BarcodeData | null>(null);
-  const [dispatchAutolivScan, setDispatchAutolivScan] = useState<BarcodeData | null>(null);
+  const [dispatchScanAlert, setDispatchScanAlert] = useState<string | null>(null);
   const [loadedBarcodes, setLoadedBarcodes] = useState<ValidatedBarcodePair[]>([]);
   const [selectInvoiceValue, setSelectInvoiceValue] = useState<string>("");
   const [gatepassNumber, setGatepassNumber] = useState<string>("");
@@ -86,6 +93,8 @@ const Dispatch = () => {
     dispatchDate?: string;
     totalNumberOfBins?: number;
     supplyDates?: string[];
+    /** Snapshot of invoice ids used for this gatepass (prevents post-dispatch auto-clears from affecting preview/qr/print/pdf). */
+    invoiceIds?: string[];
     invoices?: Array<{
       id: string;
       deliveryDate?: string | null;
@@ -98,8 +107,27 @@ const Dispatch = () => {
   const [showDispatchLogs, setShowDispatchLogs] = useState(false);
   const [showInvoiceQRScanner, setShowInvoiceQRScanner] = useState(false);
 
+  // Keep active invoice in sync with selected invoices.
+  useEffect(() => {
+    if (selectedInvoices.length === 0) {
+      setActiveInvoiceId(null);
+      setSelectedInvoicesExpandedId(null);
+      return;
+    }
+    if (!activeInvoiceId || !selectedInvoices.includes(activeInvoiceId)) {
+      setActiveInvoiceId(selectedInvoices[0]);
+    }
+    if (selectedInvoicesExpandedId && !selectedInvoices.includes(selectedInvoicesExpandedId)) {
+      setSelectedInvoicesExpandedId(null);
+    }
+  }, [selectedInvoices, activeInvoiceId, selectedInvoicesExpandedId]);
+
   // Clear selected invoices if they've been dispatched
   useEffect(() => {
+    // After gatepass generation we intentionally keep the snapshot visible (preview/print/pdf/qr).
+    // User explicitly resets via "New Dispatch".
+    if (gatepassGenerated) return;
+
     if (selectedInvoices.length > 0) {
       const stillAvailable = selectedInvoices.filter(id => {
         const invoice = sharedInvoices.find(inv => inv.id === id);
@@ -114,7 +142,7 @@ const Dispatch = () => {
         }
       }
     }
-  }, [sharedInvoices, selectedInvoices]);
+  }, [sharedInvoices, selectedInvoices, gatepassGenerated]);
 
   // Reset select value when switching to dispatch
   useEffect(() => {
@@ -148,6 +176,7 @@ const Dispatch = () => {
                 
                 allScans.push({
                   id: scan.id, // Include scan ID for deletion
+                  invoiceId,
                   customerBarcode: scan.customerBarcode || '',
                   autolivBarcode: scan.autolivBarcode || '',
                   binNumber: scan.customerBinNumber || scan.binNumber || undefined,
@@ -155,7 +184,8 @@ const Dispatch = () => {
                   partCode: scan.customerItem || undefined,
                   customerItem: scan.customerItem || undefined,
                   itemNumber: scan.itemNumber || matchedItem?.part || undefined,
-                  actualQuantity: matchedItem?.qty || undefined // Total quantity from invoice item (for reference only)
+                  actualQuantity: matchedItem?.qty || undefined, // Total quantity from invoice item (for reference only)
+                  scannedAt: scan.scannedAt || undefined
                 });
               });
             }
@@ -194,15 +224,23 @@ const Dispatch = () => {
     }>();
     
     invoice.items.forEach((item: UploadedRow) => {
-      const customerItem = item.customerItem || '';
+      // Customer label partCode corresponds to customerItem, but fall back to part for robustness.
+      const customerItem = (item.customerItem || item.part || '').trim();
+      const itemNumber = (item.part || '').trim();
+      const key = `${customerItem}||${itemNumber}`;
+
       if (customerItem) {
-        if (customerItemMap.has(customerItem)) {
-          const existing = customerItemMap.get(customerItem)!;
+        if (customerItemMap.has(key)) {
+          const existing = customerItemMap.get(key)!;
           existing.quantity += item.qty;
+          // Prefer a non-empty description if we didn't already have one.
+          if (!existing.partDescription && item.partDescription) {
+            existing.partDescription = item.partDescription;
+          }
         } else {
-          customerItemMap.set(customerItem, {
-            customerItem: customerItem,
-            itemNumber: item.part || '',
+          customerItemMap.set(key, {
+            customerItem,
+            itemNumber,
             partDescription: item.partDescription || '',
             quantity: item.qty
           });
@@ -212,6 +250,47 @@ const Dispatch = () => {
     
     return Array.from(customerItemMap.values());
   };
+
+  const makeItemKey = (invoiceId: string, customerItem: string, itemNumber: string) =>
+    `${invoiceId}||${(customerItem || 'N/A').trim()}||${(itemNumber || 'N/A').trim()}`;
+
+  const scannedByItemKey = useMemo(() => {
+    const m = new Map<string, { scannedBins: number; scannedQty: number }>();
+    for (const scan of loadedBarcodes) {
+      if (!scan?.invoiceId) continue;
+      const customerItem = (scan.customerItem || scan.partCode || 'N/A').trim();
+      const itemNumber = (scan.itemNumber || 'N/A').trim();
+      const k = makeItemKey(scan.invoiceId, customerItem, itemNumber);
+      const existing = m.get(k) || { scannedBins: 0, scannedQty: 0 };
+      existing.scannedBins += 1;
+      existing.scannedQty += Number(scan.quantity ?? 0) || 0;
+      m.set(k, existing);
+    }
+    return m;
+  }, [loadedBarcodes]);
+
+  const expectedByItemKey = useMemo(() => {
+    const m = new Map<string, { expectedBins: number; totalQty: number }>();
+    for (const invoiceId of selectedInvoices) {
+      const inv = sharedInvoices.find((i) => i.id === invoiceId);
+      const items = inv?.items || [];
+      for (const it of items as UploadedRow[]) {
+        const customerItem = (it.customerItem || it.part || '').trim();
+        if (!customerItem) continue;
+        const itemNumber = (it.part || '').trim();
+        const expectedBins =
+          Number((it as any).cust_scanned_bins_count ?? (it as any).number_of_bins ?? 0) || 0;
+        const qty = Number((it as any).qty ?? 0) || 0;
+
+        const k = makeItemKey(invoiceId, customerItem, itemNumber);
+        const existing = m.get(k) || { expectedBins: 0, totalQty: 0 };
+        existing.expectedBins += expectedBins;
+        existing.totalQty += qty;
+        m.set(k, existing);
+      }
+    }
+    return m;
+  }, [selectedInvoices, sharedInvoices]);
 
   // Get expected total bins across all selected invoices (based on customer-bin counts from Doc Audit)
   const getExpectedBins = () => {
@@ -236,6 +315,42 @@ const Dispatch = () => {
   
   // Legacy function name for backward compatibility (now uses bin-based counting)
   const getExpectedBarcodes = getExpectedBins;
+
+  const gatepassInvoiceIds = useMemo(() => {
+    const fromDetails = gatepassDetails?.invoiceIds?.length
+      ? gatepassDetails.invoiceIds
+      : gatepassDetails?.invoices?.length
+        ? gatepassDetails.invoices.map((i) => i.id)
+        : null;
+    return (fromDetails || selectedInvoices || []).filter(Boolean);
+  }, [gatepassDetails, selectedInvoices]);
+
+  const gatepassCustomerCode = useMemo(() => {
+    if (gatepassDetails?.customerCode) return gatepassDetails.customerCode;
+    const first = sharedInvoices.find((inv) => gatepassInvoiceIds.includes(inv.id));
+    return first?.billTo || null;
+  }, [gatepassDetails, sharedInvoices, gatepassInvoiceIds]);
+
+  const gatepassSummary = useMemo(() => {
+    return buildGatepassSummary({
+      gatepassNumber: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`,
+      vehicleNumber,
+      authorizedBy: currentUser,
+      customerCode: gatepassCustomerCode,
+      dispatchDateIso: gatepassDetails?.dispatchDate || null,
+      invoiceIds: gatepassInvoiceIds,
+      invoiceDetails: gatepassDetails?.invoices || null,
+      loadedScans: loadedBarcodes,
+    });
+  }, [
+    gatepassNumber,
+    vehicleNumber,
+    currentUser,
+    gatepassCustomerCode,
+    gatepassDetails,
+    gatepassInvoiceIds,
+    loadedBarcodes,
+  ]);
 
   const getNextUnscannedBarcodePair = () => {
     const selectedInvoiceData = sharedInvoices.filter(inv => 
@@ -282,6 +397,24 @@ const Dispatch = () => {
     // Don't close scanner - allow multiple scans
   };
 
+  // Background scanning (hardware/keyboard scanner): enabled after invoice selection.
+  // IMPORTANT: Disable while invoice-selection scanner dialog is open to avoid keydown-listener conflicts.
+  useKeyboardBarcodeScanner({
+    enabled: selectedInvoices.length > 0 && !showInvoiceQRScanner,
+    onScanAttempt: (data) => {
+      // Dispatch uses Customer label only.
+      if (!data.qrType || data.qrType !== 'customer') {
+        setDispatchScanAlert("Dispatch uses Customer label only. Please scan the Customer barcode.");
+        return { accepted: false, rejectReason: "customer_only" };
+      }
+      setDispatchScanAlert(null);
+      return { accepted: true };
+    },
+    onScan: (data) => {
+      setDispatchCustomerScan(data);
+    },
+  });
+
   // Auto-validate when customer barcode is scanned
   useEffect(() => {
     if (dispatchCustomerScan) {
@@ -302,7 +435,7 @@ const Dispatch = () => {
         pair.binNumber === binNumber
       );
       if (duplicateBin) {
-        toast.error("⚠️ Bin Already Scanned!", {
+        toast.warning("⚠️ Bin Already Scanned", {
           description: `Bin number ${binNumber} has already been scanned.`,
         });
         setDispatchCustomerScan(null);
@@ -316,9 +449,10 @@ const Dispatch = () => {
     );
 
     if (alreadyLoaded) {
-      toast.error("⚠️ Already Loaded!", {
+      toast.warning("⚠️ Already Loaded", {
         description: "This item has already been loaded onto the vehicle.",
       });
+      setDispatchCustomerScan(null);
       return;
     }
 
@@ -376,6 +510,7 @@ const Dispatch = () => {
     const invoiceIdToUse = matchedInvoiceId || selectedInvoices[0];
 
     const newPair: ValidatedBarcodePair = {
+      invoiceId: invoiceIdToUse,
       customerBarcode: dispatchCustomerScan.rawValue,
       autolivBarcode: "",
       binNumber: dispatchCustomerScan.binNumber,
@@ -383,7 +518,8 @@ const Dispatch = () => {
       partCode: dispatchCustomerScan.partCode,
       customerItem: matchedInvoiceItem?.customerItem || undefined,
       itemNumber: matchedInvoiceItem?.part || undefined,
-      actualQuantity: matchedInvoiceItem?.qty || undefined
+      actualQuantity: matchedInvoiceItem?.qty || undefined,
+      scannedAt: new Date().toISOString()
     };
     
     // Save scan to database immediately with bin_number and bin_quantity
@@ -431,7 +567,7 @@ const Dispatch = () => {
         const isBlocked = errorMessage.includes('blocked');
         
         if (isDuplicate || isOverScan) {
-          toast.error(`⚠️ ${isDuplicate ? 'Duplicate Scan' : 'Over-scan Prevented'}`, {
+          toast.warning(`⚠️ ${isDuplicate ? 'Duplicate Scan' : 'Over-scan Prevented'}`, {
             description: errorMessage,
             duration: 6000
           });
@@ -468,21 +604,13 @@ const Dispatch = () => {
     });
     
     setDispatchCustomerScan(null);
-    setDispatchAutolivScan(null);
   };
 
   const handleDeleteBin = async (binIndex: number, binId?: string, invoiceId?: string) => {
     const binToDelete = loadedBarcodes[binIndex];
     
-    // Find invoice ID if not provided
-    if (!invoiceId) {
-      invoiceId = selectedInvoices.find(id => {
-        const invoice = sharedInvoices.find(inv => inv.id === id);
-        return invoice?.items?.some((item: any) => 
-          item.customerItem === binToDelete.customerItem
-        );
-      });
-    }
+    // Prefer explicit invoiceId on the scan (source of truth)
+    invoiceId = invoiceId || binToDelete?.invoiceId;
     
     if (!invoiceId) {
       toast.error("Cannot delete bin", {
@@ -549,6 +677,107 @@ const Dispatch = () => {
     }
   };
 
+  const groupLoadedBins = (bins: ValidatedBarcodePair[]) => {
+    type ScanEntry = { index: number; scan: ValidatedBarcodePair };
+    type ItemGroup = {
+      key: string;
+      customerItem: string;
+      itemNumber: string;
+      scans: ScanEntry[];
+      totalQty: number;
+      lastScannedAtMs: number;
+    };
+    type InvoiceGroup = {
+      invoiceId: string;
+      scans: ScanEntry[];
+      items: ItemGroup[];
+      totalQty: number;
+      lastScannedAtMs: number;
+    };
+
+    const byInvoice = new Map<
+      string,
+      {
+        invoiceId: string;
+        scans: ScanEntry[];
+        byItem: Map<string, ItemGroup>;
+        totalQty: number;
+        lastScannedAtMs: number;
+      }
+    >();
+
+    for (let index = 0; index < bins.length; index++) {
+      const scan = bins[index];
+      const invoiceId = scan.invoiceId;
+      if (!invoiceId) continue;
+
+      const scannedAtMs = scan.scannedAt ? new Date(scan.scannedAt).getTime() : 0;
+      const qty = Number(scan.quantity ?? 0) || 0;
+      const customerItem = (scan.customerItem || scan.partCode || "N/A").trim();
+      const itemNumber = (scan.itemNumber || "N/A").trim();
+      const itemKey = `${customerItem}||${itemNumber}`;
+
+      const inv = byInvoice.get(invoiceId) || {
+        invoiceId,
+        scans: [] as ScanEntry[],
+        byItem: new Map<string, ItemGroup>(),
+        totalQty: 0,
+        lastScannedAtMs: 0,
+      };
+
+      const entry: ScanEntry = { index, scan };
+      inv.scans.push(entry);
+      inv.totalQty += qty;
+      inv.lastScannedAtMs = Math.max(inv.lastScannedAtMs, scannedAtMs);
+
+      const existingItem = inv.byItem.get(itemKey);
+      if (existingItem) {
+        existingItem.scans.push(entry);
+        existingItem.totalQty += qty;
+        existingItem.lastScannedAtMs = Math.max(existingItem.lastScannedAtMs, scannedAtMs);
+      } else {
+        inv.byItem.set(itemKey, {
+          key: itemKey,
+          customerItem,
+          itemNumber,
+          scans: [entry],
+          totalQty: qty,
+          lastScannedAtMs: scannedAtMs,
+        });
+      }
+
+      byInvoice.set(invoiceId, inv);
+    }
+
+    const invoiceGroups: InvoiceGroup[] = [];
+    for (const inv of byInvoice.values()) {
+      const items = Array.from(inv.byItem.values())
+        .map((g) => ({
+          ...g,
+          scans: [...g.scans].sort((a, b) => {
+            const ta = a.scan.scannedAt ? new Date(a.scan.scannedAt).getTime() : 0;
+            const tb = b.scan.scannedAt ? new Date(b.scan.scannedAt).getTime() : 0;
+            return tb - ta;
+          }),
+        }))
+        .sort((a, b) => b.lastScannedAtMs - a.lastScannedAtMs);
+
+      invoiceGroups.push({
+        invoiceId: inv.invoiceId,
+        scans: [...inv.scans].sort((a, b) => {
+          const ta = a.scan.scannedAt ? new Date(a.scan.scannedAt).getTime() : 0;
+          const tb = b.scan.scannedAt ? new Date(b.scan.scannedAt).getTime() : 0;
+          return tb - ta;
+        }),
+        items,
+        totalQty: inv.totalQty,
+        lastScannedAtMs: inv.lastScannedAtMs,
+      });
+    }
+
+    return invoiceGroups;
+  };
+
   const handleGenerateGatepass = async () => {
     if (!vehicleNumber) {
       toast.error("Please enter vehicle number");
@@ -588,6 +817,8 @@ const Dispatch = () => {
       });
 
       if (result.success && result.gatepassNumber) {
+        const invoiceIdsSnapshot = [...selectedInvoices];
+
         // Update local state optimistically
         selectedInvoices.forEach(invoiceId => {
           updateInvoiceDispatch(invoiceId, currentUser, vehicleNumber, undefined, undefined);
@@ -603,8 +834,24 @@ const Dispatch = () => {
           dispatchDate: result.dispatchDate,
           totalNumberOfBins: result.totalNumberOfBins || 0,
           supplyDates: result.supplyDates || [],
+          invoiceIds: invoiceIdsSnapshot,
           invoices: result.invoices || []
         };
+
+        // Extra robustness: if backend provides loaded totals, cross-check and warn if mismatch.
+        if (typeof result.loadedBinsCount === 'number' || typeof result.loadedQty === 'number') {
+          const localBins = loadedBarcodes.length;
+          const localQty = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+          const serverBins = typeof result.loadedBinsCount === 'number' ? result.loadedBinsCount : null;
+          const serverQty = typeof result.loadedQty === 'number' ? result.loadedQty : null;
+
+          if ((serverBins !== null && serverBins !== localBins) || (serverQty !== null && serverQty !== localQty)) {
+            toast.warning('⚠️ Loaded totals mismatch detected', {
+              description: `Local bins/qty=${localBins}/${localQty}, Server bins/qty=${serverBins ?? 'N/A'}/${serverQty ?? 'N/A'}. Refreshing data is recommended.`,
+              duration: 8000,
+            });
+          }
+        }
         
         // Log the raw API response
         console.log('📥 Raw API response:', result);
@@ -698,156 +945,68 @@ const Dispatch = () => {
   };
 
   const generateGatepassQRData = () => {
-    const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
-    
-    // Get customer code - from gatepass details or from invoices
-    const customerCode = gatepassDetails?.customerCode || 
-      selectedInvoiceData[0]?.billTo || 
-      null;
-    
-    // Check for customer code mismatch
-    const customerCodes = new Set(
-      selectedInvoiceData.map(inv => inv.billTo).filter(Boolean)
-    );
-    const hasCustomerCodeError = customerCodes.size > 1;
-    
-    // Get dispatch date - use compact format (YYYY-MM-DD HH:MM)
-    const dispatchDate = gatepassDetails?.dispatchDate || new Date().toISOString();
-    const dispatchDateCompact = dispatchDate ? 
-      new Date(dispatchDate).toISOString().slice(0, 16).replace('T', ' ') : 
-      new Date().toISOString().slice(0, 16).replace('T', ' ');
-    
-    // Get invoice details - prioritize gatepassDetails from API response
-    // This has the most accurate data including delivery dates, times, and unloading locations
-    let invoiceDetails;
-    
-    console.log('🔍 generateGatepassQRData called');
-    console.log('🔍 gatepassDetails:', gatepassDetails);
-    console.log('🔍 gatepassDetails?.invoices:', gatepassDetails?.invoices);
-    console.log('🔍 selectedInvoices:', selectedInvoices);
-    
-    if (gatepassDetails?.invoices && gatepassDetails.invoices.length > 0) {
-      // Use data from API response (most reliable)
-      console.log('✅ Using gatepassDetails.invoices for QR code');
-      invoiceDetails = gatepassDetails.invoices.map((inv: any) => {
-        const deliveryDate = inv.deliveryDate ? 
-          new Date(inv.deliveryDate).toISOString().slice(0, 10) : 
-          null;
-        
-        const invoiceData = {
-          id: inv.id,
-          loc: inv.unloadingLoc || null,
-          dDate: deliveryDate,
-          dTime: inv.deliveryTime || null,
-          st: inv.status || 'unknown'
-        };
-        
-        console.log(`  📦 Invoice ${inv.id} mapped:`, {
-          original: {
-            deliveryDate: inv.deliveryDate,
-            deliveryTime: inv.deliveryTime,
-            unloadingLoc: inv.unloadingLoc,
-            status: inv.status
-          },
-          mapped: invoiceData
-        });
-        
-        return invoiceData;
-      });
-    } else {
-      // Fallback to sharedInvoices (may not have all data if refreshData hasn't run)
-      console.warn('⚠️ gatepassDetails.invoices not available, using sharedInvoices fallback');
-      console.log('⚠️ sharedInvoices for selected invoices:', selectedInvoiceData);
-      
-      invoiceDetails = selectedInvoices.map(invoiceId => {
-        const invoice = selectedInvoiceData.find(inv => inv.id === invoiceId);
-        const deliveryDate = invoice?.deliveryDate ? 
-          new Date(invoice.deliveryDate).toISOString().slice(0, 10) : 
-          null;
-        
-        const invoiceData = {
-          id: invoiceId,
-          loc: invoice?.unloadingLoc || null,
-          dDate: deliveryDate,
-          dTime: invoice?.deliveryTime || null,
-          st: 'unknown' // Status not available in sharedInvoices
-        };
-        
-        console.log(`  📦 Invoice ${invoiceId} from sharedInvoices:`, {
-          found: !!invoice,
-          deliveryDate: invoice?.deliveryDate,
-          deliveryTime: invoice?.deliveryTime,
-          unloadingLoc: invoice?.unloadingLoc,
-          mapped: invoiceData
-        });
-        
-        return invoiceData;
-      });
-    }
-    
-    // Log final invoice details for QR code
-    console.log('📊 Final QR Code Invoice Details:', invoiceDetails);
-    invoiceDetails.forEach((inv: any, index: number) => {
-      console.log(`  ${index + 1}. Invoice ${inv.id}:`, {
-        loc: inv.loc,
-        dDate: inv.dDate,
-        dTime: inv.dTime,
-        st: inv.st
-      });
-    });
-    
-    const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
-    
-    // Get total number of bins from gatepassDetails (from API response) or calculate from invoice items
-    const totalNumberOfBins = gatepassDetails?.totalNumberOfBins || 0;
-    
-    // Get supply dates (delivery_date from invoices) - use first supply date or from gatepassDetails
-    const supplyDates = gatepassDetails?.supplyDates || 
-      selectedInvoiceData.map(inv => inv.deliveryDate).filter(Boolean);
-    const supplyDate = supplyDates && supplyDates.length > 0 ? 
-      (typeof supplyDates[0] === 'string' ? 
-        new Date(supplyDates[0]).toISOString().slice(0, 10) : 
-        new Date(supplyDates[0]).toISOString().slice(0, 10)) : 
-      null;
-    
-    // Create compact QR data - only essential information
-    // Using short field names to reduce size
-    const qrData = {
-      gp: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`, // gatepass number
-      v: vehicleNumber, // vehicle
-      cc: customerCode, // customer code
-      dt: dispatchDateCompact, // dispatch date/time (actual dispatch date)
-      sd: supplyDate, // supply date (delivery_date from doc audit)
-      by: currentUser, // authorized by
-      inv: invoiceDetails, // invoices (compact format)
-      invIds: selectedInvoices, // invoice IDs array
-      invCount: selectedInvoices.length, // number of invoices
-      binCount: totalNumberOfBins, // total number of bins
-      sum: { // summary
-        items: loadedBarcodes.length,
-        inv: selectedInvoices.length,
-        qty: totalQuantity
+    // Dispatch date (compact format YYYY-MM-DD HH:MM)
+    const dispatchIso = gatepassSummary.dispatchDateIso || new Date().toISOString();
+    const dispatchCompact = new Date(dispatchIso).toISOString().slice(0, 16).replace('T', ' ');
+
+    // Supply date: first delivery date across invoices (if any)
+    const supplyDate =
+      gatepassSummary.invoices.find((i) => i.deliveryDate)?.deliveryDate ?? null;
+
+    // Compact invoice list for QR (no bin numbers)
+    const inv = gatepassSummary.invoices.map((i) => ({
+      id: i.id,
+      loc: i.unloadingLoc || null,
+      dDate: i.deliveryDate || null,
+      dTime: i.deliveryTime || null,
+      st: i.status || 'unknown',
+      b: i.totals.binsLoaded, // bins loaded
+      q: i.totals.qtyLoaded, // qty loaded
+      it: i.items.map((it) => ({
+        ci: it.customerItem,
+        in: it.itemNumber,
+        b: it.binsLoaded,
+        q: it.qtyLoaded,
+      })),
+    }));
+
+    const full = {
+      gp: gatepassSummary.gatepassNumber,
+      v: gatepassSummary.vehicleNumber,
+      cc: gatepassSummary.customerCode,
+      dt: dispatchCompact,
+      sd: supplyDate,
+      by: gatepassSummary.authorizedBy,
+      inv,
+      invIds: gatepassSummary.invoiceIds,
+      invCount: gatepassSummary.grandTotals.invoiceCount,
+      binCount: gatepassSummary.grandTotals.binsLoaded,
+      sum: {
+        items: gatepassSummary.grandTotals.itemLinesCount,
+        inv: gatepassSummary.grandTotals.invoiceCount,
+        qty: gatepassSummary.grandTotals.qtyLoaded,
       },
-      err: hasCustomerCodeError || customerCodeError ? 
-        `CC_MISMATCH:${Array.from(customerCodes).join(',')}` : 
-        null
+      err: customerCodeError ? customerCodeError : null,
     };
-    
-    const qrString = JSON.stringify(qrData);
-    
-    // Check if data is too long (QR code max ~4296 chars at level H)
-    if (qrString.length > 3000) {
-      console.warn('QR data is large:', qrString.length, 'characters');
-      // If still too long, create minimal version with just gatepass number and invoice IDs
-      const minimalData = {
-        gp: gatepassNumber,
-        v: vehicleNumber,
-        inv: selectedInvoices
-      };
-      return JSON.stringify(minimalData);
-    }
-    
-    return qrString;
+
+    const fullStr = JSON.stringify(full);
+    if (fullStr.length <= 3000) return fullStr;
+
+    // Tier 2: drop item list (it)
+    const mid = {
+      ...full,
+      inv: inv.map(({ it, ...rest }) => rest),
+    };
+    const midStr = JSON.stringify(mid);
+    if (midStr.length <= 3000) return midStr;
+
+    // Tier 3: minimal
+    const minimal = {
+      gp: gatepassSummary.gatepassNumber,
+      v: gatepassSummary.vehicleNumber,
+      inv: gatepassSummary.invoiceIds,
+    };
+    return JSON.stringify(minimal);
   };
 
   const handlePrintGatepass = () => {
@@ -860,9 +1019,49 @@ const Dispatch = () => {
     const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
     const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
     const customerName = customers.join(", ");
-    const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
-    const currentDate = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const totalQuantity = gatepassSummary.grandTotals.qtyLoaded;
+
+    const dispatchIso = gatepassSummary.dispatchDateIso || new Date().toISOString();
+    const dispatchDateObj = new Date(dispatchIso);
+    const dispatchDateText = dispatchDateObj.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const dispatchTimeText = dispatchDateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+    const invoiceDetailsRows = gatepassSummary.invoices
+      .map((inv, idx) => {
+        const statusText = inv.status === 'on-time' ? 'On Time' : inv.status === 'late' ? 'Late' : 'Unknown';
+        return `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${inv.id}</td>
+            <td>${inv.unloadingLoc || 'N/A'}</td>
+            <td>${inv.deliveryDate || 'N/A'}</td>
+            <td>${inv.deliveryTime || 'N/A'}</td>
+            <td>${statusText}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    const itemTotalsRows = gatepassSummary.invoices
+      .flatMap((inv) =>
+        inv.items.map(
+          (it) => `
+            <tr>
+              <td>${inv.id}</td>
+              <td>${it.customerItem}</td>
+              <td>${it.itemNumber}</td>
+              <td style="text-align:right;">${it.binsLoaded}</td>
+              <td style="text-align:right;">${it.qtyLoaded}</td>
+            </tr>
+          `
+        )
+      )
+      .join('');
     
     const qrData = generateGatepassQRData();
     const encodedQRData = encodeURIComponent(qrData);
@@ -966,7 +1165,7 @@ const Dispatch = () => {
             </div>
             <div class="info-item">
               <div class="info-label">Date & Time</div>
-              <div class="info-value">${currentDate} at ${currentTime}</div>
+              <div class="info-value">${dispatchDateText} at ${dispatchTimeText}</div>
             </div>
             <div class="info-item">
               <div class="info-label">Customer</div>
@@ -982,35 +1181,43 @@ const Dispatch = () => {
             </div>
             <div class="info-item">
               <div class="info-label">Total Bins</div>
-              <div class="info-value">${loadedBarcodes.length}</div>
+              <div class="info-value">${gatepassSummary.grandTotals.binsLoaded}</div>
             </div>
           </div>
 
           <div class="invoices-section">
-            <h3 style="margin-bottom: 10px; font-size: 16px;">Invoice Numbers:</h3>
-            <p style="margin: 0;">${selectedInvoices.join(", ")}</p>
-          </div>
-
-          <div class="invoices-section">
-            <h3 style="margin-bottom: 10px; font-size: 16px;">Bins Loaded:</h3>
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Invoices (Delivery Details):</h3>
             <table class="items-table">
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Part Code</th>
-                  <th>Bin Number</th>
-                  <th>Quantity</th>
+                  <th>Invoice</th>
+                  <th>UNLOADING LOC</th>
+                  <th>Delivery Date</th>
+                  <th>Time</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                ${loadedBarcodes.map((item, index) => `
-                  <tr>
-                    <td>${index + 1}</td>
-                    <td>${item.partCode || "N/A"}</td>
-                    <td>${item.binNumber || "N/A"}</td>
-                    <td>${item.quantity || "0"}</td>
-                  </tr>
-                `).join('')}
+                ${invoiceDetailsRows || `<tr><td colspan="6">No invoice details available</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="invoices-section">
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Item Summary (Totals Only):</h3>
+            <table class="items-table">
+              <thead>
+                <tr>
+                  <th>Invoice</th>
+                  <th>Customer Item</th>
+                  <th>Item Number</th>
+                  <th>Bins Loaded</th>
+                  <th>Qty Loaded</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${itemTotalsRows || `<tr><td colspan="5">No loaded scans found</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -1027,7 +1234,7 @@ const Dispatch = () => {
 
           <div class="footer">
             <p>This gatepass is authorized for vehicle exit. Please verify all items before dispatch.</p>
-            <p>Generated on ${currentDate} at ${currentTime}</p>
+            <p>Generated on ${dispatchDateText} at ${dispatchTimeText}</p>
           </div>
         </body>
       </html>
@@ -1077,41 +1284,25 @@ const Dispatch = () => {
       const margin = 15;
       let yPos = margin;
 
-      const selectedInvoiceData = sharedInvoices.filter(inv => selectedInvoices.includes(inv.id));
+      const selectedInvoiceData = sharedInvoices.filter(inv => gatepassSummary.invoiceIds.includes(inv.id));
       const customers = [...new Set(selectedInvoiceData.map(inv => inv.customer))];
       const customerName = customers.join(", ");
       
       // Get customer code
-      const customerCode = gatepassDetails?.customerCode || 
-        selectedInvoiceData[0]?.billTo || 
-        null;
-      
-      // Check for customer code mismatch
-      const customerCodes = new Set(
-        selectedInvoiceData.map(inv => inv.billTo).filter(Boolean)
-      );
-      const hasCustomerCodeError = customerCodes.size > 1;
+      const customerCode = gatepassSummary.customerCode;
+      const hasCustomerCodeError = !!customerCodeError;
       
       // Get dispatch date
-      const dispatchDate = gatepassDetails?.dispatchDate 
-        ? new Date(gatepassDetails.dispatchDate)
+      const dispatchDate = gatepassSummary.dispatchDateIso
+        ? new Date(gatepassSummary.dispatchDateIso)
         : new Date();
       const dispatchDateStr = dispatchDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       const dispatchTimeStr = dispatchDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
       
       // Get invoice details
-      const invoiceDetails = gatepassDetails?.invoices || selectedInvoices.map(invoiceId => {
-        const invoice = selectedInvoiceData.find(inv => inv.id === invoiceId);
-        return {
-          id: invoiceId,
-          deliveryDate: invoice?.deliveryDate?.toISOString() || null,
-          deliveryTime: invoice?.deliveryTime || null,
-          unloadingLoc: invoice?.unloadingLoc || null,
-          status: 'unknown'
-        };
-      });
+      const invoiceDetails = gatepassSummary.invoices;
       
-      const totalQuantity = loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0);
+      const totalQuantity = gatepassSummary.grandTotals.qtyLoaded;
 
       // Header
       pdf.setFontSize(20);
@@ -1165,7 +1356,7 @@ const Dispatch = () => {
       yPos += 6;
       pdf.text(`Total Quantity: ${totalQuantity}`, margin, yPos);
       yPos += 6;
-      pdf.text(`Total Bins: ${loadedBarcodes.length}`, margin, yPos);
+      pdf.text(`Total Bins: ${gatepassSummary.grandTotals.binsLoaded}`, margin, yPos);
       yPos += 10;
 
       // Invoice Details Table
@@ -1193,7 +1384,7 @@ const Dispatch = () => {
           yPos = margin;
         }
         
-        const deliveryDateStr = inv.deliveryDate 
+        const deliveryDateStr = inv.deliveryDate
           ? new Date(inv.deliveryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
           : 'N/A';
         
@@ -1229,12 +1420,12 @@ const Dispatch = () => {
       yPos += 6;
       pdf.setFont(undefined, 'normal');
       pdf.setFontSize(9);
-      const invoiceText = selectedInvoices.join(", ");
+      const invoiceText = gatepassSummary.invoiceIds.join(", ");
       const splitInvoices = pdf.splitTextToSize(invoiceText, pageWidth - 2 * margin);
       pdf.text(splitInvoices, margin, yPos);
       yPos += splitInvoices.length * 5 + 10;
 
-      // Items Loaded
+      // Item Summary (Totals Only)
       if (yPos > pageHeight - 60) {
         pdf.addPage();
         yPos = margin;
@@ -1242,15 +1433,16 @@ const Dispatch = () => {
 
       pdf.setFont(undefined, 'bold');
       pdf.setFontSize(10);
-      pdf.text('Bins Loaded:', margin, yPos);
+      pdf.text('Item Summary (Totals Only):', margin, yPos);
       yPos += 7;
 
       pdf.setFontSize(8);
       pdf.setFont(undefined, 'bold');
-      pdf.text('#', margin, yPos);
-      pdf.text('Part Code', margin + 20, yPos);
-      pdf.text('Bin Number', margin + 70, yPos);
-      pdf.text('Quantity', margin + 120, yPos);
+      pdf.text('Invoice', margin, yPos);
+      pdf.text('Customer Item', margin + 28, yPos);
+      pdf.text('Item Number', margin + 78, yPos);
+      pdf.text('Bins', margin + 120, yPos);
+      pdf.text('Qty', margin + 135, yPos);
       yPos += 5;
 
       pdf.setDrawColor(200, 200, 200);
@@ -1258,17 +1450,26 @@ const Dispatch = () => {
       yPos += 3;
 
       pdf.setFont(undefined, 'normal');
-      loadedBarcodes.forEach((item, index) => {
-        if (yPos > pageHeight - 20) {
-          pdf.addPage();
-          yPos = margin;
-        }
-        pdf.text(String(index + 1), margin, yPos);
-        pdf.text(item.partCode || "N/A", margin + 20, yPos);
-        pdf.text(item.binNumber || "N/A", margin + 70, yPos);
-        pdf.text(item.quantity || "0", margin + 120, yPos);
+      const flatItems = invoiceDetails.flatMap((inv) =>
+        inv.items.map((it) => ({ invoiceId: inv.id, ...it }))
+      );
+      if (flatItems.length === 0) {
+        pdf.text('No loaded scans found', margin, yPos);
         yPos += 6;
-      });
+      } else {
+        flatItems.forEach((it) => {
+          if (yPos > pageHeight - 20) {
+            pdf.addPage();
+            yPos = margin;
+          }
+          pdf.text(String(it.invoiceId).substring(0, 12), margin, yPos);
+          pdf.text(String(it.customerItem).substring(0, 22), margin + 28, yPos);
+          pdf.text(String(it.itemNumber).substring(0, 18), margin + 78, yPos);
+          pdf.text(String(it.binsLoaded), margin + 120, yPos);
+          pdf.text(String(it.qtyLoaded), margin + 135, yPos);
+          yPos += 6;
+        });
+      }
 
       yPos = pageHeight - 20;
       pdf.setFontSize(8);
@@ -1285,6 +1486,92 @@ const Dispatch = () => {
       console.error("Error generating PDF:", error);
       toast.error("Failed to generate PDF. Please try again.");
     }
+  };
+
+  const groupedLoadedBins = groupLoadedBins(loadedBarcodes);
+  const groupedLoadedBinsByInvoiceId = new Map(groupedLoadedBins.map((g) => [g.invoiceId, g] as const));
+
+  const renderInvoiceItemsTable = (invoiceId: string) => {
+    const invoice = sharedInvoices.find((inv) => inv.id === invoiceId);
+    const uniqueItems = getUniqueCustomerItems(invoice);
+
+    if (!invoice || uniqueItems.length === 0) {
+      return (
+        <div className="text-center py-6 text-muted-foreground">
+          <p className="text-sm font-medium">No items available</p>
+          <p className="text-xs mt-1">This invoice has no item rows to display.</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="border rounded-lg overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[820px]">
+            <thead className="bg-muted/50">
+              <tr>
+                <th className="text-left p-2 font-semibold">Customer Item</th>
+                <th className="text-left p-2 font-semibold">Item Number</th>
+                <th className="text-left p-2 font-semibold">Part Description</th>
+                <th className="text-left p-2 font-semibold">Quantity</th>
+                <th className="text-left p-2 font-semibold">Customer Bin</th>
+                <th className="text-left p-2 font-semibold">Cust Scanned Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {uniqueItems.map((item, idx) => {
+                const k = makeItemKey(invoiceId, item.customerItem, item.itemNumber);
+                const expected = expectedByItemKey.get(k);
+                const scanned = scannedByItemKey.get(k);
+
+                const totalQty = Number(expected?.totalQty ?? item.quantity ?? 0) || 0;
+                const expectedBins = Number(expected?.expectedBins ?? 0) || 0;
+                const scannedBins = Number(scanned?.scannedBins ?? 0) || 0;
+                const scannedQty = Number(scanned?.scannedQty ?? 0) || 0;
+
+                const binProgressPct =
+                  expectedBins > 0 ? Math.min(100, (scannedBins / expectedBins) * 100) : 0;
+
+                const isComplete =
+                  (expectedBins > 0 && scannedBins >= expectedBins) ||
+                  (expectedBins === 0 && totalQty > 0 && scannedQty >= totalQty);
+
+                return (
+                  <tr
+                    key={`${k}::${idx}`}
+                    className={`border-t ${isComplete ? 'bg-green-100 dark:bg-green-950/40' : ''}`}
+                  >
+                    <td className="p-2 font-medium">{item.customerItem}</td>
+                    <td className="p-2">{item.itemNumber}</td>
+                    <td className="p-2 text-muted-foreground">{item.partDescription || 'N/A'}</td>
+                    <td className="p-2 font-semibold">{totalQty}</td>
+                    <td className="p-2">
+                      <div className="space-y-1">
+                        <div className="font-semibold">
+                          {expectedBins > 0 ? `${scannedBins}/${expectedBins}` : `${scannedBins}/—`}
+                        </div>
+                        {expectedBins > 0 && <Progress value={binProgressPct} className="h-1.5" />}
+                      </div>
+                    </td>
+                    <td className="p-2 font-semibold">
+                      <span
+                        className={
+                          scannedQty > 0
+                            ? 'text-green-600 dark:text-green-400'
+                            : 'text-muted-foreground'
+                        }
+                      >
+                        {scannedQty} / {totalQty}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -1535,6 +1822,7 @@ const Dispatch = () => {
                               setSelectedInvoices([]);
                               setLoadedBarcodes([]);
                               setSelectInvoiceValue("");
+                              setSelectedInvoicesExpandedId(null);
                             }}
                             className="h-8 text-xs"
                           >
@@ -1542,46 +1830,95 @@ const Dispatch = () => {
                           </Button>
                         )}
                       </div>
-                      <div className="space-y-2">
+                      <Accordion
+                        type="single"
+                        collapsible
+                        value={selectedInvoicesExpandedId || undefined}
+                        onValueChange={(v) => {
+                          const next = v || null;
+                          setSelectedInvoicesExpandedId(next);
+                          if (next) setActiveInvoiceId(next);
+                        }}
+                        className="w-full"
+                      >
                         {selectedInvoices.map((invoiceId, index) => {
                           const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-                          return invoice ? (
-                            <div key={invoiceId} className="p-3 bg-white dark:bg-gray-900 border border-border rounded-lg">
-                              <div className="flex items-start justify-between">
-                                <div className="flex-1">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <Badge variant="outline" className="text-xs">#{index + 1}</Badge>
-                                    <p className="font-semibold text-sm">{invoice.id}</p>
-                                    <p className="text-xs text-muted-foreground">{invoice.customer}</p>
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-2 text-xs">
-                                    <div>
-                                      <p className="text-muted-foreground">Customer Items</p>
-                                      <p className="font-medium">{invoice.scannedBins}/{invoice.expectedBins}</p>
+                          if (!invoice) return null;
+
+                          return (
+                            <AccordionItem
+                              key={invoiceId}
+                              value={invoiceId}
+                              className={`border border-border rounded-lg mb-2 overflow-hidden ${
+                                activeInvoiceId === invoiceId ? 'ring-2 ring-primary/30' : ''
+                              }`}
+                            >
+                              <AccordionTrigger
+                                className="px-3 py-3 hover:no-underline bg-white dark:bg-gray-900"
+                                onClick={() => setActiveInvoiceId(invoiceId)}
+                              >
+                                <div className="flex flex-1 items-start justify-between gap-3 min-w-0">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                      <Badge variant="outline" className="text-xs">#{index + 1}</Badge>
+                                      <p className="font-semibold text-sm truncate">{invoice.id}</p>
+                                      <p className="text-xs text-muted-foreground truncate">{invoice.customer}</p>
                                     </div>
-                                    <div>
-                                      <p className="text-muted-foreground">Quantity</p>
-                                      <p className="font-medium">{invoice.totalQty}</p>
+                                    <div className="grid grid-cols-2 gap-2 text-xs">
+                                      <div>
+                                        <p className="text-muted-foreground">Customer Items</p>
+                                        <p className="font-medium">{invoice.scannedBins}/{invoice.expectedBins}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-muted-foreground">Quantity</p>
+                                        <p className="font-medium">{invoice.totalQty}</p>
+                                      </div>
                                     </div>
                                   </div>
+
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setSelectedInvoices(prev => prev.filter(id => id !== invoiceId));
+                                      setLoadedBarcodes(prev => prev.filter(b => b.invoiceId !== invoiceId));
+                                      setSelectInvoiceValue("");
+                                      if (selectedInvoicesExpandedId === invoiceId) {
+                                        setSelectedInvoicesExpandedId(null);
+                                      }
+                                    }}
+                                    className="h-8 w-8 p-0 shrink-0"
+                                    title="Remove invoice"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
                                 </div>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => {
-                                    setSelectedInvoices(prev => prev.filter(id => id !== invoiceId));
-                                    setLoadedBarcodes([]);
-                                    setSelectInvoiceValue("");
-                                  }}
-                                  className="h-8 w-8 p-0"
-                                >
-                                  <X className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          ) : null;
+                              </AccordionTrigger>
+
+                              <AccordionContent className="px-3 pb-3 pt-0 bg-white dark:bg-gray-900">
+                                <div className="pt-2">
+                                  {renderInvoiceItemsTable(invoiceId)}
+                                </div>
+                              </AccordionContent>
+                            </AccordionItem>
+                          );
                         })}
-                      </div>
+                      </Accordion>
+
+                      {/* Active invoice details (also shown separately, per requirement) */}
+                      {activeInvoiceId && (
+                        <div className="mt-4 p-3 bg-white dark:bg-gray-900 border border-border rounded-lg">
+                          <div className="flex items-center justify-between mb-3">
+                            <p className="text-sm font-semibold">Selected Invoice Details</p>
+                            <Badge variant="secondary" className="text-xs">
+                              {activeInvoiceId}
+                            </Badge>
+                          </div>
+                          {renderInvoiceItemsTable(activeInvoiceId)}
+                        </div>
+                      )}
                       {selectedInvoices.length > 0 && (() => {
                         const firstInvoice = sharedInvoices.find(inv => inv.id === selectedInvoices[0]);
                         return firstInvoice ? (
@@ -1617,6 +1954,14 @@ const Dispatch = () => {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
+                    {dispatchScanAlert && (
+                      <div className="p-3 border-2 border-yellow-500/40 bg-yellow-50/60 dark:bg-yellow-950/20 rounded-lg text-sm">
+                        <p className="font-semibold text-yellow-800 dark:text-yellow-200">Scan required</p>
+                        <p className="text-xs text-yellow-800/90 dark:text-yellow-200/90 mt-1">
+                          {dispatchScanAlert}
+                        </p>
+                      </div>
+                    )}
                     {/* Progress Indicator */}
                     <div className="p-4 bg-muted rounded-lg">
                       <div className="flex justify-between text-sm mb-2">
@@ -1664,15 +2009,21 @@ const Dispatch = () => {
                               </div>
                             </div>
                           )}
-                          
-                          <BarcodeScanButton
-                            onScan={(data) => {
-                              setDispatchCustomerScan(data);
-                              toast.success("Customer barcode scanned!");
-                            }}
-                            label={dispatchCustomerScan ? "Scan Again" : "Scan Customer Barcode"}
-                            variant="default"
-                          />
+
+                          <div
+                            className={`w-full h-14 rounded-md border-2 flex items-center justify-center text-sm font-medium ${
+                              showInvoiceQRScanner
+                                ? "border-gray-300 bg-muted text-muted-foreground"
+                                : "border-primary/30 bg-primary/5 text-primary"
+                            }`}
+                          >
+                            {showInvoiceQRScanner
+                              ? "Finish invoice selection to start scanning"
+                              : "Scanner active — scan Customer label now"}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground text-center">
+                            No button needed — just scan using the hardware scanner.
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -1690,7 +2041,7 @@ const Dispatch = () => {
                           variant="outline"
                           onClick={() => {
                             setDispatchCustomerScan(null);
-                            setDispatchAutolivScan(null);
+                            setDispatchScanAlert(null);
                           }}
                           className="h-9 text-sm"
                         >
@@ -1702,67 +2053,134 @@ const Dispatch = () => {
                     {/* Loaded Items List */}
                     {loadedBarcodes.length > 0 && (
                       <div className="border rounded-lg p-3 sm:p-4 max-h-96 overflow-y-auto">
-                        <p className="text-xs sm:text-sm font-medium mb-3">Loaded Bins:</p>
-                        <div className="space-y-3">
-                          {loadedBarcodes.map((barcodePair, index) => {
-                            // Find the invoice ID for this bin (for deletion)
-                            const invoiceIdForBin = selectedInvoices.find(id => {
-                              const invoice = sharedInvoices.find(inv => inv.id === id);
-                              return invoice?.items?.some((item: any) => 
-                                item.customerItem === barcodePair.customerItem
-                              );
-                            });
-                            
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-xs sm:text-sm font-medium">Loaded Bins</p>
+                          <Badge variant="secondary" className="text-xs">
+                            {loadedBarcodes.length}
+                          </Badge>
+                        </div>
+
+                        <Accordion type="multiple" className="w-full">
+                          {selectedInvoices.map((invoiceId) => {
+                            const group = groupedLoadedBinsByInvoiceId.get(invoiceId);
+                            if (!group) return null;
+
+                            const invoice = sharedInvoices.find((inv) => inv.id === invoiceId);
+                            const customer = invoice?.customer || "Unknown";
+
                             return (
-                              <div key={barcodePair.id || index} className="border rounded-lg p-3 bg-muted">
-                                <div className="flex items-start justify-between mb-2">
-                                  <span className="text-xs font-semibold text-muted-foreground">Bin #{index + 1}</span>
-                                  <div className="flex items-center gap-2">
-                                    <Badge variant="default" className="text-xs">
-                                      <CheckCircle2 className="h-3 w-3 mr-1" />
-                                      Loaded
-                                    </Badge>
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => handleDeleteBin(index, barcodePair.id, invoiceIdForBin)}
-                                      className="h-6 w-6 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                      title="Delete this bin scan"
-                                    >
-                                      <X className="h-3 w-3" />
-                                    </Button>
+                              <AccordionItem
+                                key={invoiceId}
+                                value={`dispatch-invoice-${invoiceId}`}
+                                className="border border-b-0 rounded-lg mb-3 overflow-hidden"
+                              >
+                                <AccordionTrigger className="px-3 py-3 hover:no-underline bg-muted/40">
+                                  <div className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                                    <div className="min-w-0">
+                                      <p className="font-semibold text-sm truncate">{invoiceId}</p>
+                                      <p className="text-xs text-muted-foreground truncate">{customer}</p>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <Badge variant="secondary" className="text-xs">
+                                        {group.scans.length} bins
+                                      </Badge>
+                                      <Badge variant="outline" className="text-xs">
+                                        Qty {group.totalQty}
+                                      </Badge>
+                                    </div>
                                   </div>
-                                </div>
-                                <div className="space-y-2 text-sm">
-                                  {barcodePair.customerItem && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-muted-foreground min-w-[100px]">Customer Item:</span>
-                                      <span className="font-medium text-xs">{barcodePair.customerItem}</span>
-                                    </div>
-                                  )}
-                                  {barcodePair.binNumber && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-muted-foreground min-w-[100px]">Bin Number:</span>
-                                      <span className="font-mono text-xs">{barcodePair.binNumber}</span>
-                                    </div>
-                                  )}
-                                  {barcodePair.itemNumber && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-muted-foreground min-w-[100px]">Item Number:</span>
-                                      <span className="font-mono text-xs">{barcodePair.itemNumber}</span>
-                                    </div>
-                                  )}
-                                  {barcodePair.quantity && (
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-muted-foreground min-w-[100px]">Bin Quantity:</span>
-                                      <span className="font-semibold text-xs">{barcodePair.quantity}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
+                                </AccordionTrigger>
+
+                                <AccordionContent className="px-3 pt-3 pb-3">
+                                  <Accordion type="multiple" className="w-full">
+                                    {group.items.map((item) => (
+                                      <AccordionItem
+                                        key={item.key}
+                                        value={`dispatch-item-${invoiceId}-${item.key}`}
+                                        className="border border-b-0 rounded-md mb-2 overflow-hidden"
+                                      >
+                                        <AccordionTrigger className="px-3 py-2 hover:no-underline bg-background">
+                                          <div className="flex flex-1 items-start justify-between gap-3 min-w-0">
+                                            <div className="min-w-0">
+                                              <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-sm font-semibold truncate">
+                                                  {item.customerItem}
+                                                </span>
+                                                <span className="text-xs text-muted-foreground">•</span>
+                                                <span className="text-xs font-mono text-muted-foreground truncate">
+                                                  {item.itemNumber}
+                                                </span>
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <Badge variant="secondary" className="text-xs">
+                                                {item.scans.length} bins
+                                              </Badge>
+                                              <Badge variant="outline" className="text-xs">
+                                                Qty {item.totalQty}
+                                              </Badge>
+                                            </div>
+                                          </div>
+                                        </AccordionTrigger>
+
+                                        <AccordionContent className="px-3 pt-0 pb-3">
+                                          <div className="overflow-x-auto">
+                                            <table className="w-full text-xs min-w-[620px]">
+                                              <thead className="bg-muted/40">
+                                                <tr>
+                                                  <th className="text-left p-2 font-semibold">Bin Number</th>
+                                                  <th className="text-left p-2 font-semibold">Bin Qty</th>
+                                                  <th className="text-left p-2 font-semibold">Time</th>
+                                                  <th className="text-right p-2 font-semibold">Actions</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {item.scans.map(({ index, scan }) => {
+                                                  const time = scan.scannedAt
+                                                    ? new Date(scan.scannedAt).toLocaleTimeString("en-US", {
+                                                        hour: "2-digit",
+                                                        minute: "2-digit",
+                                                      })
+                                                    : "—";
+
+                                                  return (
+                                                    <tr
+                                                      key={scan.id || `${scan.invoiceId}-${scan.customerBarcode}-${index}`}
+                                                      className="border-t hover:bg-muted/30"
+                                                    >
+                                                      <td className="p-2 font-mono">
+                                                        {scan.binNumber ? String(scan.binNumber) : "—"}
+                                                      </td>
+                                                      <td className="p-2 font-semibold">
+                                                        {Number(scan.quantity ?? 0) || 0}
+                                                      </td>
+                                                      <td className="p-2 text-muted-foreground">{time}</td>
+                                                      <td className="p-2 text-right">
+                                                        <Button
+                                                          variant="ghost"
+                                                          size="sm"
+                                                          onClick={() => handleDeleteBin(index, scan.id, scan.invoiceId)}
+                                                          className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                                          title="Delete this bin scan"
+                                                        >
+                                                          <X className="h-3 w-3" />
+                                                        </Button>
+                                                      </td>
+                                                    </tr>
+                                                  );
+                                                })}
+                                              </tbody>
+                                            </table>
+                                          </div>
+                                        </AccordionContent>
+                                      </AccordionItem>
+                                    ))}
+                                  </Accordion>
+                                </AccordionContent>
+                              </AccordionItem>
                             );
                           })}
-                        </div>
+                        </Accordion>
                       </div>
                     )}
                   </div>
@@ -1854,7 +2272,7 @@ const Dispatch = () => {
                     </div>
                     <div>
                       <p className="text-muted-foreground mb-1">Date & Time</p>
-                      <p className="font-semibold">{new Date().toLocaleString()}</p>
+                      <p className="font-semibold">{gatepassSummary.dispatchDateTimeText}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground mb-1">Authorized By</p>
@@ -1862,22 +2280,82 @@ const Dispatch = () => {
                     </div>
                     <div>
                       <p className="text-muted-foreground mb-1">Total Invoices</p>
-                      <p className="font-semibold">{selectedInvoices.length}</p>
+                      <p className="font-semibold">{gatepassSummary.grandTotals.invoiceCount}</p>
                     </div>
                   </div>
 
                   <div className="border-t pt-4">
                     <p className="text-sm font-semibold mb-2">Invoices:</p>
                     <div className="space-y-1">
-                      {selectedInvoices.map(id => {
-                        const invoice = sharedInvoices.find(inv => inv.id === id);
+                      {gatepassSummary.invoices.map((inv) => {
+                        const invoice = sharedInvoices.find((i) => i.id === inv.id);
                         return (
-                          <div key={id} className="flex justify-between text-sm">
-                            <span>{invoice?.id}</span>
-                            <span className="text-muted-foreground">{invoice?.customer}</span>
+                          <div key={inv.id} className="border rounded-md p-3 text-sm">
+                            <div className="flex justify-between gap-2">
+                              <span className="font-semibold">{inv.id}</span>
+                              <span className="text-muted-foreground">{invoice?.customer || '—'}</span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                              <div>
+                                <span className="font-semibold text-foreground">Delivery Date:</span>{' '}
+                                {inv.deliveryDate || 'N/A'}
+                              </div>
+                              <div>
+                                <span className="font-semibold text-foreground">Delivery Time:</span>{' '}
+                                {inv.deliveryTime || 'N/A'}
+                              </div>
+                              <div className="col-span-2">
+                                <span className="font-semibold text-foreground">Unloading Loc:</span>{' '}
+                                {inv.unloadingLoc || 'N/A'}
+                              </div>
+                            </div>
                           </div>
                         );
                       })}
+                    </div>
+                  </div>
+
+                  {/* Item Totals (no bin list) */}
+                  <div className="border-t pt-4">
+                    <p className="text-sm font-semibold mb-2">Item Summary (Totals Only):</p>
+                    <div className="space-y-3">
+                      {gatepassSummary.invoices.map((inv) => (
+                        <div key={`${inv.id}::items`} className="border rounded-lg overflow-hidden">
+                          <div className="bg-muted/50 px-3 py-2 flex items-center justify-between text-xs">
+                            <span className="font-semibold">Invoice {inv.id}</span>
+                            <span className="text-muted-foreground">
+                              Bins: <span className="font-semibold text-foreground">{inv.totals.binsLoaded}</span>{' '}
+                              | Qty: <span className="font-semibold text-foreground">{inv.totals.qtyLoaded}</span>
+                            </span>
+                          </div>
+                          {inv.items.length === 0 ? (
+                            <div className="p-3 text-xs text-muted-foreground">No loaded item scans found for this invoice.</div>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs min-w-[520px]">
+                                <thead className="bg-background">
+                                  <tr className="border-b">
+                                    <th className="text-left p-2 font-semibold">Customer Item</th>
+                                    <th className="text-left p-2 font-semibold">Item Number</th>
+                                    <th className="text-right p-2 font-semibold">Bins Loaded</th>
+                                    <th className="text-right p-2 font-semibold">Qty Loaded</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {inv.items.map((it) => (
+                                    <tr key={`${inv.id}::${it.customerItem}::${it.itemNumber}`} className="border-b last:border-b-0">
+                                      <td className="p-2 font-medium">{it.customerItem}</td>
+                                      <td className="p-2">{it.itemNumber}</td>
+                                      <td className="p-2 text-right font-semibold">{it.binsLoaded}</td>
+                                      <td className="p-2 text-right font-semibold">{it.qtyLoaded}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
 
@@ -1952,15 +2430,15 @@ const Dispatch = () => {
                       <div className="text-xs space-y-1 text-foreground">
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Invoices:</span>
-                          <span className="font-medium">1</span>
+                          <span className="font-medium">{gatepassSummary.grandTotals.invoiceCount}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Bins:</span>
-                          <span className="font-medium">68</span>
+                          <span className="font-medium">{gatepassSummary.grandTotals.binsLoaded}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Total Quantity:</span>
-                          <span className="font-medium">{loadedBarcodes.reduce((sum, b) => sum + (parseInt(b.quantity || '0') || 0), 0)}</span>
+                          <span className="font-medium">{gatepassSummary.grandTotals.qtyLoaded}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Vehicle:</span>
@@ -2007,7 +2485,7 @@ const Dispatch = () => {
                       setSelectedInvoices([]);
                       setLoadedBarcodes([]);
                       setDispatchCustomerScan(null);
-                      setDispatchAutolivScan(null);
+                      setDispatchScanAlert(null);
                       setSelectInvoiceValue("");
                       setGatepassNumber("");
                     }}
@@ -2144,10 +2622,11 @@ const Dispatch = () => {
 
       {/* Dispatch Logs Dialog */}
       <LogsDialog
-        open={showDispatchLogs}
-        onOpenChange={setShowDispatchLogs}
+        isOpen={showDispatchLogs}
+        onClose={() => setShowDispatchLogs(false)}
         title="Dispatch Logs"
         logs={getDispatchLogs()}
+        type="dispatch"
       />
     </div>
   );

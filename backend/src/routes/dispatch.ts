@@ -6,6 +6,105 @@ import { canonicalizeBarcode, encodeAsciiTriplets } from '../utils/barcodeNormal
 
 const router = Router();
 
+const normalizeOptionalString = (v: unknown): string | null => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s.length > 0 ? s : null;
+};
+
+const toIsoDateOnly = (v: unknown): string | null => {
+  if (!v) return null;
+  const d = new Date(String(v));
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+};
+
+const getInvoicePartCandidates = async (invoiceId: string): Promise<string[]> => {
+  const items = await query(
+    `SELECT customer_item, part
+     FROM invoice_items
+     WHERE invoice_id = $1`,
+    [invoiceId]
+  );
+
+  const s = new Set<string>();
+  for (const r of items.rows || []) {
+    const a = normalizeOptionalString(r.customer_item);
+    const b = normalizeOptionalString(r.part);
+    if (a) s.add(a);
+    if (b) s.add(b);
+  }
+  return Array.from(s);
+};
+
+const getScheduleFallback = async (args: {
+  invoiceId: string;
+  invoiceDeliveryDate: unknown;
+  missing: { deliveryDate: boolean; deliveryTime: boolean; unloadingLoc: boolean };
+}): Promise<{ deliveryDate: string | null; deliveryTime: string | null; unloadingLoc: string | null }> => {
+  const invoiceDateOnly = toIsoDateOnly(args.invoiceDeliveryDate);
+  const parts = await getInvoicePartCandidates(args.invoiceId);
+
+  // Helper: execute a schedule query and normalize results
+  const pick = (row: any) => ({
+    deliveryDate: row?.delivery_date ? toIsoDateOnly(row.delivery_date) : null,
+    deliveryTime: normalizeOptionalString(row?.delivery_time),
+    unloadingLoc: normalizeOptionalString(row?.unloading_loc),
+  });
+
+  // 1) Prefer matching by invoice delivery date + part match (best precision).
+  if (invoiceDateOnly) {
+    try {
+      if (parts.length > 0) {
+        const r = await query(
+          `SELECT delivery_date, delivery_time, unloading_loc
+           FROM schedule_items
+           WHERE delivery_date = $1::date
+             AND (part_number = ANY($2) OR customer_part = ANY($2))
+             AND (delivery_time IS NOT NULL OR unloading_loc IS NOT NULL)
+           ORDER BY delivery_time NULLS LAST
+           LIMIT 1`,
+          [invoiceDateOnly, parts]
+        );
+        if (r.rows?.length) return pick(r.rows[0]);
+      }
+
+      const r2 = await query(
+        `SELECT delivery_date, delivery_time, unloading_loc
+         FROM schedule_items
+         WHERE delivery_date = $1::date
+           AND (delivery_time IS NOT NULL OR unloading_loc IS NOT NULL)
+         ORDER BY delivery_time NULLS LAST
+         LIMIT 1`,
+        [invoiceDateOnly]
+      );
+      if (r2.rows?.length) return pick(r2.rows[0]);
+    } catch (e) {
+      console.warn('Schedule fallback by delivery_date failed:', e);
+    }
+  }
+
+  // 2) Fallback by parts only (schedule customer_code can be null).
+  if (parts.length > 0) {
+    try {
+      const r3 = await query(
+        `SELECT delivery_date, delivery_time, unloading_loc
+         FROM schedule_items
+         WHERE (part_number = ANY($1) OR customer_part = ANY($1))
+           AND (delivery_date IS NOT NULL OR delivery_time IS NOT NULL OR unloading_loc IS NOT NULL)
+         ORDER BY delivery_date DESC NULLS LAST
+         LIMIT 1`,
+        [parts]
+      );
+      if (r3.rows?.length) return pick(r3.rows[0]);
+    } catch (e) {
+      console.warn('Schedule fallback by part_number failed:', e);
+    }
+  }
+
+  return { deliveryDate: null, deliveryTime: null, unloadingLoc: null };
+};
+
 /**
  * GET /api/dispatch/ready
  * Get invoices ready for dispatch (audited but not dispatched)
@@ -409,24 +508,46 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       }
     }
     
-    const invoices = invoiceDetailsResult.rows.map((inv: any) => {
-      const deliveryDate = inv.delivery_date ? new Date(inv.delivery_date) : null;
-      const isOnTime = deliveryDate ? dispatchDate <= deliveryDate : null;
-      const status = isOnTime === null ? 'unknown' : (isOnTime ? 'on-time' : 'late');
-      
-      const invoiceData = {
-        id: inv.id,
-        deliveryDate: inv.delivery_date || null,
-        deliveryTime: inv.delivery_time || null,
-        unloadingLoc: inv.unloading_loc || null,
-        status
-      };
-      
-      // Log each invoice being returned
-      console.log(`📦 Invoice ${inv.id} data:`, invoiceData);
-      
-      return invoiceData;
-    });
+    const invoices = await Promise.all(
+      invoiceDetailsResult.rows.map(async (inv: any) => {
+        const invoiceId = String(inv.id);
+
+        let deliveryDateRaw: string | null = inv.delivery_date || null;
+        let deliveryTime: string | null = normalizeOptionalString(inv.delivery_time);
+        let unloadingLoc: string | null = normalizeOptionalString(inv.unloading_loc);
+
+        // Best-effort schedule fallback when invoice fields are missing/blank.
+        if (!deliveryDateRaw || !deliveryTime || !unloadingLoc) {
+          const fb = await getScheduleFallback({
+            invoiceId,
+            invoiceDeliveryDate: deliveryDateRaw,
+            missing: {
+              deliveryDate: !deliveryDateRaw,
+              deliveryTime: !deliveryTime,
+              unloadingLoc: !unloadingLoc,
+            },
+          });
+          if (!deliveryDateRaw && fb.deliveryDate) deliveryDateRaw = fb.deliveryDate;
+          if (!deliveryTime && fb.deliveryTime) deliveryTime = fb.deliveryTime;
+          if (!unloadingLoc && fb.unloadingLoc) unloadingLoc = fb.unloadingLoc;
+        }
+
+        const deliveryDateObj = deliveryDateRaw ? new Date(deliveryDateRaw) : null;
+        const isOnTime = deliveryDateObj && !Number.isNaN(deliveryDateObj.getTime()) ? dispatchDate <= deliveryDateObj : null;
+        const status = isOnTime === null ? 'unknown' : isOnTime ? 'on-time' : 'late';
+
+        const invoiceData = {
+          id: invoiceId,
+          deliveryDate: deliveryDateRaw || null,
+          deliveryTime: deliveryTime || null,
+          unloadingLoc: unloadingLoc || null,
+          status,
+        };
+
+        console.log(`📦 Invoice ${invoiceId} data (post-fallback):`, invoiceData);
+        return invoiceData;
+      })
+    );
     
     // Log all invoices being returned
     console.log('✅ All invoices being returned to frontend:', invoices);
@@ -448,11 +569,31 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       console.warn('Failed to calculate total number of bins:', binsError);
     }
 
-    // Get supply dates (delivery_date) from invoices
-    const supplyDates = invoiceDetailsResult.rows
-      .map((inv: any) => inv.delivery_date)
+    // Get supply dates (delivery_date) from invoices (use post-fallback values)
+    const supplyDates = invoices
+      .map((inv: any) => inv.deliveryDate)
       .filter(Boolean)
-      .map((date: any) => date ? new Date(date).toISOString().slice(0, 10) : null);
+      .map((date: any) => (date ? new Date(date).toISOString().slice(0, 10) : null));
+
+    // Optional robustness: compute loaded totals from DB (source of truth)
+    // This reflects what was actually recorded as loading-dispatch scans.
+    let loadedBinsCount: number | null = null;
+    let loadedQty: number | null = null;
+    try {
+      const loadedTotals = await query(
+        `SELECT
+            COUNT(*)::int AS bins_loaded,
+            COALESCE(SUM(COALESCE(bin_quantity, 0)), 0)::int AS qty_loaded
+         FROM validated_barcodes
+         WHERE scan_context = 'loading-dispatch'
+           AND invoice_id = ANY($1)`,
+        [invoiceIds]
+      );
+      loadedBinsCount = loadedTotals.rows[0]?.bins_loaded ?? 0;
+      loadedQty = loadedTotals.rows[0]?.qty_loaded ?? 0;
+    } catch (e) {
+      console.warn('Failed to compute loaded totals from validated_barcodes:', e);
+    }
 
     res.json({
       success: true,
@@ -465,7 +606,9 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
       totalQuantity,
       totalNumberOfBins, // Total number of bins across all items
       supplyDates, // Array of supply dates (delivery_date) from invoices
-      invoices
+      invoices,
+      loadedBinsCount,
+      loadedQty
     });
   } catch (error: any) {
     console.error('Dispatch error:', error);
@@ -587,21 +730,48 @@ router.get('/gatepass/:number', authenticateToken, async (req: AuthRequest, res:
         customer: gatepass.customer,
         customerCode: gatepass.customer_code || null,
         dispatchDate: gatepass.dispatch_date || gatepass.created_at || null,
-        invoices: invoicesResult.rows.map((inv: any) => {
-          const deliveryDate = inv.delivery_date ? new Date(inv.delivery_date) : null;
-          const isOnTime = deliveryDate && dispatchDate ? dispatchDate <= deliveryDate : null;
-          const status = isOnTime === null ? 'unknown' : (isOnTime ? 'on-time' : 'late');
-          
-          return {
-            id: inv.id,
-            customer: inv.customer,
-            totalQty: inv.total_qty,
-            deliveryDate: inv.delivery_date || null,
-            deliveryTime: inv.delivery_time || null,
-            unloadingLoc: inv.unloading_loc || null,
-            status
-          };
-        }),
+        invoices: await Promise.all(
+          invoicesResult.rows.map(async (inv: any) => {
+            const invoiceId = String(inv.id);
+
+            let deliveryDateRaw: string | null = inv.delivery_date || null;
+            let deliveryTime: string | null = normalizeOptionalString(inv.delivery_time);
+            let unloadingLoc: string | null = normalizeOptionalString(inv.unloading_loc);
+
+            // Best-effort schedule fallback when invoice fields are missing/blank.
+            if (!deliveryDateRaw || !deliveryTime || !unloadingLoc) {
+              const fb = await getScheduleFallback({
+                invoiceId,
+                invoiceDeliveryDate: deliveryDateRaw,
+                missing: {
+                  deliveryDate: !deliveryDateRaw,
+                  deliveryTime: !deliveryTime,
+                  unloadingLoc: !unloadingLoc,
+                },
+              });
+              if (!deliveryDateRaw && fb.deliveryDate) deliveryDateRaw = fb.deliveryDate;
+              if (!deliveryTime && fb.deliveryTime) deliveryTime = fb.deliveryTime;
+              if (!unloadingLoc && fb.unloadingLoc) unloadingLoc = fb.unloadingLoc;
+            }
+
+            const deliveryDateObj = deliveryDateRaw ? new Date(deliveryDateRaw) : null;
+            const isOnTime =
+              deliveryDateObj && dispatchDate && !Number.isNaN(deliveryDateObj.getTime())
+                ? dispatchDate <= deliveryDateObj
+                : null;
+            const status = isOnTime === null ? 'unknown' : isOnTime ? 'on-time' : 'late';
+
+            return {
+              id: invoiceId,
+              customer: inv.customer,
+              totalQty: inv.total_qty,
+              deliveryDate: deliveryDateRaw || null,
+              deliveryTime: deliveryTime || null,
+              unloadingLoc: unloadingLoc || null,
+              status,
+            };
+          })
+        ),
         totalItems: gatepass.total_items,
         totalQuantity: gatepass.total_quantity,
         authorizedBy: gatepass.authorized_by,

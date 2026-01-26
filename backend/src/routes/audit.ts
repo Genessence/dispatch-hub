@@ -884,15 +884,13 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
         [invoiceItemId, scanContext, customerBinNumber]
       );
       if (existingBin.rows.length > 0) {
-        return reportMismatchAndBlock({
+        // Duplicate scan should NOT block invoice or require admin approval.
+        // We return a conflict so the client can show a warning and continue scanning.
+        return res.status(409).json({
+          success: false,
+          error: 'Duplicate scan',
+          message: `Duplicate scan ignored. Bin "${customerBinNumber}" was already scanned for this item.`,
           validationStep: 'duplicate_customer_bin_scan',
-          message: `Duplicate customer bin scan ignored. Bin "${customerBinNumber}" was already scanned; invoice blocked for admin review.`,
-          customerScan: {
-            partCode: customerPart,
-            quantity: binQtyStr,
-            binNumber: customerBinNumber,
-            rawValue: canonicalCustomerBarcode || '',
-          },
         });
       }
 
@@ -1144,21 +1142,13 @@ router.post('/:invoiceId/scan-stage', authenticateToken, async (req: AuthRequest
       [invoiceItemId, scanContext, autolivBinNumber]
     );
     if (existingInbdBin.rows.length > 0) {
-      return reportMismatchAndBlock({
+      // Duplicate scan should NOT block invoice or require admin approval.
+      // We return a conflict so the client can show a warning and continue scanning.
+      return res.status(409).json({
+        success: false,
+        error: 'Duplicate scan',
+        message: `Duplicate scan ignored. INBD bin "${autolivBinNumber}" was already scanned for this item.`,
         validationStep: 'duplicate_inbd_bin_scan',
-        message: `Duplicate INBD bin scan ignored. Bin "${autolivBinNumber}" was already scanned; invoice blocked for admin review.`,
-        customerScan: {
-          partCode: customerPart,
-          quantity: parsedCustomer.quantity,
-          binNumber: customerBinNumber,
-          rawValue: derivedCustomerBarcode || '',
-        },
-        autolivScan: {
-          partCode: autolivPart,
-          quantity: parsedAutoliv.quantity,
-          binNumber: autolivBinNumber,
-          rawValue: canonicalAutolivBarcode || '',
-        },
       });
     }
 

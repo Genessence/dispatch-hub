@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -22,6 +23,7 @@ import {
   ChevronDown
 } from "lucide-react";
 import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner";
+import { useKeyboardBarcodeScanner } from "@/hooks/useKeyboardBarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
@@ -78,6 +80,10 @@ const DocAudit = () => {
     invoiceId: string;
     item: UploadedRow;
   } | null>(null);
+
+  // Enforce strict scan order: Customer -> Autoliv
+  const [scanPhase, setScanPhase] = useState<'customer' | 'autoliv'>('customer');
+  const [scanOrderAlert, setScanOrderAlert] = useState<string | null>(null);
   
   // Delivery date, location, and time selection states
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
@@ -93,15 +99,24 @@ const DocAudit = () => {
   const [testCustomerScan, setTestCustomerScan] = useState<BarcodeData | null>(null);
   const [testAutolivScan, setTestAutolivScan] = useState<BarcodeData | null>(null);
   
-  const [validatedBins, setValidatedBins] = useState<Record<string, Array<{
+  type ValidatedBinScanRow = {
+    scanId?: string;
     customerItem: string;
     itemNumber: string;
     partDescription: string;
-    quantity: number;
+    binNumber?: string | null;
+    binQuantity?: number | null;
+    quantity: number; // Display quantity for this scan row (usually binQuantity)
     status: string;
     scannedBy: string;
-    time: string;
-  }>>>({});
+    scannedAt?: string | null;
+    time: string; // Display time, computed from scannedAt where possible
+  };
+
+  const [validatedBins, setValidatedBins] = useState<Record<string, ValidatedBinScanRow[]>>({});
+
+  // Pending customer-stage scans (server-side source of truth for resume behavior)
+  const [pendingDocAuditCustomerScansByInvoice, setPendingDocAuditCustomerScansByInvoice] = useState<Record<string, number>>({});
 
   // Helper function to format date as YYYY-MM-DD in local timezone
   const formatDateAsLocalString = (date: Date): string => {
@@ -120,6 +135,77 @@ const DocAudit = () => {
     
     return matched;
   }, [getInvoicesWithSchedule]);
+
+  const hasBlockedSelectedInvoice = useMemo(() => {
+    if (selectedInvoices.length === 0) return false;
+    return selectedInvoices.some((invId) => {
+      const inv = sharedInvoices.find((i) => i.id === invId);
+      return !!inv?.blocked;
+    });
+  }, [selectedInvoices, sharedInvoices]);
+
+  // Server-truth resume signal: if any selected invoice has pending doc-audit customer-stage scans,
+  // we should continue from Autoliv (INBD) step.
+  const hasPendingCustomerStage = useMemo(() => {
+    if (selectedInvoices.length === 0) return false;
+    return selectedInvoices.some((invId) => (pendingDocAuditCustomerScansByInvoice[invId] || 0) > 0);
+  }, [selectedInvoices, pendingDocAuditCustomerScansByInvoice]);
+
+  // Background scanning (hardware/keyboard scanner): enabled after invoice selection.
+  // IMPORTANT: Disable while invoice-selection scanner dialog is open to avoid keydown-listener conflicts.
+  useKeyboardBarcodeScanner({
+    enabled: selectedInvoices.length > 0 && !hasBlockedSelectedInvoice && !showInvoiceQRScanner,
+    onScanAttempt: (data) => {
+      // Block overlap: don’t allow a new scan while a pair is in-flight (both scans present).
+      if (customerScan && autolivScan) {
+        setScanOrderAlert("Validating previous pair… please wait.");
+        return { accepted: false, rejectReason: "processing" };
+      }
+
+      // Require QR type detection for strict ordering.
+      if (!data.qrType) {
+        setScanOrderAlert("Unrecognized QR type. Please scan a valid Customer label first.");
+        return { accepted: false, rejectReason: "unknown_type" };
+      }
+
+      if (scanPhase === 'customer') {
+        if (data.qrType !== 'customer') {
+          setScanOrderAlert("Scan Customer label first.");
+          return { accepted: false, rejectReason: "customer_first" };
+        }
+        setScanOrderAlert(null);
+        return { accepted: true };
+      }
+
+      // scanPhase === 'autoliv'
+      if (data.qrType !== 'autoliv') {
+        setScanOrderAlert("Scan Autoliv label for the last Customer scan first.");
+        return { accepted: false, rejectReason: "autoliv_next" };
+      }
+
+      // Allow resume mode: if local customerScan is empty but backend has a pending customer-stage scan,
+      // accept Autoliv scan so we can pair via scan-stage endpoint.
+      if (!customerScan && !hasPendingCustomerStage) {
+        setScanPhase('customer');
+        setScanOrderAlert("Scan Customer label first.");
+        return { accepted: false, rejectReason: "missing_customer" };
+      }
+
+      setScanOrderAlert(null);
+      return { accepted: true };
+    },
+    onScan: (data) => {
+      // Route accepted scans based on expected phase.
+      if (scanPhase === 'customer') {
+        setCustomerScan(data);
+        setScanPhase('autoliv');
+        return;
+      }
+
+      // scanPhase === 'autoliv'
+      setAutolivScan(data);
+    },
+  });
 
   // Delivery date options come from invoice data (Invoice Date is the Delivery Date)
   const availableDeliveryDates = useMemo(() => {
@@ -320,6 +406,7 @@ const DocAudit = () => {
   // Clear validated bins when invoice selection changes
   useEffect(() => {
     setValidatedBins({});
+    setPendingDocAuditCustomerScansByInvoice({});
     setCustomerScan(null);
     setAutolivScan(null);
   }, [selectedInvoices]);
@@ -333,6 +420,17 @@ const DocAudit = () => {
         })
       );
 
+      // Compute pending counts (status='pending' in doc-audit are customer-stage scans awaiting pairing)
+      setPendingDocAuditCustomerScansByInvoice(prev => {
+        const next = { ...prev };
+        for (const { invoiceId, resp } of results) {
+          if (!resp?.success || !Array.isArray(resp.scans)) continue;
+          const pendingCount = resp.scans.filter((s: any) => s?.status === 'pending').length;
+          next[invoiceId] = pendingCount;
+        }
+        return next;
+      });
+
       setValidatedBins(prev => {
         const next = { ...prev };
         for (const { invoiceId, resp } of results) {
@@ -340,12 +438,16 @@ const DocAudit = () => {
           const rows = resp.scans
             .filter((s: any) => s?.status === 'matched')
             .map((s: any) => ({
+              scanId: s.id || undefined,
               customerItem: s.customerItem || 'N/A',
               itemNumber: s.itemNumber || 'N/A',
               partDescription: s.partDescription || 'N/A',
+              binNumber: s.customerBinNumber ?? s.binNumber ?? null,
+              binQuantity: (s.binQuantity ?? null) as number | null,
               quantity: (s.binQuantity ?? s.quantity ?? 0) as number,
               status: s.status || 'unknown',
               scannedBy: s.scannedBy || 'N/A',
+              scannedAt: s.scannedAt ?? null,
               time: s.scannedAt
                 ? new Date(s.scannedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
                 : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
@@ -359,12 +461,76 @@ const DocAudit = () => {
     }
   };
 
+  const groupScansByItem = (rows: ValidatedBinScanRow[]) => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        customerItem: string;
+        itemNumber: string;
+        partDescription: string;
+        scans: ValidatedBinScanRow[];
+        totalQty: number;
+        lastScannedAtMs: number;
+      }
+    >();
+
+    for (const r of rows) {
+      const customerItem = (r.customerItem || 'N/A').trim();
+      const itemNumber = (r.itemNumber || 'N/A').trim();
+      const key = `${customerItem}||${itemNumber}`;
+      const partDescription = r.partDescription || 'N/A';
+      const qty = Number(r.quantity ?? 0) || 0;
+      const scannedAtMs = r.scannedAt ? new Date(r.scannedAt).getTime() : 0;
+
+      const existing = map.get(key);
+      if (existing) {
+        existing.scans.push(r);
+        existing.totalQty += qty;
+        existing.lastScannedAtMs = Math.max(existing.lastScannedAtMs, scannedAtMs);
+      } else {
+        map.set(key, {
+          key,
+          customerItem,
+          itemNumber,
+          partDescription,
+          scans: [r],
+          totalQty: qty,
+          lastScannedAtMs: scannedAtMs,
+        });
+      }
+    }
+
+    return Array.from(map.values())
+      .map((g) => ({
+        ...g,
+        scans: [...g.scans].sort((a, b) => {
+          const ta = a.scannedAt ? new Date(a.scannedAt).getTime() : 0;
+          const tb = b.scannedAt ? new Date(b.scannedAt).getTime() : 0;
+          return tb - ta; // newest first
+        }),
+      }))
+      .sort((a, b) => b.lastScannedAtMs - a.lastScannedAtMs);
+  };
+
   useEffect(() => {
     if (selectedInvoices.length > 0) {
       refreshInvoiceScans(selectedInvoices);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInvoices.join(',')]);
+
+  // If an invoice was blocked and then becomes unblocked (admin corrected), refresh scans so we
+  // immediately detect pending customer-stage scans and resume from Autoliv.
+  const prevBlockedSelectedInvoiceRef = useRef<boolean>(false);
+  useEffect(() => {
+    const prev = prevBlockedSelectedInvoiceRef.current;
+    if (prev && !hasBlockedSelectedInvoice && selectedInvoices.length > 0) {
+      refreshInvoiceScans(selectedInvoices);
+    }
+    prevBlockedSelectedInvoiceRef.current = hasBlockedSelectedInvoice;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasBlockedSelectedInvoice, selectedInvoices.join(',')]);
   
   // Handle invoice QR scan - Randomly picks unscanned invoice
   const handleInvoiceQRScan = (data: BarcodeData) => {
@@ -415,32 +581,44 @@ const DocAudit = () => {
   }, [sharedInvoices, selectedInvoices]);
 
   // Auto-validate when both barcodes are scanned
-  // Handle QR scans - can be in any order
+  // Handle QR scans - STRICT ORDER: customer then autoliv
   useEffect(() => {
-    // If customer QR is scanned and it's a customer QR type
     if (customerScan && customerScan.qrType === 'customer') {
       handleCustomerQRValidation().catch((e) => console.error('Customer QR validation error:', e));
-    }
-    // If customer QR is scanned but it's actually an Autoliv QR (wrong button)
-    else if (customerScan && customerScan.qrType === 'autoliv') {
-      // User scanned Autoliv QR in customer scanner - handle it
-      setAutolivScan(customerScan);
+    } else if (customerScan && customerScan.qrType !== 'customer') {
+      // Safety: should not happen (we block out-of-order scans at capture time),
+      // but keep the state clean if it does.
       setCustomerScan(null);
     }
   }, [customerScan]);
 
   useEffect(() => {
-    // If Autoliv QR is scanned and it's an Autoliv QR type
     if (autolivScan && autolivScan.qrType === 'autoliv') {
       handleAutolivQRValidation().catch((e) => console.error('Autoliv QR validation error:', e));
-    }
-    // If Autoliv QR is scanned but it's actually a Customer QR (wrong button)
-    else if (autolivScan && autolivScan.qrType === 'customer') {
-      // User scanned Customer QR in Autoliv scanner - handle it
-      setCustomerScan(autolivScan);
+    } else if (autolivScan && autolivScan.qrType !== 'autoliv') {
       setAutolivScan(null);
     }
   }, [autolivScan]);
+
+  // Keep scan phase in sync with current scan state (and prevent overlapping pairs).
+  useEffect(() => {
+    // While a pair is being processed (both scans present), keep phase at autoliv (UI shows “processing” separately).
+    if (customerScan && !autolivScan) {
+      setScanPhase('autoliv');
+    } else if (!customerScan) {
+      // If the backend indicates there is a pending customer-stage scan,
+      // we must resume from Autoliv even if local state is empty.
+      setScanPhase(hasPendingCustomerStage ? 'autoliv' : 'customer');
+    }
+  }, [customerScan, autolivScan, hasPendingCustomerStage]);
+
+  // Reset scan order UI when scanning is disabled / selection cleared.
+  useEffect(() => {
+    if (selectedInvoices.length === 0 || hasBlockedSelectedInvoice) {
+      setScanPhase('customer');
+      setScanOrderAlert(null);
+    }
+  }, [selectedInvoices.length, hasBlockedSelectedInvoice]);
 
   // When both are validated, proceed to steps 3 and 4
   useEffect(() => {
@@ -614,10 +792,19 @@ const DocAudit = () => {
       await refreshInvoiceScans([invoiceId]);
     } catch (error: any) {
       console.error('Customer stage scan error:', error);
-      toast.error("⚠️ Customer scan rejected", {
-        description: error?.message || "Scan failed. Invoice may be blocked; check Exception Alerts.",
-        duration: 6000,
-      });
+      const message = error?.message || "Scan failed.";
+      const isDuplicate = /duplicate|already been scanned/i.test(message);
+      if (isDuplicate) {
+        toast.warning("⚠️ Duplicate scan ignored", {
+          description: message,
+          duration: 4000,
+        });
+      } else {
+        toast.error("⚠️ Customer scan rejected", {
+          description: message || "Scan failed. Invoice may be blocked; check Exception Alerts.",
+          duration: 6000,
+        });
+      }
       await refreshData();
       setCustomerScan(null);
       setMatchedCustomerItem(null);
@@ -801,10 +988,19 @@ const DocAudit = () => {
         });
       } catch (error: any) {
         console.error('INBD resume scan error:', error);
-        toast.error('Failed to record INBD scan', {
-          description: error?.message || 'You may need to scan the customer label again.',
-          duration: 6000
-        });
+        const message = error?.message || 'You may need to scan the customer label again.';
+        const isDuplicate = /duplicate|already been scanned/i.test(message);
+        if (isDuplicate) {
+          toast.warning('⚠️ Duplicate scan ignored', {
+            description: message,
+            duration: 4000
+          });
+        } else {
+          toast.error('Failed to record INBD scan', {
+            description: message,
+            duration: 6000
+          });
+        }
         await refreshData();
       } finally {
         // Reset state for next scan
@@ -980,10 +1176,19 @@ const DocAudit = () => {
       await refreshInvoiceScans([invoiceId]);
     } catch (error: any) {
       console.error('INBD stage scan error:', error);
-      toast.error('Failed to record INBD scan', {
-        description: error?.message || 'Invoice may be blocked; check Exception Alerts.',
-        duration: 6000
-      });
+      const message = error?.message || 'Invoice may be blocked; check Exception Alerts.';
+      const isDuplicate = /duplicate|already been scanned/i.test(message);
+      if (isDuplicate) {
+        toast.warning('⚠️ Duplicate scan ignored', {
+          description: message,
+          duration: 4000
+        });
+      } else {
+        toast.error('Failed to record INBD scan', {
+          description: message,
+          duration: 6000
+        });
+      }
       await refreshData();
       setCustomerScan(null);
       setAutolivScan(null);
@@ -1757,10 +1962,7 @@ const DocAudit = () => {
             </Button>
 
             {/* Blocked Warning Card */}
-            {selectedInvoices.some(invId => {
-              const inv = sharedInvoices.find(i => i.id === invId);
-              return inv?.blocked;
-            }) && (
+            {hasBlockedSelectedInvoice && (
               <Card className="mb-6 border-2 border-red-500 bg-red-50 dark:bg-red-950">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-red-900 dark:text-red-100">
@@ -1775,7 +1977,7 @@ const DocAudit = () => {
               </Card>
             )}
             
-            <Card className={`mb-6 ${selectedInvoices.some(invId => sharedInvoices.find(i => i.id === invId)?.blocked) ? "opacity-60" : ""}`}>
+            <Card className={`mb-6 ${hasBlockedSelectedInvoice ? "opacity-60" : ""}`}>
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-primary/10 rounded-lg">
@@ -1784,7 +1986,7 @@ const DocAudit = () => {
                   <div>
                     <CardTitle className="text-lg">Barcode Scanning & Validation</CardTitle>
                     <CardDescription>
-                      {selectedInvoices.some(invId => sharedInvoices.find(i => i.id === invId)?.blocked)
+                      {hasBlockedSelectedInvoice
                         ? "Admin approval needed - Scanning disabled" 
                         : "Scan customer and Autoliv labels - system will auto-detect which invoice the item belongs to"}
                     </CardDescription>
@@ -1793,6 +1995,28 @@ const DocAudit = () => {
               </CardHeader>
               <CardContent>
                 <div className="space-y-6">
+                  {scanOrderAlert && !hasBlockedSelectedInvoice && (
+                    <div className="p-3 border-2 border-yellow-500/40 bg-yellow-50/60 dark:bg-yellow-950/20 rounded-lg text-sm">
+                      <p className="font-semibold text-yellow-800 dark:text-yellow-200">Scan order required</p>
+                      <p className="text-xs text-yellow-800/90 dark:text-yellow-200/90 mt-1">
+                        {scanOrderAlert}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Resume hint: if backend has pending customer-stage scans, user should continue with Autoliv */}
+                  {!hasBlockedSelectedInvoice &&
+                    hasPendingCustomerStage &&
+                    !customerScan &&
+                    scanPhase === 'autoliv' &&
+                    !showInvoiceQRScanner && (
+                      <div className="p-3 border-2 border-green-500/30 bg-green-50/60 dark:bg-green-950/20 rounded-lg text-sm">
+                        <p className="font-semibold text-green-800 dark:text-green-200">Resume available</p>
+                        <p className="text-xs text-green-800/90 dark:text-green-200/90 mt-1">
+                          Resume: scan Autoliv label now (customer label was already scanned earlier).
+                        </p>
+                      </div>
+                    )}
                   <div className="grid md:grid-cols-2 gap-6">
                     {/* Customer Label Scan */}
                     <div className="space-y-2">
@@ -1819,27 +2043,26 @@ const DocAudit = () => {
                           </div>
                         </div>
                       )}
-                      <BarcodeScanButton
-                        onScan={(data) => {
-                          const hasBlocked = selectedInvoices.some(invId => {
-                            const inv = sharedInvoices.find(i => i.id === invId);
-                            return inv?.blocked;
-                          });
-                          
-                          if (hasBlocked) {
-                            toast.error("⚠️ Invoices are Blocked", {
-                              description: "One or more invoices have a mismatch. Please wait for admin to mark them as corrected.",
-                              duration: 5000,
-                            });
-                            return;
-                          }
-                          setCustomerScan(data);
-                          toast.success("Customer barcode scanned!");
-                        }}
-                        label={customerScan ? "Scan Again" : "Scan Customer Barcode"}
-                        variant="default"
-                        disabled={selectedInvoices.some(invId => sharedInvoices.find(i => i.id === invId)?.blocked)}
-                      />
+                      <div
+                        className={`w-full h-14 rounded-md border-2 flex items-center justify-center text-sm font-medium ${
+                          hasBlockedSelectedInvoice
+                            ? "border-red-300 bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-200"
+                            : "border-primary/30 bg-primary/5 text-primary"
+                        }`}
+                      >
+                        {hasBlockedSelectedInvoice
+                          ? "Scanning disabled (blocked invoice)"
+                          : showInvoiceQRScanner
+                            ? "Finish invoice selection to start scanning"
+                            : customerScan && autolivScan
+                              ? "Validating… please wait"
+                              : scanPhase === 'customer'
+                                ? "Scanner active — scan Customer label now"
+                                : "Customer scanned — now scan Autoliv label"}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        No button needed — just scan using the hardware scanner.
+                      </p>
                     </div>
 
                     {/* Autoliv Label Scan */}
@@ -1867,14 +2090,26 @@ const DocAudit = () => {
                           </div>
                         </div>
                       )}
-                      <BarcodeScanButton
-                        onScan={(data) => {
-                          setAutolivScan(data);
-                          toast.success("Autoliv barcode scanned!");
-                        }}
-                        label={autolivScan ? "Scan Again" : "Scan Autoliv Barcode"}
-                        variant="secondary"
-                      />
+                      <div
+                        className={`w-full h-14 rounded-md border-2 flex items-center justify-center text-sm font-medium ${
+                          hasBlockedSelectedInvoice
+                            ? "border-red-300 bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-200"
+                            : "border-accent/30 bg-accent/5 text-accent"
+                        }`}
+                      >
+                        {hasBlockedSelectedInvoice
+                          ? "Scanning disabled (blocked invoice)"
+                          : showInvoiceQRScanner
+                            ? "Finish invoice selection to start scanning"
+                            : customerScan && autolivScan
+                              ? "Validating… please wait"
+                              : scanPhase === 'autoliv'
+                                ? "Scanner active — scan Autoliv label now"
+                                : "Waiting for Customer label"}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Scan Autoliv only after scanning the Customer label.
+                      </p>
                     </div>
                   </div>
 
@@ -2071,65 +2306,118 @@ const DocAudit = () => {
               </CardHeader>
               <CardContent>
                 {Object.keys(validatedBins).length > 0 ? (
-                  <div className="space-y-4">
-                    {selectedInvoices.map(invoiceId => {
+                  <Accordion type="multiple" className="w-full">
+                    {selectedInvoices.map((invoiceId) => {
                       const bins = validatedBins[invoiceId] || [];
                       if (bins.length === 0) return null;
-                      
-                      const invoice = selectedInvoiceObjects.find(inv => inv.id === invoiceId);
-                      const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
+
+                      const invoice = selectedInvoiceObjects.find((inv) => inv.id === invoiceId);
+                      const invoiceInShared = sharedInvoices.find((inv) => inv.id === invoiceId);
                       const invoiceData = invoiceInShared || invoice;
-                      
+
+                      const itemGroups = groupScansByItem(bins);
+
                       return (
-                        <div key={invoiceId} className="border-2 rounded-lg overflow-hidden">
-                          <div className="bg-muted p-3 flex items-center justify-between">
-                            <div>
-                              <p className="font-semibold text-sm">{invoiceId}</p>
-                              <p className="text-xs text-muted-foreground">{invoiceData?.customer || 'Unknown'}</p>
+                        <AccordionItem
+                          key={invoiceId}
+                          value={`invoice-${invoiceId}`}
+                          className="border border-b-0 rounded-lg mb-3 overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-3 py-3 hover:no-underline bg-muted/40">
+                            <div className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                              <div className="min-w-0">
+                                <p className="font-semibold text-sm truncate">{invoiceId}</p>
+                                <p className="text-xs text-muted-foreground truncate">
+                                  {invoiceData?.customer || "Unknown"}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Badge variant="secondary" className="text-xs">
+                                  {bins.length} scans
+                                </Badge>
+                                <Badge variant="outline" className="text-xs">
+                                  {itemGroups.length} items
+                                </Badge>
+                              </div>
                             </div>
-                            <Badge variant="secondary">
-                              {bins.length} scanned
-                            </Badge>
-                          </div>
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-xs sm:text-sm min-w-[600px]">
-                              <thead className="bg-muted/50">
-                                <tr>
-                                  <th className="text-left p-3 font-semibold">Customer Item</th>
-                                  <th className="text-left p-3 font-semibold">Item Number</th>
-                                  <th className="text-left p-3 font-semibold">Quantity</th>
-                                  <th className="text-left p-3 font-semibold">Status</th>
-                                  <th className="text-left p-3 font-semibold">Scanned By</th>
-                                  <th className="text-left p-3 font-semibold">Time</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {bins.map((bin, i) => (
-                                  <tr key={i} className="border-t hover:bg-muted/50">
-                                    <td className="p-3 font-medium">{bin.customerItem}</td>
-                                    <td className="p-3 font-mono">{bin.itemNumber}</td>
-                                    <td className="p-3 font-semibold">{bin.quantity}</td>
-                                    <td className="p-3">
-                                      <Badge variant={bin.status === 'matched' ? 'default' : 'destructive'}>
-                                        {bin.status === 'matched' ? (
-                                          <CheckCircle2 className="h-3 w-3 mr-1" />
-                                        ) : (
-                                          <XCircle className="h-3 w-3 mr-1" />
+                          </AccordionTrigger>
+
+                          <AccordionContent className="px-3 pt-3 pb-3">
+                            <Accordion type="multiple" className="w-full">
+                              {itemGroups.map((group) => (
+                                <AccordionItem
+                                  key={group.key}
+                                  value={`item-${invoiceId}-${group.key}`}
+                                  className="border border-b-0 rounded-md mb-2 overflow-hidden"
+                                >
+                                  <AccordionTrigger className="px-3 py-2 hover:no-underline bg-background">
+                                    <div className="flex flex-1 items-start justify-between gap-3 min-w-0">
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <span className="text-sm font-semibold truncate">
+                                            {group.customerItem}
+                                          </span>
+                                          <span className="text-xs text-muted-foreground">•</span>
+                                          <span className="text-xs font-mono text-muted-foreground truncate">
+                                            {group.itemNumber}
+                                          </span>
+                                        </div>
+                                        {group.partDescription && group.partDescription !== "N/A" && (
+                                          <p className="text-xs text-muted-foreground truncate mt-0.5">
+                                            {group.partDescription}
+                                          </p>
                                         )}
-                                        {bin.status}
-                                      </Badge>
-                                    </td>
-                                    <td className="p-3">{bin.scannedBy}</td>
-                                    <td className="p-3 text-muted-foreground">{bin.time}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <Badge variant="secondary" className="text-xs">
+                                          {group.scans.length} bins
+                                        </Badge>
+                                        <Badge variant="outline" className="text-xs">
+                                          Qty {group.totalQty}
+                                        </Badge>
+                                      </div>
+                                    </div>
+                                  </AccordionTrigger>
+
+                                  <AccordionContent className="px-3 pt-0 pb-3">
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-xs min-w-[520px]">
+                                        <thead className="bg-muted/40">
+                                          <tr>
+                                            <th className="text-left p-2 font-semibold">Bin Number</th>
+                                            <th className="text-left p-2 font-semibold">Bin Qty</th>
+                                            <th className="text-left p-2 font-semibold">Scanned By</th>
+                                            <th className="text-left p-2 font-semibold">Time</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {group.scans.map((scan, idx) => (
+                                            <tr
+                                              key={scan.scanId || `${group.key}-${idx}`}
+                                              className="border-t hover:bg-muted/30"
+                                            >
+                                              <td className="p-2 font-mono">
+                                                {scan.binNumber ? String(scan.binNumber) : "—"}
+                                              </td>
+                                              <td className="p-2 font-semibold">
+                                                {Number(scan.quantity ?? 0) || 0}
+                                              </td>
+                                              <td className="p-2">{scan.scannedBy || "—"}</td>
+                                              <td className="p-2 text-muted-foreground">{scan.time || "—"}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </AccordionContent>
+                                </AccordionItem>
+                              ))}
+                            </Accordion>
+                          </AccordionContent>
+                        </AccordionItem>
                       );
                     })}
-                  </div>
+                  </Accordion>
                 ) : (
                   <div className="text-center py-12 text-muted-foreground">
                     <ScanBarcode className="h-12 w-12 mx-auto mb-4 opacity-50" />
@@ -2240,7 +2528,6 @@ const DocAudit = () => {
                           setSelectedInvoices([]);
                           setCustomerScan(null);
                           setAutolivScan(null);
-                          setFirstScanType(null);
                           setValidatedBins({});
                         }}
                         className="flex items-center gap-2 h-10"
@@ -2529,10 +2816,11 @@ const DocAudit = () => {
 
       {/* Audit Logs Dialog */}
       <LogsDialog
-        open={showAuditLogs}
-        onOpenChange={setShowAuditLogs}
+        isOpen={showAuditLogs}
+        onClose={() => setShowAuditLogs(false)}
         title="Doc Audit Logs"
         logs={getAuditLogs()}
+        type="audit"
       />
     </div>
   );
