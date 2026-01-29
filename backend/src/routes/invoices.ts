@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
+import { parseExcelDateValue } from '../utils/dateParsing';
 
 const router = Router();
 
@@ -14,45 +15,10 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
-// Helper: Excel date serial to JS Date (local date)
-const excelDateToJSDate = (serial: number): Date => {
-  const utc_days = Math.floor(serial - 25569);
-  const utc_value = utc_days * 86400;
-  const date_info = new Date(utc_value * 1000);
-  return new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate());
-};
-
-// Helper: parse invoice date from Excel serial, Date, or common string formats
+// Helper: parse invoice date from Excel serial, Date, or common string formats (STRICT; no JS overflow)
 const parseInvoiceDate = (value: any): Date | null => {
-  if (value === null || value === undefined || value === '') return null;
-  if (value instanceof Date && !isNaN(value.getTime())) return value;
-  if (typeof value === 'number' && !isNaN(value)) return excelDateToJSDate(value);
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-
-    // ISO-like YYYY-MM-DD or YYYY/MM/DD
-    const m1 = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-    if (m1) {
-      const [, y, m, d] = m1;
-      const parsed = new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
-      return isNaN(parsed.getTime()) ? null : parsed;
-    }
-
-    // DD/MM/YYYY or MM/DD/YYYY (try both)
-    const m2 = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
-    if (m2) {
-      const [, a, b, y] = m2;
-      const try1 = new Date(parseInt(y, 10), parseInt(a, 10) - 1, parseInt(b, 10));
-      if (!isNaN(try1.getTime())) return try1;
-      const try2 = new Date(parseInt(y, 10), parseInt(b, 10) - 1, parseInt(a, 10));
-      return isNaN(try2.getTime()) ? null : try2;
-    }
-
-    const parsed = new Date(trimmed);
-    return isNaN(parsed.getTime()) ? null : parsed;
-  }
-  return null;
+  // Prefer day-first because customer files typically use DD/MM/YYYY.
+  return parseExcelDateValue(value, { preferDayFirst: true });
 };
 
 // Helper: case-insensitive column lookup
@@ -514,16 +480,30 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     console.log(`📊 Unique customer items: ${uniqueCustomerItems.size}`);
     console.log('================================\n');
 
-    // Insert into database using transaction
+    // Insert into database using transaction (UPSERT-like behavior for unlocked invoices)
     await transaction(async (client) => {
       for (const [invoiceId, invoice] of invoiceMap) {
         // Check if invoice already exists
         const existingResult = await client.query(
-          'SELECT id FROM invoices WHERE id = $1',
+          'SELECT id, audit_complete, dispatched_by FROM invoices WHERE id = $1',
           [invoiceId]
         );
 
-        if (existingResult.rows.length === 0) {
+        const exists = existingResult.rows.length > 0;
+
+        // If invoice exists and has progressed, do not allow overwrites.
+        if (exists) {
+          const row = existingResult.rows[0];
+          const isAudited = !!row.audit_complete;
+          const isDispatched = !!row.dispatched_by;
+          if (isAudited || isDispatched) {
+            throw new Error(
+              `Invoice ${invoiceId} cannot be re-uploaded because it is already ${isDispatched ? 'dispatched' : 'audited'}.`
+            );
+          }
+        }
+
+        if (!exists) {
           await client.query(
             `INSERT INTO invoices (id, customer, bill_to, invoice_date, delivery_date, delivery_time, unloading_loc, total_qty, bin_capacity, expected_bins, plant, uploaded_by, uploaded_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)`,
@@ -543,16 +523,47 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
               req.user?.username
             ]
           );
+        } else {
+          // Update existing invoice header fields. Keep it deterministic and refresh uploaded_at.
+          await client.query(
+            `UPDATE invoices
+             SET customer = $2,
+                 bill_to = $3,
+                 invoice_date = $4,
+                 delivery_date = $5,
+                 delivery_time = $6,
+                 unloading_loc = $7,
+                 total_qty = $8,
+                 expected_bins = $9,
+                 plant = $10,
+                 uploaded_by = $11,
+                 uploaded_at = CURRENT_TIMESTAMP
+             WHERE id = $1`,
+            [
+              invoiceId,
+              invoice.customer,
+              invoice.billTo,
+              invoice.invoiceDate,
+              invoice.invoiceDate,
+              invoice.deliveryTime,
+              invoice.unloadingLoc,
+              invoice.totalQty,
+              invoice.expectedBins,
+              invoice.plant,
+              req.user?.username,
+            ]
+          );
+        }
 
-          // Insert items
-          const invoiceItems = allItems.filter(item => item.invoiceId === invoiceId);
-          for (const item of invoiceItems) {
-            await client.query(
-              `INSERT INTO invoice_items (invoice_id, part, customer_item, part_description, qty, status, error_message)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-              [invoiceId, item.part, item.customerItem, item.partDescription, item.qty, item.status, item.errorMessage]
-            );
-          }
+        // Always replace items on upload for unlocked invoices.
+        await client.query('DELETE FROM invoice_items WHERE invoice_id = $1', [invoiceId]);
+        const invoiceItems = allItems.filter(item => item.invoiceId === invoiceId);
+        for (const item of invoiceItems) {
+          await client.query(
+            `INSERT INTO invoice_items (invoice_id, part, customer_item, part_description, qty, status, error_message)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [invoiceId, item.part, item.customerItem, item.partDescription, item.qty, item.status, item.errorMessage]
+          );
         }
       }
 
@@ -584,8 +595,20 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       },
       // Schedule-matching validation removed (invoice is source-of-truth)
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Upload invoices error:', error);
+    const message = error?.message ? String(error.message) : 'Failed to upload invoices';
+
+    // Treat known validation/business-rule failures as 400s (user-actionable).
+    if (
+      message.includes('cannot be re-uploaded') ||
+      message.includes('validation failed') ||
+      message.includes('Missing/invalid') ||
+      message.includes('mismatch')
+    ) {
+      return res.status(400).json({ error: message });
+    }
+
     res.status(500).json({ error: 'Failed to upload invoices' });
   }
 });

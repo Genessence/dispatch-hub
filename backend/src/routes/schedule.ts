@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
+import { parseExcelDateValue, toIsoDateOnly } from '../utils/dateParsing';
 
 const router = Router();
 
@@ -14,54 +15,9 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
-// Helper function to convert Excel date serial to JS Date
-const excelDateToJSDate = (serial: number): Date => {
-  const utc_days = Math.floor(serial - 25569);
-  const utc_value = utc_days * 86400;
-  const date_info = new Date(utc_value * 1000);
-  return new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate());
-};
-
-// Helper to parse date from various formats
+// Helper: strict schedule date parsing (DD/MM/YYYY preferred; no JS overflow; no Date(string) guessing)
 const parseDate = (dateStr: any): Date | null => {
-  if (!dateStr) return null;
-  if (dateStr instanceof Date) return dateStr;
-  if (typeof dateStr === 'number') {
-    return excelDateToJSDate(dateStr);
-  }
-  if (typeof dateStr === 'string') {
-    const trimmed = dateStr.trim();
-    if (!trimmed) return null;
-    
-    const dateFormats = [
-      /^(\d{4})-(\d{1,2})-(\d{1,2})$/,
-      /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,
-      /^(\d{1,2})-(\d{1,2})-(\d{4})/,
-    ];
-    
-    for (const format of dateFormats) {
-      const match = trimmed.match(format);
-      if (match) {
-        if (format === dateFormats[0] || format === dateFormats[1]) {
-          const [, year, month, day] = match;
-          const parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-          if (!isNaN(parsed.getTime())) return parsed;
-        } else {
-          const [, part1, part2, year] = match;
-          let parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
-          if (!isNaN(parsed.getTime())) return parsed;
-          parsed = new Date(parseInt(year), parseInt(part2) - 1, parseInt(part1));
-          if (!isNaN(parsed.getTime())) return parsed;
-        }
-      }
-    }
-    
-    const parsed = new Date(trimmed);
-    if (!isNaN(parsed.getTime())) return parsed;
-  }
-  
-  return null;
+  return parseExcelDateValue(dateStr, { preferDayFirst: true });
 };
 
 // Helper for case-insensitive column lookup
@@ -316,8 +272,16 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
             const deliveryDate = parseDate(deliveryDateTime) || parseDate(supplyTime);
 
             let timeStr: string | null = null;
-            if (supplyTime) {
-              timeStr = supplyTime.toString();
+            if (supplyTime !== undefined && supplyTime !== null && supplyTime !== '') {
+              // Excel sometimes provides time as fraction-of-day number (e.g., 0.5 => 12:00).
+              if (typeof supplyTime === 'number' && Number.isFinite(supplyTime) && supplyTime >= 0 && supplyTime < 1) {
+                const totalMinutes = Math.round(supplyTime * 24 * 60);
+                const hh = String(Math.floor(totalMinutes / 60) % 24).padStart(2, '0');
+                const mm = String(totalMinutes % 60).padStart(2, '0');
+                timeStr = `${hh}:${mm}`;
+              } else {
+                timeStr = supplyTime.toString();
+              }
             } else if (deliveryDateTime && typeof deliveryDateTime === 'string') {
               const timeMatch = deliveryDateTime.match(/(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/);
               if (timeMatch) {
@@ -343,9 +307,17 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
               'UnloadingLocation',
               'Unload Location',
               'UnloadLocation',
+              'UNLOADING DOC',
+              'Unloading Doc',
+              'UnloadingDoc',
+              'UNLOADING DOCK',
+              'Unloading Dock',
+              'UnloadingDock',
               'Location',
               'unloading loc',
               'unloading location',
+              'unloading doc',
+              'unloading dock',
               'unload location',
               'location',
               'LOCATION',
@@ -364,6 +336,26 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
             if (!hasAnyUsefulField) {
               rowsExcludedNoUsefulFields++;
               return;
+            }
+
+            // Diagnostics: if we have time/unloading but no parsed date, log a small sample.
+            // This is the common failure mode for month-name dates or unexpected formats.
+            if (!deliveryDate && (timeStr || (unloadingLoc && String(unloadingLoc).trim() !== ''))) {
+              // Avoid spamming logs; show only the first few occurrences.
+              if ((globalThis as any).__scheduleDateParseWarnCount === undefined) {
+                (globalThis as any).__scheduleDateParseWarnCount = 0;
+              }
+              if ((globalThis as any).__scheduleDateParseWarnCount < 5) {
+                (globalThis as any).__scheduleDateParseWarnCount++;
+                console.warn('⚠️ Schedule row has time/unloading but could not parse SUPPLY DATE', {
+                  sheet: sheetName,
+                  supplyDateRaw: deliveryDateTime,
+                  supplyTimeRaw: supplyTime,
+                  parsedDate: null,
+                  parsedTime: timeStr || null,
+                  unloadingLoc: unloadingLoc ? String(unloadingLoc).trim() : null,
+                });
+              }
             }
 
             allScheduleItems.push({
@@ -565,7 +557,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
               item.snp || 0,
               item.bin || 0,
               item.sheetName || '',
-              item.deliveryDate || null,
+              item.deliveryDate ? toIsoDateOnly(item.deliveryDate) : null,
               item.deliveryTime || null,
               item.plant || null,
               item.unloadingLoc || null,

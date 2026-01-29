@@ -81,7 +81,7 @@ const Home = () => {
   // Home page cards - only Doc Audit and Loading & Dispatch
   const navigationCards = [
     {
-      title: "Doc Audit",
+      title: "Dock Audit",
       description: "Scan and validate barcode labels",
       icon: ScanBarcode,
       color: "text-blue-700",

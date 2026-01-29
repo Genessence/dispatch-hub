@@ -73,45 +73,116 @@ const UploadData = () => {
     return new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate());
   };
 
-  // Helper function to parse date from various formats (shared for invoice and schedule parsing)
-  const parseDate = (dateStr: any): Date | undefined => {
-    if (!dateStr) return undefined;
-    if (dateStr instanceof Date) return dateStr;
-    if (typeof dateStr === 'number') {
-      return excelDateToJSDate(dateStr);
+  // Helper function to parse date from various formats (shared for invoice and schedule parsing).
+  // IMPORTANT: Avoid JS Date overflow bugs (e.g. "21/01/2026" accidentally becoming "2027-09-01").
+  // Prefer DD/MM/YYYY for customer files.
+  const parseDate = (value: any): Date | undefined => {
+    if (value === null || value === undefined || value === '') return undefined;
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return new Date(value.getFullYear(), value.getMonth(), value.getDate());
     }
-    if (typeof dateStr === 'string') {
-      const trimmed = dateStr.trim();
-      if (!trimmed) return undefined;
-      
-      const dateFormats = [
-        /^(\d{4})-(\d{1,2})-(\d{1,2})$/,
-        /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/,
-        /^(\d{1,2})\/(\d{1,2})\/(\d{4})/,
-        /^(\d{1,2})-(\d{1,2})-(\d{4})/,
-      ];
-      
-      for (const format of dateFormats) {
-        const match = trimmed.match(format);
-        if (match) {
-          if (format === dateFormats[0] || format === dateFormats[1]) {
-            const [_, year, month, day] = match;
-            const parsed = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-            if (!isNaN(parsed.getTime())) return parsed;
-          } else {
-            const [_, part1, part2, year] = match;
-            let parsed = new Date(parseInt(year), parseInt(part1) - 1, parseInt(part2));
-            if (!isNaN(parsed.getTime())) return parsed;
-            parsed = new Date(parseInt(year), parseInt(part2) - 1, parseInt(part1));
-            if (!isNaN(parsed.getTime())) return parsed;
-          }
+
+    const isLikelyExcelSerial = (n: number) => Number.isFinite(n) && n >= 30000 && n <= 80000;
+
+    if (typeof value === 'number') {
+      if (!isLikelyExcelSerial(Math.floor(value))) return undefined;
+      return excelDateToJSDate(value);
+    }
+
+    const s = (typeof value === 'string' ? value : String(value)).trim();
+    if (!s) return undefined;
+
+    // Numeric strings might be Excel serial dates.
+    if (/^\d+(\.\d+)?$/.test(s)) {
+      const n = Number(s);
+      if (isLikelyExcelSerial(Math.floor(n))) return excelDateToJSDate(n);
+      return undefined;
+    }
+
+    const makeLocalDateStrict = (year: number, month1to12: number, day1to31: number): Date | undefined => {
+      if (!Number.isInteger(year) || year < 1900 || year > 2200) return undefined;
+      if (!Number.isInteger(month1to12) || month1to12 < 1 || month1to12 > 12) return undefined;
+      if (!Number.isInteger(day1to31) || day1to31 < 1 || day1to31 > 31) return undefined;
+      const dim = new Date(year, month1to12, 0).getDate();
+      if (day1to31 > dim) return undefined;
+      const d = new Date(year, month1to12 - 1, day1to31);
+      if (d.getFullYear() !== year || d.getMonth() !== month1to12 - 1 || d.getDate() !== day1to31) return undefined;
+      return d;
+    };
+
+    // ISO date-only or ISO-ish (strip time part)
+    const datePart = s.split('T')[0].trim();
+    {
+      const m = datePart.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+      if (m) {
+        const year = parseInt(m[1], 10);
+        const month = parseInt(m[2], 10);
+        const day = parseInt(m[3], 10);
+        return makeLocalDateStrict(year, month, day);
+      }
+    }
+
+    // DD/MM/YYYY or MM/DD/YYYY (prefer DD/MM/YYYY)
+    {
+      const m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:\s+.*)?$/);
+      if (m) {
+        const a = parseInt(m[1], 10);
+        const b = parseInt(m[2], 10);
+        const year = parseInt(m[3], 10);
+
+        const dmy = makeLocalDateStrict(year, b, a);
+        if (dmy) return dmy;
+        const mdy = makeLocalDateStrict(year, a, b);
+        if (mdy) return mdy;
+      }
+    }
+
+    // Month-name formats (e.g., 21-Jan-2026 / 21 January 2026) with optional trailing time text
+    {
+      const monthMap: Record<string, number> = {
+        jan: 1, january: 1,
+        feb: 2, february: 2,
+        mar: 3, march: 3,
+        apr: 4, april: 4,
+        may: 5,
+        jun: 6, june: 6,
+        jul: 7, july: 7,
+        aug: 8, august: 8,
+        sep: 9, sept: 9, september: 9,
+        oct: 10, october: 10,
+        nov: 11, november: 11,
+        dec: 12, december: 12,
+      };
+
+      // 21-Jan-2026 / 21-Jan-26
+      const m1 = s.match(/^(\d{1,2})[-\s]([A-Za-z]{3,9})[-\s](\d{2}|\d{4})(?:\s+.*)?$/);
+      if (m1) {
+        const day = parseInt(m1[1], 10);
+        const monthToken = m1[2].toLowerCase();
+        const month = monthMap[monthToken];
+        if (month) {
+          let year = parseInt(m1[3], 10);
+          if (m1[3].length === 2) year = 2000 + year;
+          const d = makeLocalDateStrict(year, month, day);
+          if (d) return d;
         }
       }
-      
-      const parsed = new Date(trimmed);
-      if (!isNaN(parsed.getTime())) return parsed;
+
+      // 21 January 2026 / 21 January 26
+      const m2 = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{2}|\d{4})(?:\s+.*)?$/);
+      if (m2) {
+        const day = parseInt(m2[1], 10);
+        const monthToken = m2[2].toLowerCase();
+        const month = monthMap[monthToken];
+        if (month) {
+          let year = parseInt(m2[3], 10);
+          if (m2[3].length === 2) year = 2000 + year;
+          const d = makeLocalDateStrict(year, month, day);
+          if (d) return d;
+        }
+      }
     }
-    
+
     return undefined;
   };
 
@@ -1512,10 +1583,11 @@ const UploadData = () => {
 
       {/* Upload Logs Dialog */}
       <LogsDialog
-        open={showUploadLogs}
-        onOpenChange={setShowUploadLogs}
+        isOpen={showUploadLogs}
+        onClose={() => setShowUploadLogs(false)}
         title="Upload Logs"
         logs={getUploadLogs()}
+        type="upload"
       />
     </div>
   );

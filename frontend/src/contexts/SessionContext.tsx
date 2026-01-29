@@ -147,6 +147,20 @@ const STORAGE_KEYS = {
   SELECTED_SITE: 'dispatch-hub-selected-site',
 };
 
+// Parse DATE-only values (YYYY-MM-DD) as a local calendar date (avoid UTC-shift from new Date('YYYY-MM-DD')).
+const parseDateOnlyAsLocal = (value: any): Date | undefined => {
+  if (!value) return undefined;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const s = String(value).trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return undefined;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return undefined;
+  return new Date(year, month - 1, day);
+};
+
 // Helper to parse stored customer data (now single string, but handle legacy array format)
 const parseStoredCustomer = (stored: string | null): string | null => {
   if (!stored) return null;
@@ -259,7 +273,9 @@ export const SessionProvider = ({ children }: { children: ReactNode }) => {
       if (scheduleResponse.success && scheduleResponse.scheduleData) {
         const items = scheduleResponse.scheduleData.items.map((item: any) => ({
           ...item,
-          deliveryDate: item.deliveryDate ? new Date(item.deliveryDate) : undefined,
+          // delivery_date is a DATE in DB, commonly returned as YYYY-MM-DD.
+          // Parse it as a local date to avoid false day shifts.
+          deliveryDate: parseDateOnlyAsLocal(item.deliveryDate) ?? (item.deliveryDate ? new Date(item.deliveryDate) : undefined),
         }));
         
         if (items.length > 0) {

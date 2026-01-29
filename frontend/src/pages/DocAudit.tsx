@@ -1220,7 +1220,7 @@ const DocAudit = () => {
                 <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
               </Button>
               <div className="flex-1">
-                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Doc Audit</h1>
+                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Dock Audit</h1>
                 <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Scan and validate BIN labels</p>
               </div>
             </div>
