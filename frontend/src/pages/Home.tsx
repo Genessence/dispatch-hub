@@ -78,8 +78,17 @@ const Home = () => {
     navigate("/");
   };
 
-  // Home page cards - only Doc Audit and Loading & Dispatch
+  // Home page cards
   const navigationCards = [
+    {
+      title: "Upload Invoice and schedule data",
+      description: "Upload invoices and schedule",
+      icon: Upload,
+      color: "text-blue-700",
+      bgColor: "bg-gradient-to-br from-blue-50 to-blue-100 hover:from-blue-100 hover:to-blue-200",
+      iconBg: "bg-blue-500",
+      onClick: () => navigate("/upload"),
+    },
     {
       title: "Dock Audit",
       description: "Scan and validate barcode labels",
@@ -106,12 +115,6 @@ const Home = () => {
       label: "Dashboard",
       icon: HomeIcon,
       onClick: () => navigate("/dashboard"),
-      adminOnly: false,
-    },
-    {
-      label: "Upload Sales Data",
-      icon: Upload,
-      onClick: () => navigate("/upload"),
       adminOnly: false,
     },
     {

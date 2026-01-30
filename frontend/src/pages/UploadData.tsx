@@ -1127,7 +1127,7 @@ const UploadData = () => {
                 <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
               </Button>
               <div className="flex-1">
-                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Upload Sales Data</h1>
+                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Upload Invoice and schedule data</h1>
                 <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Import and schedule dispatch orders</p>
               </div>
             </div>

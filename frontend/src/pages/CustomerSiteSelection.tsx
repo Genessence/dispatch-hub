@@ -31,7 +31,7 @@ const CustomerSiteSelection = () => {
     }
   }, [contextCustomer, contextSite]);
 
-  const facilities = ["Cheyyar", "Pune", "Bengaluru", "mysuru", "badli"];
+  const facilities = ["Cheyyar", "Pune", "Bengaluru", "Mysuru", "Badli"];
 
   const handleContinue = () => {
     if (!selectedCustomer || !selectedSite) {
