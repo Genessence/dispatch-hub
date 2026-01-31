@@ -418,6 +418,38 @@ export const adminApi = {
     return fetchWithAuth('/api/admin/analytics');
   },
 
+  getInvoiceReports: async (filters?: {
+    status?: 'dispatched' | 'audited' | 'pending';
+    dispatchFrom?: string; // YYYY-MM-DD or ISO datetime
+    dispatchTo?: string;   // YYYY-MM-DD or ISO datetime
+    deliveryFrom?: string; // YYYY-MM-DD or ISO datetime
+    deliveryTo?: string;   // YYYY-MM-DD or ISO datetime
+    deliveryTime?: string;
+    unloadingLoc?: string;
+    customer?: string;
+    billTo?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    let query = '';
+    if (filters) {
+      const params = new URLSearchParams();
+      if (filters.status) params.append('status', filters.status);
+      if (filters.dispatchFrom) params.append('dispatchFrom', filters.dispatchFrom);
+      if (filters.dispatchTo) params.append('dispatchTo', filters.dispatchTo);
+      if (filters.deliveryFrom) params.append('deliveryFrom', filters.deliveryFrom);
+      if (filters.deliveryTo) params.append('deliveryTo', filters.deliveryTo);
+      if (filters.deliveryTime) params.append('deliveryTime', filters.deliveryTime);
+      if (filters.unloadingLoc) params.append('unloadingLoc', filters.unloadingLoc);
+      if (filters.customer) params.append('customer', filters.customer);
+      if (filters.billTo) params.append('billTo', filters.billTo);
+      if (filters.limit !== undefined) params.append('limit', String(filters.limit));
+      if (filters.offset !== undefined) params.append('offset', String(filters.offset));
+      if (params.toString()) query = `?${params.toString()}`;
+    }
+    return fetchWithAuth(`/api/admin/reports/invoices${query}`);
+  },
+
   getExceptions: async (status?: 'pending' | 'approved' | 'rejected') => {
     let query = '';
     if (status) query = `?status=${status}`;

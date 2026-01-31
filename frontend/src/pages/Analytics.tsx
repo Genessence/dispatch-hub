@@ -7,13 +7,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, FileText, AlertTriangle, CheckCircle2, Truck, ScanBarcode, Upload, Clock, User, Download } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useSession } from "@/contexts/SessionContext";
+import { InvoiceReportList } from "@/components/InvoiceReports/InvoiceReportList";
 import * as XLSX from 'xlsx';
 import { toast } from "sonner";
 
 const Analytics = () => {
   const { getUploadLogs, getAuditLogs, getDispatchLogs, mismatchAlerts, sharedInvoices } = useSession();
   const [showReportDialog, setShowReportDialog] = useState(false);
-  const [activeReportTab, setActiveReportTab] = useState<'upload' | 'audit' | 'dispatch' | 'mismatch'>('upload');
+  const [activeReportTab, setActiveReportTab] = useState<'invoices' | 'upload' | 'audit' | 'dispatch' | 'mismatch'>('invoices');
   
   const formatDate = (date: Date) => {
     return new Date(date).toLocaleString('en-US', {
@@ -382,7 +383,7 @@ const Analytics = () => {
 
       {/* Reports Dialog */}
       <Dialog open={showReportDialog} onOpenChange={setShowReportDialog}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FileText className="h-5 w-5" />
@@ -392,6 +393,15 @@ const Analytics = () => {
 
           {/* Report Tabs */}
           <div className="flex gap-2 border-b pb-2 overflow-x-auto">
+            <Button
+              variant={activeReportTab === 'invoices' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setActiveReportTab('invoices')}
+              className="flex items-center gap-2"
+            >
+              <FileText className="h-4 w-4" />
+              Invoices
+            </Button>
             <Button
               variant={activeReportTab === 'upload' ? 'default' : 'ghost'}
               size="sm"
@@ -432,6 +442,23 @@ const Analytics = () => {
 
           {/* Report Content */}
           <ScrollArea className="h-[500px] pr-4">
+            {/* Invoices Report */}
+            {activeReportTab === 'invoices' && (
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg">
+                  <h3 className="font-semibold mb-2 flex items-center gap-2">
+                    <FileText className="h-4 w-4" />
+                    Invoice Reports
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Filter invoices by dispatch/delivery details and open an invoice to view scanned items (Doc Audit paired scans).
+                  </p>
+                </div>
+
+                <InvoiceReportList />
+              </div>
+            )}
+
             {/* Upload Report */}
             {activeReportTab === 'upload' && (
               <div className="space-y-4">

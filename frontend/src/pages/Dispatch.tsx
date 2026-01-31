@@ -26,6 +26,7 @@ import { useKeyboardBarcodeScanner } from "@/hooks/useKeyboardBarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
+import { ScanIssueDialog, type ScanIssue } from "@/components/ScanIssueDialog";
 import { QRCodeSVG } from "qrcode.react";
 import { auditApi, dispatchApi } from "@/lib/api";
 import { buildGatepassSummary } from "@/lib/gatepassSummary";
@@ -46,6 +47,8 @@ interface ValidatedBarcodePair {
   invoiceId: string; // Source invoice for this bin scan (required for correct grouping/deletion)
   customerBarcode: string;
   autolivBarcode: string;
+  customerBinNumber?: string;
+  autolivBinNumber?: string;
   binNumber?: string;
   quantity?: string;
   partCode?: string;
@@ -85,6 +88,16 @@ const Dispatch = () => {
   const [gatepassGenerated, setGatepassGenerated] = useState(false);
   const [dispatchCustomerScan, setDispatchCustomerScan] = useState<BarcodeData | null>(null);
   const [dispatchScanAlert, setDispatchScanAlert] = useState<string | null>(null);
+  // Scan issue popup (shown ONLY when there's an issue)
+  const [scanIssue, setScanIssue] = useState<ScanIssue | null>(null);
+  const [scanIssueOpen, setScanIssueOpen] = useState(false);
+
+  const openScanIssue = (issue: ScanIssue) => {
+    // De-dupe guard: don't re-open while already visible.
+    if (scanIssueOpen) return;
+    setScanIssue(issue);
+    setScanIssueOpen(true);
+  };
   const [loadedBarcodes, setLoadedBarcodes] = useState<ValidatedBarcodePair[]>([]);
   const [selectInvoiceValue, setSelectInvoiceValue] = useState<string>("");
   const [gatepassNumber, setGatepassNumber] = useState<string>("");
@@ -179,6 +192,9 @@ const Dispatch = () => {
                   invoiceId,
                   customerBarcode: scan.customerBarcode || '',
                   autolivBarcode: scan.autolivBarcode || '',
+                  customerBinNumber: scan.customerBinNumber || scan.binNumber || undefined,
+                  autolivBinNumber: scan.autolivBinNumber || undefined,
+                  // Back-compat alias (existing UI + de-dupe/delete logic relies on binNumber)
                   binNumber: scan.customerBinNumber || scan.binNumber || undefined,
                   quantity: scan.binQuantity?.toString() || scan.quantity?.toString() || undefined, // Bin quantity from QR scan
                   partCode: scan.customerItem || undefined,
@@ -404,7 +420,13 @@ const Dispatch = () => {
     onScanAttempt: (data) => {
       // Dispatch uses Customer label only.
       if (!data.qrType || data.qrType !== 'customer') {
-        setDispatchScanAlert("Dispatch uses Customer label only. Please scan the Customer barcode.");
+        const msg = "Dispatch uses Customer label only. Please scan the Customer barcode.";
+        setDispatchScanAlert(msg);
+        openScanIssue({
+          title: "Invalid scan for Dispatch",
+          description: msg,
+          severity: "warning",
+        });
         return { accepted: false, rejectReason: "customer_only" };
       }
       setDispatchScanAlert(null);
@@ -424,7 +446,11 @@ const Dispatch = () => {
 
   const handleDispatchScan = async () => {
     if (!dispatchCustomerScan) {
-      toast.error("Please scan customer barcode");
+      openScanIssue({
+        title: "Scan required",
+        description: "Please scan the customer barcode.",
+        severity: "warning",
+      });
       return;
     }
 
@@ -435,8 +461,11 @@ const Dispatch = () => {
         pair.binNumber === binNumber
       );
       if (duplicateBin) {
-        toast.warning("⚠️ Bin Already Scanned", {
+        openScanIssue({
+          title: "Duplicate bin scan",
           description: `Bin number ${binNumber} has already been scanned.`,
+          severity: "warning",
+          context: [{ label: "Bin", value: binNumber }],
         });
         setDispatchCustomerScan(null);
         return;
@@ -449,8 +478,14 @@ const Dispatch = () => {
     );
 
     if (alreadyLoaded) {
-      toast.warning("⚠️ Already Loaded", {
-        description: "This item has already been loaded onto the vehicle.",
+      openScanIssue({
+        title: "Already loaded",
+        description: "This barcode has already been loaded onto the vehicle.",
+        severity: "warning",
+        context: [
+          { label: "Bin", value: dispatchCustomerScan.binNumber },
+          { label: "Customer item", value: dispatchCustomerScan.partCode },
+        ],
       });
       setDispatchCustomerScan(null);
       return;
@@ -461,8 +496,10 @@ const Dispatch = () => {
     const scannedPartCode = dispatchCustomerScan.partCode?.trim();
     
     if (!scannedPartCode) {
-      toast.error("⚠️ Invalid Scan!", {
+      openScanIssue({
+        title: "Invalid customer label",
         description: "Customer label part code not found. Please rescan.",
+        severity: "error",
       });
       setDispatchCustomerScan(null);
       return;
@@ -486,17 +523,25 @@ const Dispatch = () => {
     
     // Handle ambiguous matches (same customerItem in multiple selected invoices)
     if (matchingInvoices.length === 0) {
-      toast.error("⚠️ Item Not Found!", {
+      openScanIssue({
+        title: "Item not found",
         description: `Customer item "${scannedPartCode}" not found in any selected invoice.`,
+        severity: "error",
+        context: [{ label: "Customer item", value: scannedPartCode }],
       });
       setDispatchCustomerScan(null);
       return;
     } else if (matchingInvoices.length > 1) {
       // Ambiguous match: same customerItem exists in multiple invoices
       // For now, use the first match but warn the user
-      toast.warning("⚠️ Ambiguous Match!", {
+      openScanIssue({
+        title: "Ambiguous match",
         description: `Customer item "${scannedPartCode}" found in ${matchingInvoices.length} invoices. Using first match.`,
-        duration: 5000
+        severity: "warning",
+        context: [
+          { label: "Customer item", value: scannedPartCode },
+          { label: "Matches", value: matchingInvoices.length },
+        ],
       });
       matchedInvoiceItem = matchingInvoices[0].item;
       matchedInvoiceId = matchingInvoices[0].invoiceId;
@@ -567,22 +612,31 @@ const Dispatch = () => {
         const isBlocked = errorMessage.includes('blocked');
         
         if (isDuplicate || isOverScan) {
-          toast.warning(`⚠️ ${isDuplicate ? 'Duplicate Scan' : 'Over-scan Prevented'}`, {
+          openScanIssue({
+            title: isDuplicate ? "Duplicate scan" : "Over-scan prevented",
             description: errorMessage,
-            duration: 6000
+            severity: "warning",
+            context: [
+              { label: "Invoice", value: invoiceIdToUse },
+              { label: "Bin", value: dispatchCustomerScan.binNumber },
+              { label: "Customer item", value: scannedPartCode },
+            ],
           });
         } else if (isBlocked) {
-          toast.error('⚠️ Invoice Blocked', {
-            description: errorMessage + ' Please contact admin.',
-            duration: 8000
+          openScanIssue({
+            title: "Invoice blocked",
+            description: `${errorMessage} Please contact admin.`,
+            severity: "error",
+            context: [{ label: "Invoice", value: invoiceIdToUse }],
           });
           // Refresh data to get updated blocked status
           await refreshData();
         } else {
-        toast.error('Failed to save scan to database', {
-            description: errorMessage || 'Please try again',
-          duration: 5000
-        });
+          openScanIssue({
+            title: "Failed to save scan",
+            description: errorMessage || "Please try again.",
+            severity: "error",
+          });
         }
         
         // Don't update local state on error
@@ -790,8 +844,14 @@ const Dispatch = () => {
 
     const expectedBins = getExpectedBins();
     if (loadedBarcodes.length < expectedBins) {
-      toast.error("⚠️ Not All Bins Loaded!", {
-        description: `Please scan all bins. Loaded: ${loadedBarcodes.length}/${expectedBins}`,
+      openScanIssue({
+        title: "Not all bins loaded",
+        description: `Please scan all bins before generating gatepass.\nLoaded: ${loadedBarcodes.length}/${expectedBins}`,
+        severity: "error",
+        context: [
+          { label: "Loaded bins", value: loadedBarcodes.length },
+          { label: "Expected bins", value: expectedBins },
+        ],
       });
       return;
     }
@@ -846,9 +906,10 @@ const Dispatch = () => {
           const serverQty = typeof result.loadedQty === 'number' ? result.loadedQty : null;
 
           if ((serverBins !== null && serverBins !== localBins) || (serverQty !== null && serverQty !== localQty)) {
-            toast.warning('⚠️ Loaded totals mismatch detected', {
-              description: `Local bins/qty=${localBins}/${localQty}, Server bins/qty=${serverBins ?? 'N/A'}/${serverQty ?? 'N/A'}. Refreshing data is recommended.`,
-              duration: 8000,
+            openScanIssue({
+              title: "Loaded totals mismatch detected",
+              description: `Local bins/qty=${localBins}/${localQty}, Server bins/qty=${serverBins ?? 'N/A'}/${serverQty ?? 'N/A'}.\nRefreshing data is recommended.`,
+              severity: "warning",
             });
           }
         }
@@ -883,9 +944,12 @@ const Dispatch = () => {
         if (customerCodes.size > 1) {
           const errorMsg = `⚠️ ERROR: Invoices have different customer codes: ${Array.from(customerCodes).join(', ')}`;
           setCustomerCodeError(errorMsg);
-          toast.error("Customer Code Mismatch!", {
-            description: "All invoices in a vehicle must have the same customer code. This has been logged.",
-            duration: 8000
+          openScanIssue({
+            title: "Customer code mismatch",
+            description:
+              "All invoices in a vehicle must have the same customer code.\nThis has been logged.",
+            severity: "error",
+            context: [{ label: "Customer codes", value: Array.from(customerCodes).join(", ") }],
           });
         } else {
           setCustomerCodeError(null);
@@ -925,9 +989,10 @@ const Dispatch = () => {
       if (errorMessage.includes('different customer codes') || 
           errorMessage.includes('Customer code')) {
         setCustomerCodeError(errorMessage);
-        toast.error("⚠️ Customer Code Mismatch!", {
+        openScanIssue({
+          title: "Customer code mismatch",
           description: errorMessage,
-          duration: 10000
+          severity: "error",
         });
       } else if (errorMessage.includes('Invoice') && errorMessage.includes('not found')) {
         toast.error("❌ Invoice Not Found!", {
@@ -1536,10 +1601,18 @@ const Dispatch = () => {
                   (expectedBins > 0 && scannedBins >= expectedBins) ||
                   (expectedBins === 0 && totalQty > 0 && scannedQty >= totalQty);
 
+                const isInProgress = !isComplete && (scannedBins > 0 || scannedQty > 0);
+
                 return (
                   <tr
                     key={`${k}::${idx}`}
-                    className={`border-t ${isComplete ? 'bg-green-100 dark:bg-green-950/40' : ''}`}
+                    className={`border-t ${
+                      isComplete
+                        ? 'bg-green-100 dark:bg-green-950/40'
+                        : isInProgress
+                          ? 'bg-yellow-100 dark:bg-yellow-950/40'
+                          : ''
+                    }`}
                   >
                     <td className="p-2 font-medium">{item.customerItem}</td>
                     <td className="p-2">{item.itemNumber}</td>
@@ -1576,6 +1649,14 @@ const Dispatch = () => {
 
   return (
     <div className="min-h-screen bg-background">
+      <ScanIssueDialog
+        open={scanIssueOpen}
+        issue={scanIssue}
+        onOpenChange={(open) => {
+          setScanIssueOpen(open);
+          if (!open) setScanIssue(null);
+        }}
+      />
       {/* Header */}
       <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">

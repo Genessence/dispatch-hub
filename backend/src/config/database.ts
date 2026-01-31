@@ -11,11 +11,21 @@ const isRDS = connectionString.includes('rds.amazonaws.com');
 // Remove sslmode from connection string if present (we'll handle SSL in pg config)
 connectionString = connectionString.replace(/[?&]sslmode=[^&]*/, '');
 
+const maskConnectionString = (url: string) => url.replace(/:([^:@]+)@/, ':****@');
+
+// Throttle noisy pool error logs (e.g., transient ETIMEDOUT on idle sockets)
+let lastPoolErrorLogAt = 0;
+let suppressedPoolErrorCount = 0;
+const POOL_ERROR_LOG_THROTTLE_MS = 15_000;
+
 const pool = new Pool({
   connectionString,
   max: 20, // Maximum number of clients in the pool
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
   connectionTimeoutMillis: 30000, // Increased timeout for RDS connections (30 seconds)
+  // Reduce idle socket timeouts / RDS network churn
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
   // SSL configuration for AWS RDS - RDS uses self-signed certificates
   ...(isRDS && {
     ssl: {
@@ -29,9 +39,34 @@ pool.on('connect', () => {
   console.log('📦 Connected to PostgreSQL database');
 });
 
-pool.on('error', (err: Error) => {
-  console.error('❌ Unexpected error on idle PostgreSQL client:', err);
-  process.exit(-1);
+pool.on('error', (err: any, _client: any) => {
+  // IMPORTANT:
+  // - This event fires when an *idle* client in the pool errors (network drop, timeout, etc.).
+  // - node-postgres removes the broken client from the pool automatically.
+  // - Exiting the process here causes dev-server restart loops (nodemon) and production instability.
+  const now = Date.now();
+  const shouldLog = now - lastPoolErrorLogAt >= POOL_ERROR_LOG_THROTTLE_MS;
+
+  const code = err?.code ? String(err.code) : undefined;
+  const syscall = err?.syscall ? String(err.syscall) : undefined;
+  const message = err?.message ? String(err.message) : String(err);
+
+  if (!shouldLog) {
+    suppressedPoolErrorCount++;
+    return;
+  }
+
+  const masked = maskConnectionString(connectionString);
+  const suppressedSuffix =
+    suppressedPoolErrorCount > 0 ? ` (suppressed ${suppressedPoolErrorCount} similar error(s))` : '';
+  suppressedPoolErrorCount = 0;
+  lastPoolErrorLogAt = now;
+
+  console.error(
+    '❌ PostgreSQL pool idle-client error:',
+    { code, syscall, message, connection: masked },
+    suppressedSuffix
+  );
 });
 
 // Helper function to execute queries

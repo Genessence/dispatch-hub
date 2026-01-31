@@ -18,7 +18,7 @@ import adminRoutes from './routes/admin';
 import logsRoutes from './routes/logs';
 
 // Import database and socket handler
-import { checkConnection } from './config/database';
+import { checkConnection, closePool } from './config/database';
 import { setupSocketHandlers } from './websocket/socketHandler';
 
 const app = express();
@@ -163,21 +163,27 @@ const startServer = async () => {
 };
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('🛑 SIGTERM received. Shutting down gracefully...');
-  httpServer.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
-});
+let isShuttingDown = false;
+const shutdown = (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`🛑 ${signal} received. Shutting down gracefully...`);
 
-process.on('SIGINT', () => {
-  console.log('🛑 SIGINT received. Shutting down gracefully...');
-  httpServer.close(() => {
+  // Stop accepting new connections
+  httpServer.close(async () => {
     console.log('✅ Server closed');
-    process.exit(0);
+    try {
+      await closePool();
+    } catch (e) {
+      console.warn('⚠️ Failed to close PostgreSQL pool cleanly:', e);
+    } finally {
+      process.exit(0);
+    }
   });
-});
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 startServer();
 

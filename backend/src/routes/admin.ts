@@ -69,6 +69,228 @@ router.get('/analytics', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Parse query value as either YYYY-MM-DD (date-only) or ISO datetime.
+// Returns null for invalid/empty values.
+const parseDateOrDateTime = (value: unknown): { kind: 'date'; value: string } | { kind: 'datetime'; value: string } | null => {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return { kind: 'date', value: raw };
+  }
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return null;
+  return { kind: 'datetime', value: new Date(ms).toISOString() };
+};
+
+const clampInt = (value: unknown, { min, max, fallback }: { min: number; max: number; fallback: number }) => {
+  const n = typeof value === 'string' ? Number.parseInt(value, 10) : typeof value === 'number' ? Math.trunc(value) : NaN;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+};
+
+/**
+ * GET /api/admin/reports/invoices
+ * Filterable + paginated invoice list for reports.
+ */
+router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
+  try {
+    const {
+      status,
+      dispatchFrom,
+      dispatchTo,
+      deliveryFrom,
+      deliveryTo,
+      deliveryTime,
+      unloadingLoc,
+      customer,
+      billTo,
+      limit,
+      offset,
+    } = req.query as Record<string, unknown>;
+
+    const where: string[] = ['1=1'];
+    const params: any[] = [];
+    const addParam = (v: any) => {
+      params.push(v);
+      return `$${params.length}`;
+    };
+
+    const statusRaw = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    if (statusRaw) {
+      if (!['dispatched', 'audited', 'pending'].includes(statusRaw)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid status',
+          message: 'status must be one of: dispatched, audited, pending',
+        });
+      }
+      if (statusRaw === 'dispatched') {
+        where.push('dispatched_by IS NOT NULL');
+      } else if (statusRaw === 'audited') {
+        where.push('audit_complete = true');
+        where.push('dispatched_by IS NULL');
+      } else if (statusRaw === 'pending') {
+        where.push('COALESCE(audit_complete, false) = false');
+        where.push('dispatched_by IS NULL');
+      }
+    }
+
+    const billToValue = typeof billTo === 'string' ? billTo.trim() : '';
+    if (billToValue) {
+      where.push(`bill_to = ${addParam(billToValue)}`);
+    }
+
+    const customerValue = typeof customer === 'string' ? customer.trim() : '';
+    if (customerValue) {
+      where.push(`LOWER(customer) LIKE '%' || LOWER(${addParam(customerValue)}) || '%'`);
+    }
+
+    const unloadingLocValue = typeof unloadingLoc === 'string' ? unloadingLoc.trim() : '';
+    if (unloadingLocValue) {
+      where.push(`LOWER(unloading_loc) = LOWER(${addParam(unloadingLocValue)})`);
+    }
+
+    const deliveryTimeValue = typeof deliveryTime === 'string' ? deliveryTime.trim() : '';
+    if (deliveryTimeValue) {
+      where.push(`LOWER(delivery_time) = LOWER(${addParam(deliveryTimeValue)})`);
+    }
+
+    const dispatchFromParsed = parseDateOrDateTime(dispatchFrom);
+    if (dispatchFromParsed) {
+      if (dispatchFromParsed.kind === 'date') {
+        where.push(`dispatched_at >= ${addParam(dispatchFromParsed.value)}::date`);
+      } else {
+        where.push(`dispatched_at >= ${addParam(dispatchFromParsed.value)}::timestamptz`);
+      }
+    }
+
+    const dispatchToParsed = parseDateOrDateTime(dispatchTo);
+    if (dispatchToParsed) {
+      if (dispatchToParsed.kind === 'date') {
+        // inclusive day: < next day
+        where.push(`dispatched_at < (${addParam(dispatchToParsed.value)}::date + INTERVAL '1 day')`);
+      } else {
+        where.push(`dispatched_at <= ${addParam(dispatchToParsed.value)}::timestamptz`);
+      }
+    }
+
+    const deliveryFromParsed = parseDateOrDateTime(deliveryFrom);
+    if (deliveryFromParsed) {
+      if (deliveryFromParsed.kind === 'date') {
+        where.push(`delivery_date >= ${addParam(deliveryFromParsed.value)}::date`);
+      } else {
+        where.push(`delivery_date >= ${addParam(deliveryFromParsed.value)}::timestamptz`);
+      }
+    }
+
+    const deliveryToParsed = parseDateOrDateTime(deliveryTo);
+    if (deliveryToParsed) {
+      if (deliveryToParsed.kind === 'date') {
+        where.push(`delivery_date < (${addParam(deliveryToParsed.value)}::date + INTERVAL '1 day')`);
+      } else {
+        where.push(`delivery_date <= ${addParam(deliveryToParsed.value)}::timestamptz`);
+      }
+    }
+
+    const limitValue = clampInt(limit, { min: 1, max: 500, fallback: 200 });
+    const offsetValue = clampInt(offset, { min: 0, max: 1_000_000, fallback: 0 });
+
+    const whereSql = `WHERE ${where.join(' AND ')}`;
+
+    const totalResult = await query(
+      `SELECT COUNT(*)::int AS total
+       FROM invoices
+       ${whereSql}`,
+      params
+    );
+    const total = Number(totalResult.rows?.[0]?.total ?? 0) || 0;
+
+    const orderBy =
+      statusRaw === 'dispatched'
+        ? 'dispatched_at DESC NULLS LAST, created_at DESC'
+        : statusRaw === 'audited'
+          ? 'audited_at DESC NULLS LAST, created_at DESC'
+          : 'created_at DESC';
+
+    const listParams = [...params, limitValue, offsetValue];
+    const limitParam = `$${listParams.length - 1}`;
+    const offsetParam = `$${listParams.length}`;
+
+    const rowsResult = await query(
+      `SELECT
+         id,
+         customer,
+         bill_to,
+         invoice_date,
+         delivery_date,
+         delivery_time,
+         unloading_loc,
+         total_qty,
+         expected_bins,
+         scanned_bins,
+         audit_complete,
+         audited_at,
+         audited_by,
+         dispatched_at,
+         dispatched_by,
+         vehicle_number,
+         gatepass_number,
+         blocked,
+         blocked_at,
+         uploaded_at,
+         uploaded_by,
+         created_at,
+         updated_at
+       FROM invoices
+       ${whereSql}
+       ORDER BY ${orderBy}
+       LIMIT ${limitParam}
+       OFFSET ${offsetParam}`,
+      listParams
+    );
+
+    res.json({
+      success: true,
+      total,
+      limit: limitValue,
+      offset: offsetValue,
+      invoices: rowsResult.rows.map((inv: any) => ({
+        id: inv.id,
+        customer: inv.customer,
+        billTo: inv.bill_to,
+        invoiceDate: inv.invoice_date,
+        deliveryDate: inv.delivery_date,
+        deliveryTime: inv.delivery_time,
+        unloadingLoc: inv.unloading_loc ?? null,
+        totalQty: inv.total_qty ?? null,
+        expectedBins: inv.expected_bins ?? null,
+        scannedBins: inv.scanned_bins ?? null,
+        auditComplete: !!inv.audit_complete,
+        auditedAt: inv.audited_at ?? null,
+        auditedBy: inv.audited_by ?? null,
+        dispatchedAt: inv.dispatched_at ?? null,
+        dispatchedBy: inv.dispatched_by ?? null,
+        vehicleNumber: inv.vehicle_number ?? null,
+        gatepassNumber: inv.gatepass_number ?? null,
+        blocked: !!inv.blocked,
+        blockedAt: inv.blocked_at ?? null,
+        uploadedAt: inv.uploaded_at ?? null,
+        uploadedBy: inv.uploaded_by ?? null,
+        createdAt: inv.created_at ?? null,
+        updatedAt: inv.updated_at ?? null,
+      })),
+    });
+  } catch (error: any) {
+    console.error('Get invoice reports error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch invoice reports',
+      message: error?.message || 'Unknown error occurred',
+    });
+  }
+});
+
 /**
  * GET /api/admin/exceptions
  * Get all mismatch alerts

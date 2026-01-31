@@ -26,6 +26,7 @@ import { BarcodeScanButton, type BarcodeData } from "@/components/BarcodeScanner
 import { useKeyboardBarcodeScanner } from "@/hooks/useKeyboardBarcodeScanner";
 import { useSession } from "@/contexts/SessionContext";
 import { LogsDialog } from "@/components/LogsDialog";
+import { ScanIssueDialog, type ScanIssue } from "@/components/ScanIssueDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
 import { auditApi } from "@/lib/api";
 
@@ -84,6 +85,17 @@ const DocAudit = () => {
   // Enforce strict scan order: Customer -> Autoliv
   const [scanPhase, setScanPhase] = useState<'customer' | 'autoliv'>('customer');
   const [scanOrderAlert, setScanOrderAlert] = useState<string | null>(null);
+
+  // Scan issue popup (shown ONLY when there's an issue)
+  const [scanIssue, setScanIssue] = useState<ScanIssue | null>(null);
+  const [scanIssueOpen, setScanIssueOpen] = useState(false);
+
+  const openScanIssue = (issue: ScanIssue) => {
+    // De-dupe guard to prevent re-opening on repeated rejections while already shown.
+    if (scanIssueOpen) return;
+    setScanIssue(issue);
+    setScanIssueOpen(true);
+  };
   
   // Delivery date, location, and time selection states
   const [selectedDeliveryDate, setSelectedDeliveryDate] = useState<Date | undefined>(undefined);
@@ -104,6 +116,8 @@ const DocAudit = () => {
     customerItem: string;
     itemNumber: string;
     partDescription: string;
+    customerBinNumber?: string | null;
+    autolivBinNumber?: string | null;
     binNumber?: string | null;
     binQuantity?: number | null;
     quantity: number; // Display quantity for this scan row (usually binQuantity)
@@ -164,13 +178,25 @@ const DocAudit = () => {
 
       // Require QR type detection for strict ordering.
       if (!data.qrType) {
-        setScanOrderAlert("Unrecognized QR type. Please scan a valid Customer label first.");
+        const msg = "Unrecognized QR type. Please scan a valid Customer label first.";
+        setScanOrderAlert(msg);
+        openScanIssue({
+          title: "Invalid QR",
+          description: msg,
+          severity: "warning",
+        });
         return { accepted: false, rejectReason: "unknown_type" };
       }
 
       if (scanPhase === 'customer') {
         if (data.qrType !== 'customer') {
-          setScanOrderAlert("Scan Customer label first.");
+          const msg = "Scan Customer label first.";
+          setScanOrderAlert(msg);
+          openScanIssue({
+            title: "Wrong scan order",
+            description: msg,
+            severity: "warning",
+          });
           return { accepted: false, rejectReason: "customer_first" };
         }
         setScanOrderAlert(null);
@@ -179,7 +205,13 @@ const DocAudit = () => {
 
       // scanPhase === 'autoliv'
       if (data.qrType !== 'autoliv') {
-        setScanOrderAlert("Scan Autoliv label for the last Customer scan first.");
+        const msg = "Scan Autoliv label for the last Customer scan first.";
+        setScanOrderAlert(msg);
+        openScanIssue({
+          title: "Wrong scan order",
+          description: msg,
+          severity: "warning",
+        });
         return { accepted: false, rejectReason: "autoliv_next" };
       }
 
@@ -187,7 +219,13 @@ const DocAudit = () => {
       // accept Autoliv scan so we can pair via scan-stage endpoint.
       if (!customerScan && !hasPendingCustomerStage) {
         setScanPhase('customer');
-        setScanOrderAlert("Scan Customer label first.");
+        const msg = "Scan Customer label first.";
+        setScanOrderAlert(msg);
+        openScanIssue({
+          title: "Missing Customer scan",
+          description: msg,
+          severity: "warning",
+        });
         return { accepted: false, rejectReason: "missing_customer" };
       }
 
@@ -442,6 +480,8 @@ const DocAudit = () => {
               customerItem: s.customerItem || 'N/A',
               itemNumber: s.itemNumber || 'N/A',
               partDescription: s.partDescription || 'N/A',
+              customerBinNumber: s.customerBinNumber ?? null,
+              autolivBinNumber: s.autolivBinNumber ?? null,
               binNumber: s.customerBinNumber ?? s.binNumber ?? null,
               binQuantity: (s.binQuantity ?? null) as number | null,
               quantity: (s.binQuantity ?? s.quantity ?? 0) as number,
@@ -640,18 +680,20 @@ const DocAudit = () => {
     });
     
     if (hasBlockedInvoice) {
-      toast.error("⚠️ One or more invoices are blocked", {
-        description: "Please resolve mismatches before continuing.",
-        duration: 5000,
+      openScanIssue({
+        title: "Invoices blocked",
+        description: "One or more selected invoices are blocked.\nPlease resolve mismatches before continuing.",
+        severity: "error",
       });
       setCustomerScan(null);
       return;
     }
 
     if (selectedInvoices.length === 0) {
-      toast.error("⚠️ No invoices selected", {
+      openScanIssue({
+        title: "No invoices selected",
         description: "Please select invoices before scanning.",
-        duration: 3000,
+        severity: "warning",
       });
       setCustomerScan(null);
       return;
@@ -659,9 +701,10 @@ const DocAudit = () => {
 
     const customerPartCode = customerScan.partCode?.trim();
     if (!customerPartCode) {
-      toast.error("⚠️ Could not extract part code from Customer QR!", {
-        description: "Please ensure the QR code is valid.",
-        duration: 4000,
+      openScanIssue({
+        title: "Invalid Customer QR",
+        description: "Could not extract part code from the Customer QR.\nPlease ensure the QR code is valid.",
+        severity: "error",
       });
       setCustomerScan(null);
       return;
@@ -689,9 +732,15 @@ const DocAudit = () => {
 
     if (matchedItems.length === 0) {
       // STEP 1 MISMATCH: Customer QR part code not found
-      toast.error("⚠️ Customer QR Mismatch - Step 1 Failed!", {
-        description: `Part code "${customerPartCode}" not found in any selected invoice. Invoice(s) blocked.`,
-        duration: 6000,
+      openScanIssue({
+        title: "Customer QR mismatch (Step 1)",
+        description:
+          `Part code "${customerPartCode}" not found in any selected invoice.\nInvoice(s) blocked.\n\nAn exception alert has been sent to admin.`,
+        severity: "error",
+        context: [
+          { label: "Customer part code", value: customerPartCode },
+          { label: "Selected invoices", value: selectedInvoices.length },
+        ],
       });
 
       // Block all selected invoices
@@ -725,22 +774,20 @@ const DocAudit = () => {
         }
       });
 
-      setTimeout(() => {
-        toast.info("📨 Alert sent to admin", {
-          description: "Admin will review and resolve the mismatch.",
-          duration: 5000,
-        });
-      }, 500);
-
       setCustomerScan(null);
       return;
     }
 
     // If multiple matches (edge case), block all matching invoices
     if (matchedItems.length > 1) {
-      toast.warning("⚠️ Multiple invoices matched!", {
-        description: `Part code found in ${matchedItems.length} invoices. All will be blocked for admin review.`,
-        duration: 5000,
+      openScanIssue({
+        title: "Ambiguous match",
+        description: `Part code "${customerPartCode}" was found in ${matchedItems.length} invoices.\nAll matching invoices will be blocked for admin review.`,
+        severity: "warning",
+        context: [
+          { label: "Customer part code", value: customerPartCode },
+          { label: "Matches", value: matchedItems.length },
+        ],
       });
 
       matchedItems.forEach(({ invoiceId }) => {
@@ -795,14 +842,16 @@ const DocAudit = () => {
       const message = error?.message || "Scan failed.";
       const isDuplicate = /duplicate|already been scanned/i.test(message);
       if (isDuplicate) {
-        toast.warning("⚠️ Duplicate scan ignored", {
+        openScanIssue({
+          title: "Duplicate scan",
           description: message,
-          duration: 4000,
+          severity: "warning",
         });
       } else {
-        toast.error("⚠️ Customer scan rejected", {
+        openScanIssue({
+          title: "Customer scan rejected",
           description: message || "Scan failed. Invoice may be blocked; check Exception Alerts.",
-          duration: 6000,
+          severity: "error",
         });
       }
       await refreshData();
@@ -830,18 +879,20 @@ const DocAudit = () => {
     });
     
     if (hasBlockedInvoice) {
-      toast.error("⚠️ One or more invoices are blocked", {
-        description: "Please resolve mismatches before continuing.",
-        duration: 5000,
+      openScanIssue({
+        title: "Invoices blocked",
+        description: "One or more selected invoices are blocked.\nPlease resolve mismatches before continuing.",
+        severity: "error",
       });
       setAutolivScan(null);
       return;
     }
 
     if (selectedInvoices.length === 0) {
-      toast.error("⚠️ No invoices selected", {
+      openScanIssue({
+        title: "No invoices selected",
         description: "Please select invoices before scanning.",
-        duration: 3000,
+        severity: "warning",
       });
       setAutolivScan(null);
       return;
@@ -849,9 +900,10 @@ const DocAudit = () => {
 
     const autolivPartNumber = autolivScan.partCode?.trim();
     if (!autolivPartNumber) {
-      toast.error("⚠️ Could not extract part number from Autoliv QR!", {
-        description: "Please ensure the QR code is valid.",
-        duration: 4000,
+      openScanIssue({
+        title: "Invalid Autoliv QR",
+        description: "Could not extract part number from the Autoliv QR.\nPlease ensure the QR code is valid.",
+        severity: "error",
       });
       setAutolivScan(null);
       return;
@@ -879,9 +931,15 @@ const DocAudit = () => {
 
     if (matchedItems.length === 0) {
       // STEP 2 MISMATCH: Autoliv QR part number not found
-      toast.error("⚠️ Autoliv QR Mismatch - Step 2 Failed!", {
-        description: `Part number "${autolivPartNumber}" not found in any selected invoice. Invoice(s) blocked.`,
-        duration: 6000,
+      openScanIssue({
+        title: "Autoliv QR mismatch (Step 2)",
+        description:
+          `Part number "${autolivPartNumber}" not found in any selected invoice.\nInvoice(s) blocked.\n\nAn exception alert has been sent to admin.`,
+        severity: "error",
+        context: [
+          { label: "Autoliv part number", value: autolivPartNumber },
+          { label: "Selected invoices", value: selectedInvoices.length },
+        ],
       });
 
       // Block all selected invoices
@@ -915,13 +973,6 @@ const DocAudit = () => {
         }
       });
 
-      setTimeout(() => {
-        toast.info("📨 Alert sent to admin", {
-          description: "Admin will review and resolve the mismatch.",
-          duration: 5000,
-        });
-      }, 500);
-
       setAutolivScan(null);
       setMatchedCustomerItem(null); // Reset customer match
       return;
@@ -929,9 +980,14 @@ const DocAudit = () => {
 
     // If multiple matches (edge case), block all matching invoices
     if (matchedItems.length > 1) {
-      toast.warning("⚠️ Multiple invoices matched!", {
-        description: `Part number found in ${matchedItems.length} invoices. All will be blocked for admin review.`,
-        duration: 5000,
+      openScanIssue({
+        title: "Ambiguous match",
+        description: `Part number "${autolivPartNumber}" was found in ${matchedItems.length} invoices.\nAll matching invoices will be blocked for admin review.`,
+        severity: "warning",
+        context: [
+          { label: "Autoliv part number", value: autolivPartNumber },
+          { label: "Matches", value: matchedItems.length },
+        ],
       });
 
       matchedItems.forEach(({ invoiceId }) => {
@@ -991,14 +1047,16 @@ const DocAudit = () => {
         const message = error?.message || 'You may need to scan the customer label again.';
         const isDuplicate = /duplicate|already been scanned/i.test(message);
         if (isDuplicate) {
-          toast.warning('⚠️ Duplicate scan ignored', {
+          openScanIssue({
+            title: "Duplicate scan",
             description: message,
-            duration: 4000
+            severity: "warning",
           });
         } else {
-          toast.error('Failed to record INBD scan', {
+          openScanIssue({
+            title: "INBD scan rejected",
             description: message,
-            duration: 6000
+            severity: "error",
           });
         }
         await refreshData();
@@ -1028,9 +1086,15 @@ const DocAudit = () => {
     // STEP 3: Check if both items belong to the same invoice
     if (matchedCustomerItem.invoiceId !== matchedAutolivItem.invoiceId) {
       // STEP 3 MISMATCH: Items belong to different invoices
-      toast.error("⚠️ Invoice Mismatch - Step 3 Failed!", {
-        description: `Customer item and Autoliv item belong to different invoices. Invoice(s) blocked.`,
-        duration: 6000,
+      openScanIssue({
+        title: "Invoice mismatch (Step 3)",
+        description:
+          "Customer item and Autoliv item belong to different invoices.\nInvoice(s) blocked.\n\nAn exception alert has been sent to admin.",
+        severity: "error",
+        context: [
+          { label: "Customer invoice", value: matchedCustomerItem.invoiceId },
+          { label: "Autoliv invoice", value: matchedAutolivItem.invoiceId },
+        ],
       });
 
       // Block both invoices
@@ -1069,13 +1133,6 @@ const DocAudit = () => {
         }
       });
 
-      setTimeout(() => {
-        toast.info("📨 Alert sent to admin", {
-          description: "Admin will review and resolve the mismatch.",
-          duration: 5000,
-        });
-      }, 500);
-
       // Reset state
       setCustomerScan(null);
       setAutolivScan(null);
@@ -1089,9 +1146,11 @@ const DocAudit = () => {
     const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
     
     if (!invoice) {
-      toast.error("⚠️ Invoice not found", {
+      openScanIssue({
+        title: "Invoice not found",
         description: "Please try again.",
-        duration: 3000,
+        severity: "error",
+        context: [{ label: "Invoice", value: invoiceId }],
       });
       setCustomerScan(null);
       setAutolivScan(null);
@@ -1105,9 +1164,10 @@ const DocAudit = () => {
     const autolivBinQty = autolivScan.binQuantity?.trim();
 
     if (!customerBinQty || !autolivBinQty) {
-      toast.error("⚠️ Could not extract bin quantities from QR codes!", {
-        description: "Please ensure both QR codes contain valid bin quantities.",
-        duration: 4000,
+      openScanIssue({
+        title: "Invalid QR quantity",
+        description: "Could not extract bin quantities from the QR codes.\nPlease ensure both QR codes contain valid bin quantities.",
+        severity: "error",
       });
       setCustomerScan(null);
       setAutolivScan(null);
@@ -1118,9 +1178,16 @@ const DocAudit = () => {
 
     if (customerBinQty !== autolivBinQty) {
       // STEP 4 MISMATCH: Bin quantities don't match
-      toast.error("⚠️ Bin Quantity Mismatch - Step 4 Failed!", {
-        description: `Customer QR bin quantity "${customerBinQty}" does not match Autoliv QR bin quantity "${autolivBinQty}". Invoice blocked.`,
-        duration: 6000,
+      openScanIssue({
+        title: "Bin quantity mismatch (Step 4)",
+        description:
+          `Customer QR bin quantity "${customerBinQty}" does not match Autoliv QR bin quantity "${autolivBinQty}".\nInvoice blocked.\n\nAn exception alert has been sent to admin.`,
+        severity: "error",
+        context: [
+          { label: "Invoice", value: invoiceId },
+          { label: "Customer bin qty", value: customerBinQty },
+          { label: "Autoliv bin qty", value: autolivBinQty },
+        ],
       });
 
       // Block the invoice
@@ -1149,13 +1216,6 @@ const DocAudit = () => {
         }
       });
 
-      setTimeout(() => {
-        toast.info("📨 Alert sent to admin", {
-          description: "Admin will review and resolve the mismatch.",
-          duration: 5000,
-        });
-      }, 500);
-
       // Reset state
       setCustomerScan(null);
       setAutolivScan(null);
@@ -1179,14 +1239,16 @@ const DocAudit = () => {
       const message = error?.message || 'Invoice may be blocked; check Exception Alerts.';
       const isDuplicate = /duplicate|already been scanned/i.test(message);
       if (isDuplicate) {
-        toast.warning('⚠️ Duplicate scan ignored', {
+        openScanIssue({
+          title: "Duplicate scan",
           description: message,
-          duration: 4000
+          severity: "warning",
         });
       } else {
-        toast.error('Failed to record INBD scan', {
+        openScanIssue({
+          title: "Failed to record INBD scan",
           description: message,
-          duration: 6000
+          severity: "error",
         });
       }
       await refreshData();
@@ -1206,6 +1268,14 @@ const DocAudit = () => {
 
   return (
     <div className="min-h-screen bg-background">
+      <ScanIssueDialog
+        open={scanIssueOpen}
+        issue={scanIssue}
+        onOpenChange={(open) => {
+          setScanIssueOpen(open);
+          if (!open) setScanIssue(null);
+        }}
+      />
       {/* Header */}
       <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
@@ -1900,9 +1970,19 @@ const DocAudit = () => {
                                 const inbdBins = Number(invoiceItem?.inbd_scanned_bins_count || 0);
                                 const inbdQty = Number(invoiceItem?.inbd_scanned_quantity || 0);
                                 const isLineComplete = totalQty > 0 && custQty === totalQty && inbdQty === totalQty;
+                                const isLineInProgress = !isLineComplete && (custQty > 0 || inbdQty > 0);
                                 
                                 return (
-                                  <tr key={index} className={`border-t ${isLineComplete ? 'bg-green-100 dark:bg-green-950/40' : ''}`}>
+                                  <tr
+                                    key={index}
+                                    className={`border-t ${
+                                      isLineComplete
+                                        ? 'bg-green-100 dark:bg-green-950/40'
+                                        : isLineInProgress
+                                          ? 'bg-yellow-100 dark:bg-yellow-950/40'
+                                          : ''
+                                    }`}
+                                  >
                                     <td className="p-2 font-medium">{item.customerItem}</td>
                                     <td className="p-2">{item.itemNumber}</td>
                                     <td className="p-2 text-muted-foreground">{item.partDescription || 'N/A'}</td>
@@ -2316,6 +2396,19 @@ const DocAudit = () => {
                       const invoiceData = invoiceInShared || invoice;
 
                       const itemGroups = groupScansByItem(bins);
+                      const invoiceQtyByItemKey = new Map<string, number>();
+                      (invoiceData?.items ?? []).forEach((it: UploadedRow) => {
+                        const customerItem = String(it.customerItem || it.part || "").trim();
+                        if (!customerItem) return;
+                        const itemNumber = String(it.part || "N/A").trim() || "N/A";
+                        const key = `${customerItem}||${itemNumber}`;
+                        const qty = Number((it as any).qty ?? 0) || 0;
+                        invoiceQtyByItemKey.set(key, (invoiceQtyByItemKey.get(key) ?? 0) + qty);
+                      });
+                      const invoiceTotalQty =
+                        Number((invoiceData as any)?.totalQty ?? 0) ||
+                        (invoiceData?.items ?? []).reduce((sum: number, it: UploadedRow) => sum + (Number((it as any).qty ?? 0) || 0), 0);
+                      const scannedTotalQty = bins.reduce((sum, r) => sum + (Number(r.quantity ?? 0) || 0), 0);
 
                       return (
                         <AccordionItem
@@ -2337,6 +2430,12 @@ const DocAudit = () => {
                                 </Badge>
                                 <Badge variant="outline" className="text-xs">
                                   {itemGroups.length} items
+                                </Badge>
+                                <Badge variant="outline" className="text-xs">
+                                  Scanned Qty {scannedTotalQty}
+                                </Badge>
+                                <Badge variant="outline" className="text-xs">
+                                  Invoice Qty {invoiceTotalQty}
                                 </Badge>
                               </div>
                             </div>
@@ -2373,7 +2472,10 @@ const DocAudit = () => {
                                           {group.scans.length} bins
                                         </Badge>
                                         <Badge variant="outline" className="text-xs">
-                                          Qty {group.totalQty}
+                                          Scanned Qty {group.totalQty}
+                                        </Badge>
+                                        <Badge variant="outline" className="text-xs">
+                                          Invoice Qty {invoiceQtyByItemKey.get(group.key) ?? "—"}
                                         </Badge>
                                       </div>
                                     </div>
@@ -2381,10 +2483,11 @@ const DocAudit = () => {
 
                                   <AccordionContent className="px-3 pt-0 pb-3">
                                     <div className="overflow-x-auto">
-                                      <table className="w-full text-xs min-w-[520px]">
+                                      <table className="w-full text-xs min-w-[680px]">
                                         <thead className="bg-muted/40">
                                           <tr>
-                                            <th className="text-left p-2 font-semibold">Bin Number</th>
+                                            <th className="text-left p-2 font-semibold">Customer Bin</th>
+                                            <th className="text-left p-2 font-semibold">INBD Bin</th>
                                             <th className="text-left p-2 font-semibold">Bin Qty</th>
                                             <th className="text-left p-2 font-semibold">Scanned By</th>
                                             <th className="text-left p-2 font-semibold">Time</th>
@@ -2397,7 +2500,10 @@ const DocAudit = () => {
                                               className="border-t hover:bg-muted/30"
                                             >
                                               <td className="p-2 font-mono">
-                                                {scan.binNumber ? String(scan.binNumber) : "—"}
+                                                {scan.customerBinNumber ?? scan.binNumber ?? "—"}
+                                              </td>
+                                              <td className="p-2 font-mono">
+                                                {scan.autolivBinNumber ?? "—"}
                                               </td>
                                               <td className="p-2 font-semibold">
                                                 {Number(scan.quantity ?? 0) || 0}
@@ -2446,9 +2552,14 @@ const DocAudit = () => {
                         : uniqueItems.length;
                       const scanned = invoiceData.scannedBins || 0;
                       const isComplete = !!invoiceData.auditComplete || (expected > 0 && scanned >= expected);
-                      const alreadyAudited = invoiceInShared?.auditComplete;
+                      // Robust: invoices can become auditComplete via backend recompute during scanning,
+                      // but dock info (delivery time + unloading loc) is only known after user selection.
+                      // Treat an invoice as "finalized" only when dock info is present.
+                      const hasDockInfo =
+                        !!(invoiceData as any)?.deliveryTime &&
+                        !!(invoiceData as any)?.unloadingLoc;
                       
-                      if (!isComplete || alreadyAudited) return null;
+                      if (!isComplete || hasDockInfo) return null;
                       
                       return (
                         <div key={invoiceId} className="p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
@@ -2458,7 +2569,7 @@ const DocAudit = () => {
                                 ✅ All items scanned for {invoiceId}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                {scanned}/{expected} customer items complete. Click to complete audit.
+                                {scanned}/{expected} customer items complete. Select delivery time & unloading loc, then click to finalize audit.
                               </p>
                             </div>
                             <Button

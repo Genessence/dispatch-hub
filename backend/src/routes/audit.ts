@@ -49,6 +49,9 @@ router.put('/:invoiceId', authenticateToken, async (req: AuthRequest, res: Respo
       params.push(auditComplete);
       if (auditComplete) {
         updates.push(`audit_date = CURRENT_TIMESTAMP`);
+        // Keep a dedicated audited timestamp for reporting/sorting.
+        // (Some parts of the app use audited_at while others use audit_date.)
+        updates.push(`audited_at = CURRENT_TIMESTAMP`);
         updates.push(`audited_by = $${paramIndex++}`);
         params.push(req.user?.username);
       }
@@ -112,6 +115,7 @@ router.put('/:invoiceId', authenticateToken, async (req: AuthRequest, res: Respo
           newParams.push(auditComplete);
           if (auditComplete) {
             newUpdates.push(`audit_date = CURRENT_TIMESTAMP`);
+            newUpdates.push(`audited_at = CURRENT_TIMESTAMP`);
             newUpdates.push(`audited_by = $${newParamIndex++}`);
             newParams.push(req.user?.username);
           }

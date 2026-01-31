@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useScannerPreferences } from "@/hooks/useScannerPreferences";
 import { ScannerPreferencesDialog } from "./ScannerPreferencesDialog";
 import { canonicalizeBarcodePayload, parseBarcodeData, type BarcodeData } from "@/lib/barcode";
+import { ScanIssueDialog, type ScanIssue } from "@/components/ScanIssueDialog";
 
 export type { BarcodeData } from "@/lib/barcode";
 
@@ -43,6 +44,17 @@ export const BarcodeScanner = ({
   const [scannerInput, setScannerInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [showPreferences, setShowPreferences] = useState(false);
+
+  // Scan issue popup (shown ONLY when there's an issue)
+  const [scanIssue, setScanIssue] = useState<ScanIssue | null>(null);
+  const [scanIssueOpen, setScanIssueOpen] = useState(false);
+
+  const openScanIssue = (issue: ScanIssue) => {
+    // De-dupe guard: don't re-open while already visible.
+    if (scanIssueOpen) return;
+    setScanIssue(issue);
+    setScanIssueOpen(true);
+  };
   
   // Scanner input handling refs
   const scannerInputRef = useRef<string>('');
@@ -143,10 +155,11 @@ export const BarcodeScanner = ({
           console.warn("Scanner input too long, resetting");
           scannerInputRef.current = '';
           setScannerInput('');
-          toast.error("Scan too long", {
-            description: "The scanned data is too long. Please check your scanner.",
-            duration: 3000
-          });
+        openScanIssue({
+          title: "Scan too long",
+          description: "The scanned data is too long. Please check your scanner.",
+          severity: "error",
+        });
           return;
         }
         
@@ -196,8 +209,10 @@ export const BarcodeScanner = ({
 
       // Check for maximum length to prevent memory issues
       if (scannedValue.length > 10000) {
-        toast.error("Scan too long", {
-          description: "The scanned data is too long. Please check your scanner."
+        openScanIssue({
+          title: "Scan too long",
+          description: "The scanned data is too long. Please check your scanner.",
+          severity: "error",
         });
         scannerInputRef.current = '';
         setScannerInput('');
@@ -225,9 +240,10 @@ export const BarcodeScanner = ({
       
       if (normalized.canonical === lastScannedBarcodeRef.current && timeSinceLastScan < threshold) {
         console.log("Duplicate scan ignored");
-        toast.info("Duplicate scan ignored", {
+        openScanIssue({
+          title: "Duplicate scan ignored",
           description: "Same barcode scanned too quickly. Please wait before scanning again.",
-          duration: 2000
+          severity: "warning",
         });
         scannerInputRef.current = '';
         setScannerInput('');
@@ -273,14 +289,11 @@ export const BarcodeScanner = ({
       } else {
         // Parsing failed - show detailed error
         const errorMessage = parseResult.error || "QR code format is invalid. Please ensure you're scanning the correct QR code type.";
-        
-        toast.error("Failed to Parse QR Code", {
+
+        openScanIssue({
+          title: "Failed to parse QR code",
           description: errorMessage,
-          duration: 8000,
-          style: {
-            maxWidth: '500px',
-            whiteSpace: 'pre-line'
-          }
+          severity: "error",
         });
         scannerInputRef.current = '';
         setScannerInput('');
@@ -288,9 +301,10 @@ export const BarcodeScanner = ({
       }
     } catch (error) {
       console.error("Error processing scanned input:", error);
-      toast.error("Error processing scan", {
+      openScanIssue({
+        title: "Error processing scan",
         description: error instanceof Error ? error.message : "An unexpected error occurred. Please try again.",
-        duration: 5000
+        severity: "error",
       });
       scannerInputRef.current = '';
       setScannerInput('');
@@ -477,36 +491,37 @@ export const BarcodeScanner = ({
           // Video will play once user interacts
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const e = err as { message?: string; name?: string };
       console.error("❌ Error starting scanner:", err);
       setHasPermission(false);
       setIsScanning(false);
       
-      if (err.message === 'HTTPS_REQUIRED') {
+      if (e.message === 'HTTPS_REQUIRED') {
         toast.error("HTTPS Required for Camera Access", {
           description: "Mobile browsers require HTTPS for camera access. Please use a secure connection or access via localhost.",
           duration: 10000
         });
-      } else if (err.message === 'CAMERA_API_NOT_AVAILABLE') {
+      } else if (e.message === 'CAMERA_API_NOT_AVAILABLE') {
         toast.error("Camera API Not Available", {
           description: "Your browser doesn't support camera access. Please try a different browser or device.",
           duration: 8000
         });
-      } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      } else if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
         toast.error("Camera access denied", {
           description: "Please click 'Allow' when browser asks for camera permission."
         });
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
         toast.error("No camera found", {
           description: "Please ensure your device has a working camera."
         });
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
         toast.error("Camera is in use", {
           description: "Please close other apps using the camera and try again."
         });
       } else {
         toast.error("Failed to start camera", {
-          description: err.message || "Unknown error occurred. Check console for details."
+          description: e.message || "Unknown error occurred. Check console for details."
         });
       }
     }
@@ -534,6 +549,11 @@ export const BarcodeScanner = ({
           const now = Date.now();
           if (normalized.canonical === lastScannedBarcodeRef.current && (now - lastScanTimeRef.current) < 2000) {
             console.log("Duplicate scan ignored (same barcode within 2 seconds)");
+            openScanIssue({
+              title: "Duplicate scan ignored",
+              description: "Same barcode scanned too quickly. Please wait before scanning again.",
+              severity: "warning",
+            });
             return;
           }
 
@@ -574,14 +594,11 @@ export const BarcodeScanner = ({
           } else {
             // Parsing failed - show detailed error but keep scanning
             const errorMessage = parseResult.error || "QR code format is invalid. Please ensure you're scanning the correct QR code type.";
-            
-            toast.error("Failed to Parse QR Code", {
+
+            openScanIssue({
+              title: "Failed to parse QR code",
               description: errorMessage,
-              duration: 8000,
-              style: {
-                maxWidth: '500px',
-                whiteSpace: 'pre-line'
-              }
+              severity: "error",
             });
             // Continue scanning - user can try again
           }
@@ -596,8 +613,10 @@ export const BarcodeScanner = ({
       }
     ).catch((err) => {
       console.error("Error starting barcode scanning:", err);
-      toast.error("Failed to start barcode scanning", {
-        description: err.message || "Please try again"
+      openScanIssue({
+        title: "Failed to start barcode scanning",
+        description: err?.message || "Please try again.",
+        severity: "error",
       });
     });
   };
@@ -692,6 +711,14 @@ export const BarcodeScanner = ({
 
   return (
     <>
+      <ScanIssueDialog
+        open={scanIssueOpen}
+        issue={scanIssue}
+        onOpenChange={(open) => {
+          setScanIssueOpen(open);
+          if (!open) setScanIssue(null);
+        }}
+      />
       <Dialog open={isOpen} onOpenChange={handleClose}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto w-[95vw] sm:w-full" onEscapeKeyDown={handleClose}>
           <DialogHeader>

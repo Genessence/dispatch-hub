@@ -29,7 +29,7 @@ import { disconnectSocket } from "@/lib/socket";
 
 const Home = () => {
   const navigate = useNavigate();
-  const { currentUser, currentUserRole, selectedCustomer, selectedSite } = useSession();
+  const { currentUser, currentUserRole, selectedCustomer, selectedSite, mismatchAlerts } = useSession();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -38,6 +38,9 @@ const Home = () => {
   const [logoError, setLogoError] = useState(false);
 
   const isAdmin = currentUserRole === "admin";
+  const pendingExceptionCount = isAdmin
+    ? mismatchAlerts.filter((a) => a.status === "pending").length
+    : 0;
 
   const handleLogoError = () => {
     setLogoError(true);
@@ -277,8 +280,24 @@ const Home = () => {
                       }`}
                       onClick={item.onClick}
                     >
-                      <item.icon className="h-5 w-5 flex-shrink-0" />
-                      {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
+                      <span className="relative flex-shrink-0">
+                        <item.icon className="h-5 w-5" />
+                        {item.label === "Exception Alerts" && pendingExceptionCount > 0 && sidebarCollapsed && (
+                          <span className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold leading-none text-white">
+                            {pendingExceptionCount}
+                          </span>
+                        )}
+                      </span>
+                      {!sidebarCollapsed && (
+                        <>
+                          <span className="truncate">{item.label}</span>
+                          {item.label === "Exception Alerts" && pendingExceptionCount > 0 && (
+                            <Badge variant="destructive" className="ml-auto">
+                              {pendingExceptionCount}
+                            </Badge>
+                          )}
+                        </>
+                      )}
                     </Button>
                   </TooltipTrigger>
                   {sidebarCollapsed && (
