@@ -318,7 +318,7 @@ const Home = () => {
                       variant={item.variant || "ghost"}
                       className={`w-full gap-3 ${
                         item.variant === "destructive"
-                          ? "text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/50"
+                          ? "bg-transparent text-red-700 hover:bg-red-50 hover:text-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/30 dark:hover:text-red-200"
                           : "text-blue-800 hover:bg-blue-100 hover:text-blue-900 dark:text-blue-200 dark:hover:bg-blue-900/50 dark:hover:text-blue-100"
                       } ${
                         sidebarCollapsed ? "justify-center px-2" : "justify-start"
