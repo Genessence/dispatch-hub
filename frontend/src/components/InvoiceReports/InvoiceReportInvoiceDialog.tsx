@@ -4,8 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card, CardContent } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { AlertTriangle, Package, ScanBarcode } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { AlertTriangle, Download, Package, ScanBarcode } from "lucide-react";
 import { auditApi, invoicesApi } from "@/lib/api";
+import { toast } from "sonner";
+import { downloadInvoiceReportPdf, type InvoiceReportItemGroup } from "@/lib/pdf/invoiceReportPdf";
 
 type ScanRow = {
   id: string;
@@ -58,6 +61,7 @@ export function InvoiceReportInvoiceDialog(props: {
   const { open, onOpenChange, invoiceId, header } = props;
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scans, setScans] = useState<ScanRow[]>([]);
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItemRow[]>([]);
@@ -87,9 +91,10 @@ export function InvoiceReportInvoiceDialog(props: {
 
         const items: InvoiceItemRow[] = Array.isArray(invoiceRes?.invoice?.items) ? invoiceRes.invoice.items : [];
         setInvoiceItems(items);
-      } catch (e: any) {
+      } catch (e: unknown) {
         if (cancelled) return;
-        setError(e?.message || "Failed to load invoice details");
+        const message = e instanceof Error ? e.message : "Failed to load invoice details";
+        setError(message);
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -161,14 +166,71 @@ export function InvoiceReportInvoiceDialog(props: {
   const totalBins = scans.length;
   const totalScannedQty = groups.reduce((sum, g) => sum + (Number(g.totalScannedQty) || 0), 0);
 
+  const canDownload = !!invoiceId && !isLoading && !error && groups.length > 0 && !isDownloading;
+
+  const handleDownloadPdf = async () => {
+    if (!invoiceId) return;
+    if (groups.length === 0) {
+      toast.error("No data available to download");
+      return;
+    }
+
+    setIsDownloading(true);
+    try {
+      const exportGroups: InvoiceReportItemGroup[] = groups.map((g) => ({
+        customerItem: g.customerItem,
+        itemNumber: g.itemNumber,
+        partDescription: g.partDescription,
+        binsCount: g.scans.length,
+        scannedQty: Number(g.totalScannedQty ?? 0) || 0,
+        invoiceQty: invoiceQtyByItemKey.get(g.key) ?? null,
+        bins: g.scans.map((s) => ({
+          customerBinNumber: s.customerBinNumber ?? null,
+          autolivBinNumber: s.autolivBinNumber ?? null,
+          binQty: Number(s.binQty ?? 0) || 0,
+          scannedBy: s.scannedBy ?? null,
+          scannedAt: s.scannedAt ?? null,
+        })),
+      }));
+
+      const filename = downloadInvoiceReportPdf({
+        invoiceId,
+        header,
+        totalBins,
+        totalItems: exportGroups.length,
+        totalScannedQty,
+        groups: exportGroups,
+      });
+
+      toast.success("Report downloaded", { description: filename });
+    } catch (e: unknown) {
+      console.error("Error generating invoice PDF:", e);
+      toast.error("Failed to generate PDF. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-hidden">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Package className="h-5 w-5" />
-            Invoice Details{invoiceId ? `: ${invoiceId}` : ""}
-          </DialogTitle>
+          <div className="flex items-start justify-between gap-3">
+            <DialogTitle className="flex items-center gap-2">
+              <Package className="h-5 w-5" />
+              Invoice Details{invoiceId ? `: ${invoiceId}` : ""}
+            </DialogTitle>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!canDownload}
+              onClick={() => void handleDownloadPdf()}
+              className="shrink-0"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              {isDownloading ? "Preparing…" : "Download PDF"}
+            </Button>
+          </div>
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2 text-sm">
