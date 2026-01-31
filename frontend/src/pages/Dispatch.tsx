@@ -1449,8 +1449,26 @@ const Dispatch = () => {
           yPos = margin;
         }
         
+        // Parse date-only values (YYYY-MM-DD) as local calendar dates to avoid timezone shifts.
+        const parseDateOnlyAsLocal = (value: string): Date | null => {
+          const s = String(value ?? '').trim();
+          const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (!m) return null;
+          const year = Number(m[1]);
+          const month = Number(m[2]);
+          const day = Number(m[3]);
+          if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+          return new Date(year, month - 1, day);
+        };
+
         const deliveryDateStr = inv.deliveryDate
-          ? new Date(inv.deliveryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          ? (() => {
+              const raw = String(inv.deliveryDate);
+              const dLocal = parseDateOnlyAsLocal(raw) ?? new Date(raw);
+              return Number.isNaN(dLocal.getTime())
+                ? 'N/A'
+                : dLocal.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            })()
           : 'N/A';
         
         pdf.text(inv.id.substring(0, 12), margin, yPos);

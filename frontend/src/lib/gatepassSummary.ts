@@ -65,11 +65,32 @@ const formatDateTime = (isoOrDate: string | Date | null | undefined): string => 
   return d.toLocaleString();
 };
 
+const YYYY_MM_DD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const toLocalIsoDateOnly = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 const formatDateOnly = (isoOrDate: string | Date | null | undefined): string | null => {
   if (!isoOrDate) return null;
-  const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+  // IMPORTANT: deliveryDate is a calendar/business date. Never derive date-only via UTC (`toISOString()`)
+  // because it can shift the date by -1/+1 depending on timezone offsets.
+  if (typeof isoOrDate === 'string') {
+    const s = isoOrDate.trim();
+    if (!s) return null;
+    // If already a date-only string, preserve exactly.
+    if (YYYY_MM_DD_RE.test(s)) return s;
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return null;
+    return toLocalIsoDateOnly(d);
+  }
+
+  const d = isoOrDate;
   if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 10);
+  return toLocalIsoDateOnly(d);
 };
 
 export function buildGatepassSummary(args: {

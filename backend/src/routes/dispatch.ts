@@ -14,9 +14,18 @@ const normalizeOptionalString = (v: unknown): string | null => {
 
 const toIsoDateOnly = (v: unknown): string | null => {
   if (!v) return null;
-  const d = new Date(String(v));
+  const s = String(v).trim();
+  if (!s) return null;
+  // Preserve already-normalized DATE-only values from Postgres (stable, no timezone ambiguity).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString().slice(0, 10);
+  // IMPORTANT: date-only business fields should never be derived via UTC `toISOString()`
+  // because timezone offsets can shift the calendar date.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 };
 
 const getInvoicePartCandidates = async (invoiceId: string): Promise<string[]> => {
@@ -573,7 +582,8 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
     const supplyDates = invoices
       .map((inv: any) => inv.deliveryDate)
       .filter(Boolean)
-      .map((date: any) => (date ? new Date(date).toISOString().slice(0, 10) : null));
+      .map((date: any) => toIsoDateOnly(date))
+      .filter(Boolean);
 
     // Optional robustness: compute loaded totals from DB (source of truth)
     // This reflects what was actually recorded as loading-dispatch scans.
