@@ -19,6 +19,7 @@ import { LogsDialog } from "@/components/LogsDialog";
 import type { ScheduleItem, InvoiceData } from "@/contexts/SessionContext";
 import { invoicesApi, scheduleApi } from "@/lib/api";
 import { getCustomerCode } from "@/lib/customerCodes";
+import { UploadDropzoneCard } from "@/components/upload/UploadDropzoneCard";
 
 interface UploadedRow {
   invoice: string;
@@ -45,8 +46,6 @@ const UploadData = () => {
   const [file, setFile] = useState<File | null>(null);
   const [scheduleFile, setScheduleFile] = useState<File | null>(null);
   const [uploadStage, setUploadStage] = useState<'upload' | 'validate' | 'complete'>('upload');
-  const [dragActive, setDragActive] = useState(false);
-  const [scheduleDragActive, setScheduleDragActive] = useState(false);
   const [uploadedData, setUploadedData] = useState<UploadedRow[]>([]);
   const [processedInvoices, setProcessedInvoices] = useState<InvoiceData[]>([]);
   const [parsedScheduleItems, setParsedScheduleItems] = useState<ScheduleItem[]>([]);
@@ -76,7 +75,7 @@ const UploadData = () => {
   // Helper function to parse date from various formats (shared for invoice and schedule parsing).
   // IMPORTANT: Avoid JS Date overflow bugs (e.g. "21/01/2026" accidentally becoming "2027-09-01").
   // Prefer DD/MM/YYYY for customer files.
-  const parseDate = (value: any): Date | undefined => {
+  const parseDate = (value: unknown): Date | undefined => {
     if (value === null || value === undefined || value === '') return undefined;
     if (value instanceof Date && !Number.isNaN(value.getTime())) {
       return new Date(value.getFullYear(), value.getMonth(), value.getDate());
@@ -194,62 +193,14 @@ const UploadData = () => {
     return `${year}-${month}-${day}`;
   };
 
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
+  const handleInvoiceFileSelected = (selected: File) => {
+    setFile(selected);
+    toast.success("Invoices file selected!");
   };
 
-  const handleScheduleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setScheduleDragActive(true);
-    } else if (e.type === "dragleave") {
-      setScheduleDragActive(false);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const droppedFile = e.dataTransfer.files[0];
-      setFile(droppedFile);
-      toast.success("Invoices file selected!");
-    }
-  };
-
-  const handleScheduleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setScheduleDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setScheduleFile(e.dataTransfer.files[0]);
-      toast.success("Schedule file selected!");
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const selectedFile = e.target.files[0];
-      setFile(selectedFile);
-      toast.success("Invoices file selected!");
-    }
-  };
-
-  const handleScheduleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setScheduleFile(e.target.files[0]);
-      toast.success("Schedule file selected!");
-    }
+  const handleScheduleFileSelected = (selected: File) => {
+    setScheduleFile(selected);
+    toast.success("Schedule file selected!");
   };
 
   // Parse invoice file (see Dashboard.tsx lines 327-736 for full implementation)
@@ -306,7 +257,7 @@ const UploadData = () => {
             return;
           }
           
-          let jsonData: any[];
+          let jsonData: unknown[];
           let headers: string[] = [];
           let dataRows: string[][] = [];
           
@@ -321,9 +272,12 @@ const UploadData = () => {
               throw new Error('No data with object format');
             }
             
-            if (jsonData.length > 0 && typeof jsonData[0] === 'object') {
-              headers = Object.keys(jsonData[0]);
-              dataRows = jsonData.map((row: any) => headers.map(header => row[header] || ''));
+            if (jsonData.length > 0 && typeof jsonData[0] === 'object' && jsonData[0] !== null) {
+              headers = Object.keys(jsonData[0] as Record<string, unknown>);
+              dataRows = jsonData.map((row) => {
+                const rec = (row && typeof row === 'object') ? (row as Record<string, unknown>) : {};
+                return headers.map((header) => String(rec[header] ?? ''));
+              });
             } else {
               throw new Error('Invalid object format');
             }
@@ -401,7 +355,7 @@ const UploadData = () => {
           console.log('================================\n');
           
           const parsedData: UploadedRow[] = dataRows.map((row: string[], index: number) => {
-            const rowObj: any = {};
+            const rowObj: Record<string, string> = {};
             headers.forEach((header, colIndex) => {
               rowObj[header] = row[colIndex] || '';
             });
@@ -471,7 +425,7 @@ const UploadData = () => {
           const invoiceMap = new Map<string, InvoiceData>();
           
           dataRows.forEach((row: string[], index: number) => {
-            const rowObj: any = {};
+            const rowObj: Record<string, string> = {};
             headers.forEach((header, colIndex) => {
               rowObj[header] = row[colIndex] || '';
             });
@@ -568,7 +522,7 @@ const UploadData = () => {
           const allScheduleItems: ScheduleItem[] = [];
           
           // Helper function for case-insensitive column lookup
-          const getColumnValue = (row: any, variations: string[]): string => {
+          const getColumnValue = (row: Record<string, unknown>, variations: string[]): string => {
             for (const variation of variations) {
               if (row[variation] !== undefined && row[variation] !== '') {
                 // Convert to string to handle numbers from Excel
@@ -587,7 +541,7 @@ const UploadData = () => {
           };
           
           // Helper to parse numeric value from quantity columns
-          const parseQuantity = (value: any): number | null => {
+          const parseQuantity = (value: unknown): number | null => {
             if (value === null || value === undefined || value === '') {
               return null;
             }
@@ -608,7 +562,7 @@ const UploadData = () => {
           // Track filtering statistics
           let totalRowsProcessed = 0;
           let rowsFilteredOut = 0; // Rows where quantity === quantityDispatched
-          let rowsExcludedMissingColumns = 0; // Rows with both columns missing
+          const rowsExcludedMissingColumns = 0; // Rows with both columns missing
           
           // Parse each sheet
           workbook.SheetNames.forEach((sheetName) => {
@@ -645,7 +599,9 @@ const UploadData = () => {
               let partNumberColumnExists = false;
               
               for (const checkRow of firstFiveRows) {
-                const partNumCheck = getColumnValue(checkRow, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']);
+                const checkRowObj =
+                  (checkRow && typeof checkRow === 'object') ? (checkRow as Record<string, unknown>) : {};
+                const partNumCheck = getColumnValue(checkRowObj, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']);
                 if (partNumCheck && partNumCheck.trim() !== '') {
                   partNumberColumnExists = true;
                   break;
@@ -654,28 +610,32 @@ const UploadData = () => {
 
               if (!partNumberColumnExists) {
                 console.warn(`⚠️ PART NUMBER column not found in first 5 rows of sheet "${sheetName}". Treating partNumber as null for all rows.`);
-                console.warn(`  Available columns:`, Object.keys(firstFiveRows[0] || {}));
+                const sampleRow = firstFiveRows[0];
+                const sampleObj =
+                  (sampleRow && typeof sampleRow === 'object') ? (sampleRow as Record<string, unknown>) : {};
+                console.warn(`  Available columns:`, Object.keys(sampleObj));
               } else {
                 console.log(`✓ PART NUMBER column detected in sheet "${sheetName}"`);
               }
               
-              jsonData.forEach((row: any) => {
+              jsonData.forEach((row) => {
+                const rowObj = (row && typeof row === 'object') ? (row as Record<string, unknown>) : {};
                 totalRowsProcessed++;
                 
                 // Customer Code removed - schedule no longer contains customer code column
-                const customerPart = getColumnValue(row, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
+                const customerPart = getColumnValue(rowObj, ['Custmer Part', 'Customer Part', 'CustomerPart', 'customer part']) || '';
                 // Only extract PART NUMBER if column was found in first 5 rows, otherwise use empty string
                 // Normalize: convert to string, trim, and collapse multiple spaces
-                const partNumberRaw = partNumberColumnExists ? getColumnValue(row, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
+                const partNumberRaw = partNumberColumnExists ? getColumnValue(rowObj, ['PART NUMBER', 'Part Number', 'PartNumber', 'part number', 'Part_Number']) || '' : '';
                 const partNumber = String(partNumberRaw).trim().replace(/\s+/g, ' ');
-                const qadPart = getColumnValue(row, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
-                const description = getColumnValue(row, ['Description', 'description']) || '';
-                const snp = parseInt(getColumnValue(row, ['SNP', 'snp']) || '0') || 0;
-                const bin = parseInt(getColumnValue(row, ['Bin', 'bin']) || '0') || 0;
+                const qadPart = getColumnValue(rowObj, ['QAD part', 'QAD Part', 'QADPart', 'qad part']) || '';
+                const description = getColumnValue(rowObj, ['Description', 'description']) || '';
+                const snp = parseInt(getColumnValue(rowObj, ['SNP', 'snp']) || '0') || 0;
+                const bin = parseInt(getColumnValue(rowObj, ['Bin', 'bin']) || '0') || 0;
                 
                 // Extract Quantity and Quantity Dispatched columns
-                const quantityStr = getColumnValue(row, ['Quantity', 'quantity', 'Qty', 'qty', 'QUANTITY']);
-                const quantityDispatchedStr = getColumnValue(row, [
+                const quantityStr = getColumnValue(rowObj, ['Quantity', 'quantity', 'Qty', 'qty', 'QUANTITY']);
+                const quantityDispatchedStr = getColumnValue(rowObj, [
                   'Quantity Dispatched', 'QuantityDispatched', 'quantity dispatched', 
                   'Qty Dispatched', 'QtyDispatched', 'QUANTITY DISPATCHED'
                 ]);
@@ -705,7 +665,7 @@ const UploadData = () => {
                 // Note: We include rows that have PART NUMBER (even if quantity is null/zero/empty)
                 // This is because for validation, we only need PART NUMBER, not quantity
                 
-                const deliveryDateTime = getColumnValue(row, [
+                const deliveryDateTime = getColumnValue(rowObj, [
                   'SUPPLY DATE',
                   'Supply Date',
                   'SupplyDate',
@@ -717,7 +677,7 @@ const UploadData = () => {
                   'delivery date'
                 ]);
                 
-                const supplyTime = getColumnValue(row, [
+                const supplyTime = getColumnValue(rowObj, [
                   'Supply Time',
                   'SupplyTime',
                   'SUPPLY TIME',
@@ -746,7 +706,7 @@ const UploadData = () => {
                   timeStr = undefined;
                 }
                 
-                const plant = getColumnValue(row, [
+                const plant = getColumnValue(rowObj, [
                   'Plant',
                   'plant',
                   'PLANT',
@@ -757,7 +717,7 @@ const UploadData = () => {
                   'delivery location'
                 ]);
                 
-                const unloadingLoc = getColumnValue(row, [
+                const unloadingLoc = getColumnValue(rowObj, [
                   'UNLOADING LOC',
                   'UnloadingLoc',
                   'Unloading Location',
@@ -955,9 +915,10 @@ const UploadData = () => {
       toast.success(`Validation complete!`, {
         description: `Valid: ${validCount}, Warnings: ${warningCount}, Errors: ${errorCount}`,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast.dismiss(loadingToast);
-      toast.error(`Failed to parse files: ${error.message || 'Unknown error'}`);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast.error(`Failed to parse files: ${message}`);
       console.error('File parsing error:', error);
     }
   };
@@ -1085,15 +1046,17 @@ const UploadData = () => {
       toast.success(`Data imported successfully!`, {
         description: `Invoices: ${invoiceResult.invoiceCount || 0} invoices (valid: ${validCount}, warnings: ${warningCount})`
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('\n❌ ============================================');
       console.error('❌ UPLOAD ERROR - CAUGHT IN OUTER TRY-CATCH');
       console.error('❌ ============================================');
       console.error('Error:', error);
-      console.error('Error message:', error?.message);
-      console.error('Error stack:', error?.stack);
+      if (error instanceof Error) {
+        console.error('Error message:', error.message);
+        console.error('Error stack:', error.stack);
+      }
       toast.dismiss(loadingToast);
-      toast.error(`Upload failed: ${error?.message || 'Unknown error'}`);
+      toast.error(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       // Keep preview data visible so user can retry - don't clear uploadedData, processedInvoices, or parsedScheduleItems
       // Don't change uploadStage - stay on 'validate' stage so user can see preview and try again
     }
@@ -1112,9 +1075,18 @@ const UploadData = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen relative overflow-hidden bg-gradient-to-b from-blue-50 via-background to-background dark:from-blue-950/25">
+      {/* Subtle background pattern */}
+      <div
+        className="pointer-events-none absolute inset-0 opacity-50 dark:opacity-30"
+        style={{
+          backgroundImage: `radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
+                           radial-gradient(circle at 85% 30%, rgba(14, 165, 233, 0.10) 0%, transparent 50%),
+                           radial-gradient(circle at 60% 90%, rgba(99, 102, 241, 0.10) 0%, transparent 45%)`,
+        }}
+      />
       {/* Header */}
-      <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
+      <header className="relative bg-card/80 backdrop-blur border-b border-border sticky top-0 z-50 shadow-sm">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto">
@@ -1127,14 +1099,14 @@ const UploadData = () => {
                 <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
               </Button>
               <div className="flex-1">
-                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Upload Invoice and schedule data</h1>
-                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Import and schedule dispatch orders</p>
+                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Upload invoices &amp; schedule</h1>
+                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Import files, validate, then start dispatch</p>
               </div>
             </div>
             <Button
               variant="outline"
               onClick={() => setShowUploadLogs(true)}
-              className="flex items-center gap-2 w-full sm:w-auto justify-center"
+              className="flex items-center gap-2 w-full sm:w-auto justify-center bg-card/60"
             >
               <FileSpreadsheet className="h-4 w-4" />
               <span>Upload Logs</span>
@@ -1148,7 +1120,7 @@ const UploadData = () => {
         </div>
       </header>
 
-      <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8 max-w-5xl">
+      <main className="relative container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8 max-w-5xl">
         {/* Progress Steps */}
         <div className="flex items-center justify-center mb-8">
           <div className="flex items-center gap-4">
@@ -1186,142 +1158,62 @@ const UploadData = () => {
         {/* Upload Stage */}
         {uploadStage === 'upload' && (
           <>
-            <Card>
+            <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
               <CardHeader>
-                <CardTitle>Select Excel Files</CardTitle>
-                <CardDescription>Upload Excel files containing invoices data and schedule data</CardDescription>
+                <CardTitle className="text-xl">Select Excel files</CardTitle>
+                <CardDescription>Upload invoices (required) and schedule (optional) to proceed</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="grid md:grid-cols-2 gap-6">
-                  {/* Upload Invoices */}
-                  <Card className="h-full flex flex-col">
-                    <CardHeader className="pb-4">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 bg-primary/10 rounded-lg">
-                          <FileSpreadsheet className="h-5 w-5 text-primary" />
-                        </div>
-                        <CardTitle className="text-lg">Upload Invoices</CardTitle>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="flex-1 flex flex-col">
-                      <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                        <p className="text-xs font-medium mb-1">Expected Invoice Columns:</p>
-                        <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
-                          <li>Bill To</li>
-                          <li>Invoice Number</li>
-                          <li>Invoice Date</li>
-                          <li>Customer Name</li>
-                          <li>Customer Item</li>
-                          <li>Item Number</li>
-                          <li>Part Description (optional)</li>
-                          <li>Quantity Invoiced</li>
-                        </ul>
-                      </div>
-                      <div
-                        className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors flex-1 flex items-center justify-center min-h-[200px] ${
-                          dragActive ? 'border-primary bg-primary/5' : 'border-border'
-                        }`}
-                        onDragEnter={handleDrag}
-                        onDragLeave={handleDrag}
-                        onDragOver={handleDrag}
-                        onDrop={handleDrop}
-                      >
-                        <div className="flex flex-col items-center gap-3 w-full">
-                          <div className="p-2 bg-primary/10 rounded-full">
-                            <Upload className="h-8 w-8 text-primary" />
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium mb-1">Drag and drop your file here</p>
-                            <p className="text-xs text-muted-foreground mb-2">or</p>
-                            <Button 
-                              type="button"
-                              variant="outline" 
-                              className="cursor-pointer" 
-                              size="sm"
-                              onClick={() => document.getElementById('file-upload')?.click()}
-                            >
-                              Browse Files
-                            </Button>
-                            <input
-                              id="file-upload"
-                              type="file"
-                              className="hidden"
-                              accept=".xlsx,.xls,.csv"
-                              onChange={handleFileChange}
-                            />
-                          </div>
-                          {file && (
-                            <p className="text-xs text-primary font-medium mt-1">
-                              ✓ {file.name}
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                <div className="grid md:grid-cols-2 gap-6 items-stretch">
+                  <UploadDropzoneCard
+                    title="Upload invoices"
+                    titleIcon={<FileSpreadsheet />}
+                    dropzoneIcon={<Upload />}
+                    requirementsTitle="Expected invoice columns"
+                    requirements={
+                      <ul className="space-y-0.5 list-disc list-inside">
+                        <li>Bill To</li>
+                        <li>Invoice Number</li>
+                        <li>Invoice Date</li>
+                        <li>Customer Name</li>
+                        <li>Customer Item</li>
+                        <li>Item Number</li>
+                        <li>Part Description (optional)</li>
+                        <li>Quantity Invoiced</li>
+                      </ul>
+                    }
+                    selectedFile={file}
+                    onFileSelected={handleInvoiceFileSelected}
+                    accept=".xlsx,.xls"
+                    helperText="Supported: .xlsx, .xls"
+                  />
 
-                  {/* Upload Schedule (Optional) */}
-                  <Card className="h-full flex flex-col">
-                    <CardHeader className="pb-4">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 bg-primary/10 rounded-lg">
-                          <CalendarIcon className="h-5 w-5 text-primary" />
-                        </div>
-                        <CardTitle className="text-lg">Upload Schedule</CardTitle>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="flex-1 flex flex-col">
-                      <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                        <p className="text-xs font-medium mb-1">Expected Format:</p>
-                        <ul className="text-xs text-muted-foreground space-y-0.5 list-disc list-inside">
-                          <li>Optional: upload if you want schedule analytics</li>
-                          <li>Doc Audit is invoice-driven</li>
-                        </ul>
-                      </div>
-                      <div
-                        className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors flex-1 flex items-center justify-center min-h-[200px] ${
-                          scheduleDragActive ? 'border-primary bg-primary/5' : 'border-border'
-                        }`}
-                        onDragEnter={handleScheduleDrag}
-                        onDragLeave={handleScheduleDrag}
-                        onDragOver={handleScheduleDrag}
-                        onDrop={handleScheduleDrop}
-                      >
-                        <div className="flex flex-col items-center gap-3 w-full">
-                          <div className="p-2 bg-primary/10 rounded-full">
-                            <CalendarIcon className="h-8 w-8 text-primary" />
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium mb-1">Drag and drop your schedule file here</p>
-                            <p className="text-xs text-muted-foreground mb-2">or</p>
-                            <Button 
-                              type="button"
-                              variant="outline" 
-                              className="cursor-pointer" 
-                              size="sm"
-                              onClick={() => document.getElementById('schedule-file-upload')?.click()}
-                            >
-                              Browse Files
-                            </Button>
-                            <input
-                              id="schedule-file-upload"
-                              type="file"
-                              className="hidden"
-                              accept=".xlsx,.xls,.csv"
-                              onChange={handleScheduleFileChange}
-                            />
-                          </div>
-                          {scheduleFile && (
-                            <p className="text-xs text-primary font-medium mt-1">
-                              ✓ {scheduleFile.name}
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground">Supported: .xlsx, .xls, .csv</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                  <UploadDropzoneCard
+                    title="Upload schedule"
+                    titleIcon={<CalendarIcon />}
+                    dropzoneIcon={<Upload />}
+                    optionalBadge={
+                      <Badge variant="secondary" className="text-[10px] px-2 py-0.5">
+                        Optional
+                      </Badge>
+                    }
+                    requirementsTitle="Expected schedule columns (recommended)"
+                    requirements={
+                      <ul className="space-y-0.5 list-disc list-inside">
+                        <li>PART NUMBER (recommended)</li>
+                        <li>SUPPLY DATE (or Delivery Date &amp; Time)</li>
+                        <li>SUPPLY TIME (or Delivery Time)</li>
+                        <li>UNLOADING LOC</li>
+                        <li>Plant</li>
+                        <li>Quantity and Quantity Dispatched</li>
+                        <li>Description / SNP / Bin (optional)</li>
+                      </ul>
+                    }
+                    selectedFile={scheduleFile}
+                    onFileSelected={handleScheduleFileSelected}
+                    accept=".xlsx,.xls"
+                    helperText="Supported: .xlsx, .xls"
+                  />
                 </div>
               </CardContent>
             </Card>
@@ -1367,12 +1259,12 @@ const UploadData = () => {
                   <Button
                     onClick={handleProceedToValidation}
                     disabled={!file}
-                    className="h-12 px-8 text-base font-semibold"
+                    className="h-12 px-8 text-base font-semibold shadow-sm"
                     size="lg"
                   >
                     {!file ? (
                       <>
-                        "Upload Invoices File to Continue"
+                        Upload invoices file to continue
                       </>
                     ) : (
                       <>

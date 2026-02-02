@@ -30,6 +30,8 @@ import { ScanIssueDialog, type ScanIssue } from "@/components/ScanIssueDialog";
 import { QRCodeSVG } from "qrcode.react";
 import { auditApi, dispatchApi } from "@/lib/api";
 import { buildGatepassSummary } from "@/lib/gatepassSummary";
+import { PageShell } from "@/components/layout/PageShell";
+import { StatusBanner } from "@/components/layout/StatusBanner";
 
 interface UploadedRow {
   invoice: string;
@@ -181,27 +183,44 @@ const Dispatch = () => {
             if (scansResponse.success && scansResponse.scans) {
               const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
               
-              scansResponse.scans.forEach((scan: any) => {
+              scansResponse.scans.forEach((scan) => {
+                const scanRec = (scan && typeof scan === "object") ? (scan as Record<string, unknown>) : {};
+                const scanCustomerItem = typeof scanRec.customerItem === "string" ? scanRec.customerItem : undefined;
+
                 // Find matching invoice item for this scan
-                const matchedItem = invoice?.items?.find((item: any) => 
-                  item.customerItem === scan.customerItem
+                const matchedItem = invoice?.items?.find((item: UploadedRow) =>
+                  scanCustomerItem ? item.customerItem === scanCustomerItem : false
                 );
-                
+
+                const customerBarcode = typeof scanRec.customerBarcode === "string" ? scanRec.customerBarcode : "";
+                const autolivBarcode = typeof scanRec.autolivBarcode === "string" ? scanRec.autolivBarcode : "";
+                const customerBinNumber =
+                  (typeof scanRec.customerBinNumber === "string" ? scanRec.customerBinNumber : undefined) ??
+                  (typeof scanRec.binNumber === "string" ? scanRec.binNumber : undefined);
+                const autolivBinNumber = typeof scanRec.autolivBinNumber === "string" ? scanRec.autolivBinNumber : undefined;
+                const binNumber =
+                  (typeof scanRec.customerBinNumber === "string" ? scanRec.customerBinNumber : undefined) ??
+                  (typeof scanRec.binNumber === "string" ? scanRec.binNumber : undefined);
+                const binQuantity =
+                  (typeof scanRec.binQuantity === "number" ? scanRec.binQuantity : undefined) ??
+                  (typeof scanRec.quantity === "number" ? scanRec.quantity : undefined);
+                const quantity = binQuantity !== undefined ? String(binQuantity) : undefined;
+
                 allScans.push({
-                  id: scan.id, // Include scan ID for deletion
+                  id: typeof scanRec.id === "string" ? scanRec.id : undefined, // Include scan ID for deletion
                   invoiceId,
-                  customerBarcode: scan.customerBarcode || '',
-                  autolivBarcode: scan.autolivBarcode || '',
-                  customerBinNumber: scan.customerBinNumber || scan.binNumber || undefined,
-                  autolivBinNumber: scan.autolivBinNumber || undefined,
+                  customerBarcode,
+                  autolivBarcode,
+                  customerBinNumber,
+                  autolivBinNumber,
                   // Back-compat alias (existing UI + de-dupe/delete logic relies on binNumber)
-                  binNumber: scan.customerBinNumber || scan.binNumber || undefined,
-                  quantity: scan.binQuantity?.toString() || scan.quantity?.toString() || undefined, // Bin quantity from QR scan
-                  partCode: scan.customerItem || undefined,
-                  customerItem: scan.customerItem || undefined,
-                  itemNumber: scan.itemNumber || matchedItem?.part || undefined,
-                  actualQuantity: matchedItem?.qty || undefined, // Total quantity from invoice item (for reference only)
-                  scannedAt: scan.scannedAt || undefined
+                  binNumber,
+                  quantity, // Bin quantity from QR scan
+                  partCode: scanCustomerItem,
+                  customerItem: scanCustomerItem,
+                  itemNumber: typeof scanRec.itemNumber === "string" ? scanRec.itemNumber : matchedItem?.part,
+                  actualQuantity: matchedItem?.qty, // Total quantity from invoice item (for reference only)
+                  scannedAt: typeof scanRec.scannedAt === "string" ? scanRec.scannedAt : undefined,
                 });
               });
             }
@@ -294,9 +313,10 @@ const Dispatch = () => {
         const customerItem = (it.customerItem || it.part || '').trim();
         if (!customerItem) continue;
         const itemNumber = (it.part || '').trim();
+        const itRec = it as unknown as Record<string, unknown>;
         const expectedBins =
-          Number((it as any).cust_scanned_bins_count ?? (it as any).number_of_bins ?? 0) || 0;
-        const qty = Number((it as any).qty ?? 0) || 0;
+          Number((itRec.cust_scanned_bins_count as unknown) ?? (itRec.number_of_bins as unknown) ?? 0) || 0;
+        const qty = Number(it.qty ?? 0) || 0;
 
         const k = makeItemKey(invoiceId, customerItem, itemNumber);
         const existing = m.get(k) || { expectedBins: 0, totalQty: 0 };
@@ -318,9 +338,11 @@ const Dispatch = () => {
     
     selectedInvoiceData.forEach(invoice => {
       if (invoice.items && invoice.items.length > 0) {
-        invoice.items.forEach((item: any) => {
+        invoice.items.forEach((item) => {
+          const rec = (item && typeof item === "object") ? (item as Record<string, unknown>) : {};
           // Priority: cust_scanned_bins_count > number_of_bins
-          const expectedBinsForItem = item.cust_scanned_bins_count || item.number_of_bins || 0;
+          const expectedBinsForItem =
+            Number((rec.cust_scanned_bins_count as unknown) ?? (rec.number_of_bins as unknown) ?? 0) || 0;
           totalExpectedBins += expectedBinsForItem;
         });
       }
@@ -602,11 +624,20 @@ const Dispatch = () => {
             });
           }
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Error saving loading scan to database:', error);
         
         // Handle specific error types from backend
-        const errorMessage = error?.message || error?.response?.message || 'Unknown error';
+        const errRec = (error && typeof error === "object") ? (error as Record<string, unknown>) : undefined;
+        const responseRec =
+          (errRec?.response && typeof errRec.response === "object")
+            ? (errRec.response as Record<string, unknown>)
+            : undefined;
+        const errorMessage =
+          (error instanceof Error ? error.message : undefined) ||
+          (typeof errRec?.message === "string" ? (errRec.message as string) : undefined) ||
+          (typeof responseRec?.message === "string" ? (responseRec.message as string) : undefined) ||
+          'Unknown error';
         const isDuplicate = errorMessage.includes('Duplicate') || errorMessage.includes('already been scanned');
         const isOverScan = errorMessage.includes('Over-scan') || errorMessage.includes('Cannot scan more bins');
         const isBlocked = errorMessage.includes('blocked');
@@ -678,10 +709,18 @@ const Dispatch = () => {
       try {
         const scansResponse = await auditApi.getScans(invoiceId, 'loading-dispatch');
         if (scansResponse.success && scansResponse.scans) {
-          const matchingScan = scansResponse.scans.find((scan: any) => 
-            scan.customerBarcode === binToDelete.customerBarcode ||
-            (scan.customerBinNumber === binToDelete.binNumber && scan.customerItem === binToDelete.customerItem)
-          );
+          const matchingScan = scansResponse.scans.find((scan) => {
+            if (!scan || typeof scan !== "object") return false;
+            const rec = scan as Record<string, unknown>;
+            const customerBarcode = typeof rec.customerBarcode === "string" ? rec.customerBarcode : undefined;
+            const customerBinNumber = typeof rec.customerBinNumber === "string" ? rec.customerBinNumber : undefined;
+            const customerItem = typeof rec.customerItem === "string" ? rec.customerItem : undefined;
+
+            return (
+              customerBarcode === binToDelete.customerBarcode ||
+              (customerBinNumber === binToDelete.binNumber && customerItem === binToDelete.customerItem)
+            );
+          });
           
           if (matchingScan?.id) {
             binId = matchingScan.id;
@@ -721,9 +760,18 @@ const Dispatch = () => {
       toast.success("✅ Bin deleted successfully", {
         description: `Removed bin scan for ${binInfo}`,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error deleting bin:', error);
-      const errorMessage = error?.message || error?.response?.message || 'Failed to delete bin';
+      const errRec = (error && typeof error === "object") ? (error as Record<string, unknown>) : undefined;
+      const responseRec =
+        (errRec?.response && typeof errRec.response === "object")
+          ? (errRec.response as Record<string, unknown>)
+          : undefined;
+      const errorMessage =
+        (error instanceof Error ? error.message : undefined) ||
+        (typeof errRec?.message === "string" ? (errRec.message as string) : undefined) ||
+        (typeof responseRec?.message === "string" ? (responseRec.message as string) : undefined) ||
+        'Failed to delete bin';
       toast.error("Failed to delete bin", {
         description: errorMessage,
         duration: 5000
@@ -921,12 +969,13 @@ const Dispatch = () => {
         
         // Verify each invoice has the required fields
         if (result.invoices && result.invoices.length > 0) {
-          result.invoices.forEach((inv: any) => {
-            console.log(`📄 Invoice ${inv.id}:`, {
-              deliveryDate: inv.deliveryDate,
-              deliveryTime: inv.deliveryTime,
-              unloadingLoc: inv.unloadingLoc,
-              status: inv.status
+          result.invoices.forEach((inv) => {
+            const invRec = (inv && typeof inv === "object") ? (inv as Record<string, unknown>) : {};
+            console.log(`📄 Invoice ${String(invRec.id ?? "unknown")}:`, {
+              deliveryDate: invRec.deliveryDate,
+              deliveryTime: invRec.deliveryTime,
+              unloadingLoc: invRec.unloadingLoc,
+              status: invRec.status
             });
           });
         } else {
@@ -972,18 +1021,25 @@ const Dispatch = () => {
       } else {
         throw new Error(result.message || 'Failed to generate gatepass');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       toast.dismiss(loadingToast);
       
       // Get error message from various possible locations
-      const errorMessage = error?.message || 
-                          error?.response?.message || 
-                          error?.response?.error || 
+      const errRec = (error && typeof error === "object") ? (error as Record<string, unknown>) : undefined;
+      const responseRec =
+        (errRec?.response && typeof errRec.response === "object")
+          ? (errRec.response as Record<string, unknown>)
+          : undefined;
+      const errorMessage =
+                          (error instanceof Error ? error.message : undefined) ||
+                          (typeof errRec?.message === "string" ? (errRec.message as string) : undefined) ||
+                          (typeof responseRec?.message === "string" ? (responseRec.message as string) : undefined) ||
+                          (typeof responseRec?.error === "string" ? (responseRec.error as string) : undefined) ||
                           'Unknown error occurred';
       
       console.error('Gatepass generation error:', error);
-      console.error('Error response:', error?.response);
-      console.error('Error status:', error?.status);
+      console.error('Error response:', errRec?.response);
+      console.error('Error status:', errRec?.status);
       
       // Check if it's a customer code mismatch error
       if (errorMessage.includes('different customer codes') || 
@@ -1001,7 +1057,7 @@ const Dispatch = () => {
         });
       } else {
         toast.error(`Failed to generate gatepass: ${errorMessage}`, {
-          description: error?.status === 400 ? 'Please check your input and try again' : 'Please try again',
+          description: errRec?.status === 400 ? 'Please check your input and try again' : 'Please try again',
           duration: 6000
         });
       }
@@ -1666,7 +1722,42 @@ const Dispatch = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <PageShell
+      title="Loading & Dispatch"
+      subtitle="Manage vehicle loading and generate gatepass"
+      backHref="/home"
+      backIcon={<ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />}
+      actions={
+        <Button
+          variant="outline"
+          onClick={() => setShowDispatchLogs(true)}
+          className="flex items-center gap-2 w-full sm:w-auto justify-center bg-card/60"
+        >
+          <Truck className="h-4 w-4" />
+          <span>Dispatch Logs</span>
+          {getDispatchLogs().length > 0 && (
+            <Badge variant="secondary" className="ml-1">
+              {getDispatchLogs().length}
+            </Badge>
+          )}
+        </Button>
+      }
+      decorations={
+        <>
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-blue-50 via-background to-background dark:from-blue-950/25" />
+          <div
+            className="pointer-events-none absolute inset-0 opacity-50 dark:opacity-30"
+            style={{
+              backgroundImage: `radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
+                               radial-gradient(circle at 85% 30%, rgba(14, 165, 233, 0.10) 0%, transparent 50%),
+                               radial-gradient(circle at 60% 90%, rgba(99, 102, 241, 0.10) 0%, transparent 45%)`,
+            }}
+          />
+        </>
+      }
+      mainClassName="relative"
+      maxWidthClassName="max-w-5xl"
+    >
       <ScanIssueDialog
         open={scanIssueOpen}
         issue={scanIssue}
@@ -1675,88 +1766,48 @@ const Dispatch = () => {
           if (!open) setScanIssue(null);
         }}
       />
-      {/* Header */}
-      <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
-        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 sm:h-10 sm:w-10"
-                onClick={() => navigate("/home")}
-              >
-                <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
-              </Button>
-              <div className="flex-1">
-                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Loading & Dispatch</h1>
-                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Manage vehicle loading and generate gatepass</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={() => setShowDispatchLogs(true)}
-              className="flex items-center gap-2 w-full sm:w-auto justify-center"
-            >
-              <Truck className="h-4 w-4" />
-              <span>Dispatch Logs</span>
-              {getDispatchLogs().length > 0 && (
-                <Badge variant="secondary" className="ml-1">
-                  {getDispatchLogs().length}
-                </Badge>
-              )}
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8 max-w-5xl">
         {!scheduleData && (
-          <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
-            <p className="text-sm font-medium">
+          <StatusBanner variant="warning" className="mb-4">
+            <p className="font-medium">
               ⚠️ Schedule not uploaded. Dispatch can still continue, but Doc Audit delivery time/unloading location options will be limited until schedule is uploaded.
             </p>
-          </div>
+          </StatusBanner>
         )}
 
         {getScheduledDispatchableInvoices().length === 0 && (
-          <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-            <p className="text-sm font-medium mb-2">
-              📋 No invoices available for dispatch.
-            </p>
+          <StatusBanner variant="info" className="mb-4">
+            <p className="text-sm font-semibold mb-2">📋 No invoices available for dispatch</p>
             <p className="text-xs text-muted-foreground">
               {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 
                 ? `✅ All scheduled invoices have been dispatched. Upload new data or complete pending audits.`
                 : `Please complete document audit for invoices before dispatch.`
               }
             </p>
-          </div>
+          </StatusBanner>
         )}
         
         {getScheduledDispatchableInvoices().length > 0 && (
-          <div className="mb-4 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
-            <p className="text-sm font-medium mb-2">
-              ✅ Dispatch Available
-            </p>
+          <StatusBanner variant="success" className="mb-4">
+            <p className="text-sm font-semibold mb-2">✅ Dispatch available</p>
             <div className="text-xs text-muted-foreground space-y-1">
               <p>• Showing {getScheduledDispatchableInvoices().length} audited invoice(s) ready for dispatch</p>
               {scheduleData && <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>}
               <p>• Current user: <strong>{currentUser}</strong></p>
             </div>
-          </div>
+          </StatusBanner>
         )}
         
         {!gatepassGenerated ? (
           <div className="space-y-6">
             {/* Vehicle Information */}
-            <Card>
-              <CardHeader>
+            <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
+              <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary/10 rounded-lg">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
                     <Truck className="h-5 w-5 text-primary" />
                   </div>
-                  <div>
-                    <CardTitle>Vehicle Details</CardTitle>
+                  <div className="min-w-0">
+                    <CardTitle className="text-lg">Step 1: Vehicle details</CardTitle>
                     <CardDescription>Enter the vehicle number for loading</CardDescription>
                   </div>
                 </div>
@@ -1776,10 +1827,17 @@ const Dispatch = () => {
             </Card>
 
             {/* Invoice Selection */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Select Invoice for Loading</CardTitle>
-                <CardDescription>Scan invoice QR codes or manually select invoices to load onto the vehicle</CardDescription>
+            <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
+              <CardHeader className="pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <QrCode className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="min-w-0">
+                    <CardTitle className="text-lg">Step 2: Select invoices</CardTitle>
+                    <CardDescription>Scan invoice QR codes or manually select invoices to load onto the vehicle</CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
@@ -1800,16 +1858,16 @@ const Dispatch = () => {
 
                   {/* Summary Info */}
                   {getScheduledDispatchableInvoices().length > 0 && (
-                    <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                      <p className="text-xs text-blue-700 dark:text-blue-300">
+                    <StatusBanner variant="info" className="text-xs">
+                      <p>
                         📅 {getScheduledDispatchableInvoices().filter(inv => inv.id !== "No Data").length} scheduled & audited invoice(s) available for dispatch
                         {selectedInvoices.length > 0 && (
-                          <span className="block mt-1 font-semibold text-blue-900 dark:text-blue-100">
+                          <span className="block mt-1 font-semibold">
                             ✅ {selectedInvoices.length} invoice(s) selected for loading
                           </span>
                         )}
                       </p>
-                    </div>
+                    </StatusBanner>
                   )}
 
                   {/* SECONDARY METHOD: Dropdown Selection */}
@@ -1908,7 +1966,7 @@ const Dispatch = () => {
 
                   {/* Selected Invoices List */}
                   {selectedInvoices.length > 0 && (
-                    <div className="p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <StatusBanner variant="info">
                       <div className="flex items-center justify-between mb-3">
                         <p className="text-sm font-medium">
                           📦 Selected Invoice{selectedInvoices.length > 1 ? 's' : ''} ({selectedInvoices.length})
@@ -2031,7 +2089,7 @@ const Dispatch = () => {
                           </div>
                         ) : null;
                       })()}
-                    </div>
+                    </StatusBanner>
                   )}
                 </div>
               </CardContent>
@@ -2039,14 +2097,14 @@ const Dispatch = () => {
 
             {/* Barcode Scanning for Loading */}
             {selectedInvoices.length > 0 && (
-              <Card>
-                <CardHeader>
+              <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
+                <CardHeader className="pb-4">
                   <div className="flex items-center gap-3">
-                    <div className="p-2 bg-primary/10 rounded-lg">
-                      <ScanBarcode className="h-6 w-6 text-primary" />
+                    <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                      <ScanBarcode className="h-5 w-5 text-primary" />
                     </div>
-                    <div>
-                      <CardTitle className="text-lg">Scan Items for Loading</CardTitle>
+                    <div className="min-w-0">
+                      <CardTitle className="text-lg">Step 3: Scan items for loading</CardTitle>
                       <CardDescription>Scan customer barcode for each item to load onto the vehicle</CardDescription>
                     </div>
                   </div>
@@ -2129,7 +2187,7 @@ const Dispatch = () => {
 
                     {/* Status and Clear Button */}
                     {dispatchCustomerScan && (
-                      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+                      <StatusBanner variant="success" className="flex flex-col sm:flex-row items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <div className="h-3 w-3 rounded-full bg-green-500 animate-pulse" />
                           <span className="text-sm font-medium text-green-700 dark:text-green-300">
@@ -2146,7 +2204,7 @@ const Dispatch = () => {
                         >
                           Clear Scan
                         </Button>
-                      </div>
+                      </StatusBanner>
                     )}
 
                     {/* Loaded Items List */}
@@ -2289,9 +2347,17 @@ const Dispatch = () => {
 
             {/* Summary */}
             {selectedInvoices.length > 0 && loadedBarcodes.length === getExpectedBins() && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Loading Summary</CardTitle>
+              <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
+                <CardHeader className="pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                      <QrCode className="h-5 w-5 text-primary" />
+                    </div>
+                    <div className="min-w-0">
+                      <CardTitle className="text-lg">Step 4: Gatepass</CardTitle>
+                      <CardDescription>Review totals and generate the gatepass for vehicle exit</CardDescription>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="bg-muted rounded-lg p-4 space-y-3">
@@ -2320,7 +2386,7 @@ const Dispatch = () => {
                   </div>
                   <Button 
                     onClick={handleGenerateGatepass} 
-                    className="w-full mt-4 h-12 text-base font-semibold"
+                    className="w-full mt-4 h-12 text-base font-semibold shadow-sm"
                     disabled={!vehicleNumber || selectedInvoices.length === 0}
                   >
                     <QrCode className="h-5 w-5 mr-2" />
@@ -2346,7 +2412,7 @@ const Dispatch = () => {
               <span className="sm:hidden">Back</span>
             </Button>
             
-            <Card>
+            <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
               <CardHeader className="text-center pb-4">
                 <div className="flex justify-center mb-3">
                   <div className="p-3 bg-success/10 rounded-full">
@@ -2358,7 +2424,7 @@ const Dispatch = () => {
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* Gatepass Details */}
-                <div className="border rounded-lg p-6 space-y-4">
+                <div className="border border-border/60 rounded-xl p-6 space-y-4 bg-card/40">
                   <div className="text-center pb-4 border-b">
                     <h3 className="text-lg font-bold mb-1">MANUFACTURING DISPATCH</h3>
                     <p className="text-sm text-muted-foreground">Vehicle Exit Authorization</p>
@@ -2596,7 +2662,7 @@ const Dispatch = () => {
             </Card>
           </>
         )}
-      </main>
+      {/* end PageShell main */}
 
       {/* Invoice QR Scanner Dialog */}
       <Dialog open={showInvoiceQRScanner} onOpenChange={setShowInvoiceQRScanner}>
@@ -2634,10 +2700,8 @@ const Dispatch = () => {
 
             {/* Real-time Scanned Invoices List */}
             {selectedInvoices.length > 0 && (
-              <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg max-h-48 overflow-y-auto">
-                <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-2">
-                  Scanned Invoices:
-                </p>
+              <StatusBanner variant="info" className="max-h-48 overflow-y-auto">
+                <p className="text-xs font-semibold mb-2">Scanned invoices</p>
                 <div className="space-y-1">
                   {selectedInvoices.map((invId, index) => {
                     const invoice = sharedInvoices.find(inv => inv.id === invId);
@@ -2666,7 +2730,7 @@ const Dispatch = () => {
                     );
                   })}
                 </div>
-              </div>
+              </StatusBanner>
             )}
             
             {/* Scanner Button */}
@@ -2727,7 +2791,7 @@ const Dispatch = () => {
         logs={getDispatchLogs()}
         type="dispatch"
       />
-    </div>
+    </PageShell>
   );
 };
 

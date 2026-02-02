@@ -29,6 +29,8 @@ import { LogsDialog } from "@/components/LogsDialog";
 import { ScanIssueDialog, type ScanIssue } from "@/components/ScanIssueDialog";
 import type { InvoiceData } from "@/contexts/SessionContext";
 import { auditApi } from "@/lib/api";
+import { PageShell } from "@/components/layout/PageShell";
+import { StatusBanner } from "@/components/layout/StatusBanner";
 
 interface UploadedRow {
   invoice: string;
@@ -463,7 +465,11 @@ const DocAudit = () => {
         const next = { ...prev };
         for (const { invoiceId, resp } of results) {
           if (!resp?.success || !Array.isArray(resp.scans)) continue;
-          const pendingCount = resp.scans.filter((s: any) => s?.status === 'pending').length;
+          const pendingCount = resp.scans.filter((s) => {
+            if (!s || typeof s !== "object") return false;
+            const status = (s as Record<string, unknown>).status;
+            return status === "pending";
+          }).length;
           next[invoiceId] = pendingCount;
         }
         return next;
@@ -474,24 +480,38 @@ const DocAudit = () => {
         for (const { invoiceId, resp } of results) {
           if (!resp?.success || !Array.isArray(resp.scans)) continue;
           const rows = resp.scans
-            .filter((s: any) => s?.status === 'matched')
-            .map((s: any) => ({
-              scanId: s.id || undefined,
-              customerItem: s.customerItem || 'N/A',
-              itemNumber: s.itemNumber || 'N/A',
-              partDescription: s.partDescription || 'N/A',
-              customerBinNumber: s.customerBinNumber ?? null,
-              autolivBinNumber: s.autolivBinNumber ?? null,
-              binNumber: s.customerBinNumber ?? s.binNumber ?? null,
-              binQuantity: (s.binQuantity ?? null) as number | null,
-              quantity: (s.binQuantity ?? s.quantity ?? 0) as number,
-              status: s.status || 'unknown',
-              scannedBy: s.scannedBy || 'N/A',
-              scannedAt: s.scannedAt ?? null,
-              time: s.scannedAt
-                ? new Date(s.scannedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-                : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-            }));
+            .filter((s) => {
+              if (!s || typeof s !== "object") return false;
+              const status = (s as Record<string, unknown>).status;
+              return status === "matched";
+            })
+            .map((s) => {
+              const rec = (s && typeof s === "object") ? (s as Record<string, unknown>) : {};
+              const scannedAt = typeof rec.scannedAt === "string" ? rec.scannedAt : null;
+              const binQuantity = typeof rec.binQuantity === "number" ? rec.binQuantity : null;
+              const quantity =
+                (typeof rec.binQuantity === "number" ? rec.binQuantity : null) ??
+                (typeof rec.quantity === "number" ? rec.quantity : null) ??
+                0;
+
+              return {
+                scanId: typeof rec.id === "string" ? rec.id : undefined,
+                customerItem: typeof rec.customerItem === "string" ? rec.customerItem : "N/A",
+                itemNumber: typeof rec.itemNumber === "string" ? rec.itemNumber : "N/A",
+                partDescription: typeof rec.partDescription === "string" ? rec.partDescription : "N/A",
+                customerBinNumber: (rec.customerBinNumber as string | null | undefined) ?? null,
+                autolivBinNumber: (rec.autolivBinNumber as string | null | undefined) ?? null,
+                binNumber: ((rec.customerBinNumber as string | null | undefined) ?? (rec.binNumber as string | null | undefined)) ?? null,
+                binQuantity,
+                quantity,
+                status: typeof rec.status === "string" ? rec.status : "unknown",
+                scannedBy: typeof rec.scannedBy === "string" ? rec.scannedBy : "N/A",
+                scannedAt,
+                time: scannedAt
+                  ? new Date(scannedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+                  : new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+              };
+            });
           next[invoiceId] = rows;
         }
         return next;
@@ -837,9 +857,9 @@ const DocAudit = () => {
       });
       await refreshData();
       await refreshInvoiceScans([invoiceId]);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Customer stage scan error:', error);
-      const message = error?.message || "Scan failed.";
+      const message = error instanceof Error ? error.message : "Scan failed.";
       const isDuplicate = /duplicate|already been scanned/i.test(message);
       if (isDuplicate) {
         openScanIssue({
@@ -1042,9 +1062,9 @@ const DocAudit = () => {
           description: `Autoliv label matched and paired with existing customer scan.`,
           duration: 3000,
         });
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('INBD resume scan error:', error);
-        const message = error?.message || 'You may need to scan the customer label again.';
+        const message = error instanceof Error ? error.message : 'You may need to scan the customer label again.';
         const isDuplicate = /duplicate|already been scanned/i.test(message);
         if (isDuplicate) {
           openScanIssue({
@@ -1234,9 +1254,9 @@ const DocAudit = () => {
       });
       await refreshData();
       await refreshInvoiceScans([invoiceId]);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('INBD stage scan error:', error);
-      const message = error?.message || 'Invoice may be blocked; check Exception Alerts.';
+      const message = error instanceof Error ? error.message : 'Invoice may be blocked; check Exception Alerts.';
       const isDuplicate = /duplicate|already been scanned/i.test(message);
       if (isDuplicate) {
         openScanIssue({
@@ -1267,7 +1287,41 @@ const DocAudit = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <PageShell
+      title="Dock Audit"
+      subtitle="Scan and validate BIN labels"
+      backHref="/home"
+      backIcon={<ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />}
+      actions={
+        <Button
+          variant="outline"
+          onClick={() => setShowAuditLogs(true)}
+          className="flex items-center gap-2 w-full sm:w-auto justify-center bg-card/60"
+        >
+          <ScanBarcode className="h-4 w-4" />
+          <span>Audit Logs</span>
+          {getAuditLogs().length > 0 && (
+            <Badge variant="secondary" className="ml-1">
+              {getAuditLogs().length}
+            </Badge>
+          )}
+        </Button>
+      }
+      decorations={
+        <>
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-blue-50 via-background to-background dark:from-blue-950/25" />
+          <div
+            className="pointer-events-none absolute inset-0 opacity-50 dark:opacity-30"
+            style={{
+              backgroundImage: `radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
+                               radial-gradient(circle at 85% 30%, rgba(14, 165, 233, 0.10) 0%, transparent 50%),
+                               radial-gradient(circle at 60% 90%, rgba(99, 102, 241, 0.10) 0%, transparent 45%)`,
+            }}
+          />
+        </>
+      }
+      mainClassName="relative"
+    >
       <ScanIssueDialog
         open={scanIssueOpen}
         issue={scanIssue}
@@ -1276,78 +1330,47 @@ const DocAudit = () => {
           if (!open) setScanIssue(null);
         }}
       />
-      {/* Header */}
-      <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
-        <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 sm:h-10 sm:w-10"
-                onClick={() => navigate("/home")}
-              >
-                <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
-              </Button>
-              <div className="flex-1">
-                <h1 className="text-lg sm:text-2xl font-bold text-foreground">Dock Audit</h1>
-                <p className="text-xs sm:text-sm text-muted-foreground hidden sm:block">Scan and validate BIN labels</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={() => setShowAuditLogs(true)}
-              className="flex items-center gap-2 w-full sm:w-auto justify-center"
-            >
-              <ScanBarcode className="h-4 w-4" />
-              <span>Audit Logs</span>
-              {getAuditLogs().length > 0 && (
-                <Badge variant="secondary" className="ml-1">
-                  {getAuditLogs().length}
-                </Badge>
-              )}
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8">
         {invoices.length === 0 && selectedDeliveryDate && (
-          <div className="mb-4 p-4 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
-            <p className="text-sm font-medium">
-              ⚠️ No invoices found for the selected delivery date. Try a different date.
-            </p>
-          </div>
+          <StatusBanner variant="warning" className="mb-4">
+            <p className="font-medium">No invoices found for the selected delivery date. Try a different date.</p>
+          </StatusBanner>
         )}
         
         {invoicesWithSchedule.length > 0 && (
-          <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
-              <p className="text-sm font-medium">
-                📊 Invoice-Based Doc Audit with Multi-Invoice Support
-              </p>
+          <StatusBanner variant="info" className="mb-4">
+            <div className="space-y-2">
+              <p className="font-medium">Invoice-based Doc Audit (multi-invoice)</p>
+              <div className="text-xs text-muted-foreground space-y-1">
+                <p>• Select delivery date (from invoice date) to filter invoices</p>
+                <p>• Delivery time + unloading loc are taken from invoice data (or can be entered manually if missing)</p>
+                <p>• Select multiple invoices to audit them sequentially</p>
+                <p>• Current user: <strong>{currentUser}</strong></p>
+                {scheduleData?.uploadedAt && (
+                  <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
+                )}
+                {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 && (
+                  <p>• ✅ <strong>{sharedInvoices.filter(inv => inv.dispatchedBy).length}</strong> invoice(s) already dispatched</p>
+                )}
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground space-y-1">
-              <p>• Select delivery date (from invoice date) to filter invoices</p>
-              <p>• Delivery time + unloading loc are taken from invoice data (or can be entered manually if missing)</p>
-              <p>• Select multiple invoices to audit them sequentially</p>
-              <p>• Current user: <strong>{currentUser}</strong></p>
-              {scheduleData?.uploadedAt && (
-                <p>• Schedule uploaded: {scheduleData.uploadedAt.toLocaleString()}</p>
-              )}
-              {sharedInvoices.filter(inv => inv.dispatchedBy).length > 0 && (
-                <p>• ✅ <strong>{sharedInvoices.filter(inv => inv.dispatchedBy).length}</strong> invoice(s) already dispatched</p>
-              )}
-            </div>
-          </div>
+          </StatusBanner>
         )}
         
         {/* Selection Fields: Delivery Date, Delivery Time, Unloading Loc */}
         {invoicesWithSchedule.length > 0 && (
-          <Card className="mb-6 border-2 border-primary">
-            <CardHeader>
-              <CardTitle>Configure Dispatch Details</CardTitle>
-              <CardDescription>Select delivery date (invoice date). Delivery time + unloading loc are from invoice data.</CardDescription>
+          <Card className="mb-6 bg-card/70 backdrop-blur border-border/60 shadow-md">
+            <CardHeader className="pb-4">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                  <CalendarIcon className="h-5 w-5 text-primary" />
+                </div>
+                <div className="min-w-0">
+                  <CardTitle className="text-lg">Step 1: Dispatch details</CardTitle>
+                  <CardDescription>
+                    Select delivery date, time, and unloading location before choosing invoices
+                  </CardDescription>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="space-y-6">
@@ -1402,16 +1425,14 @@ const DocAudit = () => {
 
                 {/* Date Mismatch Warning Banner */}
                 {selectedDeliveryDate && mismatchDiagnostics.hasMismatch && (
-                  <div className="p-3 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
-                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200 mb-1">
-                      ⚠️ Date Mismatch Detected
-                    </p>
-                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                  <StatusBanner variant="warning">
+                    <p className="text-sm font-semibold mb-1">Date mismatch detected</p>
+                    <p className="text-xs text-muted-foreground">
                       Selected Invoice Date ({formatDateAsLocalString(selectedDeliveryDate)}) doesn't match any Schedule SUPPLY DATE. 
                       Schedule has {scheduleData?.items.length || 0} items, but none match this date. 
                       You'll need to enter Delivery Time and Unloading Loc manually.
                     </p>
-                  </div>
+                  </StatusBanner>
                 )}
 
                 {/* Step 2: Delivery Time Selection */}
@@ -1642,9 +1663,16 @@ const DocAudit = () => {
         )}
         
         {/* Invoice Selection */}
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Step 4: Select Invoice(s)</CardTitle>
+        <Card className="mb-6 bg-card/70 backdrop-blur border-border/60 shadow-md">
+          <CardHeader className="pb-4">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                <ScanBarcode className="h-5 w-5 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <CardTitle className="text-lg">Step 2: Select invoices</CardTitle>
+              </div>
+            </div>
             <CardDescription>
               Scan invoice QR codes or manually select invoices to audit
               {selectedDeliveryDate &&
@@ -1696,8 +1724,8 @@ const DocAudit = () => {
                 </div>
 
                 {/* Summary Info */}
-                <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                  <p className="text-xs text-blue-700 dark:text-blue-300">
+                <StatusBanner variant="info" className="text-xs">
+                  <p>
                     📅 {invoices.length} invoice(s) available | 
                     {selectedDeliveryDate && ` ${selectedDeliveryDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`}
                     {(selectedDeliveryTimes.length > 0 || manualDeliveryTime.trim().length > 0) &&
@@ -1705,12 +1733,12 @@ const DocAudit = () => {
                     {(selectedUnloadingLocs.length > 0 || manualUnloadingLoc.trim().length > 0) &&
                       ` | 📍 ${selectedUnloadingLocs.length > 0 ? `${selectedUnloadingLocs.length} unloading loc(s)` : manualUnloadingLoc.trim()}`}
                     {selectedInvoices.length > 0 && (
-                      <span className="block mt-1 font-semibold text-blue-900 dark:text-blue-100">
+                      <span className="block mt-1 font-semibold">
                         ✅ {selectedInvoices.length} invoice(s) selected for audit
                       </span>
                     )}
                   </p>
-                </div>
+                </StatusBanner>
 
                 {/* SECONDARY METHOD: Dropdown Selection */}
                 <div className="space-y-2">
@@ -1900,17 +1928,15 @@ const DocAudit = () => {
             )}
 
             {selectedInvoices.length > 0 && (
-              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <p className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">
-                  📋 Simultaneous Multi-Invoice Audit Active
-                </p>
+              <StatusBanner variant="info" className="mt-4">
+                <p className="text-sm font-semibold mb-2">Multi-invoice audit active</p>
                 <p className="text-xs text-muted-foreground mb-2">
                   {selectedInvoices.length} invoice(s) selected for audit. Scan any customer item - the system will automatically detect which invoice it belongs to and update that invoice's progress.
                 </p>
-                <p className="text-xs font-semibold text-blue-900 dark:text-blue-100">
+                <p className="text-xs font-semibold">
                   Overall Progress: {totalScannedItems}/{totalExpectedItems} items scanned
                 </p>
-              </div>
+              </StatusBanner>
             )}
             
             {selectedInvoices.length > 0 && (
@@ -1959,16 +1985,21 @@ const DocAudit = () => {
                             </thead>
                             <tbody>
                               {uniqueItems.map((item, index) => {
-                                const invoiceItem: any = invoice.items?.find((invItem: UploadedRow) => 
-                                  (invItem.customerItem || invItem.part) === item.customerItem &&
-                                  invItem.part === item.itemNumber
-                                );
+                                const invoiceItem = (invoice.items as unknown[] | undefined)?.find((invItem) => {
+                                  if (!invItem || typeof invItem !== "object") return false;
+                                  const rec = invItem as Record<string, unknown>;
+                                  const customerItem =
+                                    (typeof rec.customerItem === "string" ? rec.customerItem : undefined) ??
+                                    (typeof rec.part === "string" ? rec.part : undefined);
+                                  const part = typeof rec.part === "string" ? rec.part : undefined;
+                                  return customerItem === item.customerItem && part === item.itemNumber;
+                                }) as Record<string, unknown> | undefined;
 
                                 const totalQty = Number(item.quantity || 0);
-                                const custBins = Number(invoiceItem?.cust_scanned_bins_count || 0);
-                                const custQty = Number(invoiceItem?.cust_scanned_quantity || 0);
-                                const inbdBins = Number(invoiceItem?.inbd_scanned_bins_count || 0);
-                                const inbdQty = Number(invoiceItem?.inbd_scanned_quantity || 0);
+                                const custBins = Number((invoiceItem?.cust_scanned_bins_count as unknown) ?? 0);
+                                const custQty = Number((invoiceItem?.cust_scanned_quantity as unknown) ?? 0);
+                                const inbdBins = Number((invoiceItem?.inbd_scanned_bins_count as unknown) ?? 0);
+                                const inbdQty = Number((invoiceItem?.inbd_scanned_quantity as unknown) ?? 0);
                                 const isLineComplete = totalQty > 0 && custQty === totalQty && inbdQty === totalQty;
                                 const isLineInProgress = !isLineComplete && (custQty > 0 || inbdQty > 0);
                                 
@@ -2057,14 +2088,14 @@ const DocAudit = () => {
               </Card>
             )}
             
-            <Card className={`mb-6 ${hasBlockedSelectedInvoice ? "opacity-60" : ""}`}>
+            <Card className={`mb-6 bg-card/70 backdrop-blur border-border/60 shadow-md ${hasBlockedSelectedInvoice ? "opacity-60" : ""}`}>
               <CardHeader className="pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary/10 rounded-lg">
-                    <ScanBarcode className="h-6 w-6 text-primary" />
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <ScanBarcode className="h-5 w-5 text-primary" />
                   </div>
                   <div>
-                    <CardTitle className="text-lg">Barcode Scanning & Validation</CardTitle>
+                    <CardTitle className="text-lg">Step 3: Scan &amp; validate labels</CardTitle>
                     <CardDescription>
                       {hasBlockedSelectedInvoice
                         ? "Admin approval needed - Scanning disabled" 
@@ -2230,16 +2261,32 @@ const DocAudit = () => {
               </CardContent>
             </Card>
 
-            {/* Test Scan Button - Temporary for Testing */}
-            <Card className="mb-6 border-dashed border-2 border-yellow-500/50 bg-yellow-50/50 dark:bg-yellow-950/20">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm text-yellow-700 dark:text-yellow-400">🧪 Test Scanning (Temporary)</CardTitle>
-                <CardDescription className="text-xs">
-                  Scan real QR codes with hardware scanner - data will be logged to backend console only
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
+            {/* Advanced: Test scanning (collapsible) */}
+            <Accordion type="single" collapsible className="mb-6">
+              <AccordionItem value="advanced-test" className="rounded-xl border border-border/60 bg-card/40 backdrop-blur px-1">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                  <div className="flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-xl bg-warning/15 flex items-center justify-center">
+                      <ScanBarcode className="h-4 w-4 text-warning" />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-sm font-semibold">Advanced: Test scanning</p>
+                      <p className="text-xs text-muted-foreground">
+                        Temporary tools for scanning diagnostics (no workflow changes)
+                      </p>
+                    </div>
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent className="px-3 pb-3">
+                  <Card className="border-dashed border-2 border-yellow-500/50 bg-yellow-50/50 dark:bg-yellow-950/20">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-sm text-yellow-700 dark:text-yellow-400">🧪 Test Scanning (Temporary)</CardTitle>
+                      <CardDescription className="text-xs">
+                        Scan real QR codes with hardware scanner - data will be logged to backend console only
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
                   <div className="grid md:grid-cols-2 gap-4">
                     {/* Test Customer Label Scan */}
                     <div className="space-y-2">
@@ -2346,10 +2393,10 @@ const DocAudit = () => {
                           description: "Check your backend console for the logged data",
                           duration: 5000
                         });
-                      } catch (error: any) {
+                      } catch (error: unknown) {
                         console.error("Test scan error:", error);
                         toast.error("Failed to send test scan", {
-                          description: error.message || "Please check console for details"
+                          description: error instanceof Error ? error.message : "Please check console for details"
                         });
                       }
                     }}
@@ -2371,18 +2418,32 @@ const DocAudit = () => {
                       Clear Test Scans
                     </Button>
                   )}
-                </div>
-              </CardContent>
-            </Card>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
 
             {/* Scanned Customer Items Table - Grouped by Invoice */}
-            <Card>
-              <CardHeader>
-                <CardTitle>
-                  Scanned Customer Items 
-                  ({Object.values(validatedBins).reduce((sum, bins) => sum + bins.length, 0)} total)
-                </CardTitle>
-                <CardDescription>Real-time list of scanned and validated Customer Items grouped by invoice</CardDescription>
+            <Card className="bg-card/70 backdrop-blur border-border/60 shadow-md">
+              <CardHeader className="pb-4">
+                <div className="flex items-start gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <CheckCircle2 className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="min-w-0">
+                    <CardTitle className="text-lg">
+                      Step 4: Review scanned items{" "}
+                      <span className="text-muted-foreground font-normal">
+                        ({Object.values(validatedBins).reduce((sum, bins) => sum + bins.length, 0)} total)
+                      </span>
+                    </CardTitle>
+                    <CardDescription>
+                      Real-time list of scanned and validated customer items grouped by invoice
+                    </CardDescription>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
                 {Object.keys(validatedBins).length > 0 ? (
@@ -2402,12 +2463,12 @@ const DocAudit = () => {
                         if (!customerItem) return;
                         const itemNumber = String(it.part || "N/A").trim() || "N/A";
                         const key = `${customerItem}||${itemNumber}`;
-                        const qty = Number((it as any).qty ?? 0) || 0;
+                        const qty = Number(it.qty ?? 0) || 0;
                         invoiceQtyByItemKey.set(key, (invoiceQtyByItemKey.get(key) ?? 0) + qty);
                       });
                       const invoiceTotalQty =
-                        Number((invoiceData as any)?.totalQty ?? 0) ||
-                        (invoiceData?.items ?? []).reduce((sum: number, it: UploadedRow) => sum + (Number((it as any).qty ?? 0) || 0), 0);
+                        Number(invoiceData?.totalQty ?? 0) ||
+                        (invoiceData?.items ?? []).reduce((sum: number, it: UploadedRow) => sum + (Number(it.qty ?? 0) || 0), 0);
                       const scannedTotalQty = bins.reduce((sum, r) => sum + (Number(r.quantity ?? 0) || 0), 0);
 
                       return (
@@ -2555,9 +2616,12 @@ const DocAudit = () => {
                       // Robust: invoices can become auditComplete via backend recompute during scanning,
                       // but dock info (delivery time + unloading loc) is only known after user selection.
                       // Treat an invoice as "finalized" only when dock info is present.
+                      const invoiceMeta = invoiceData as unknown as Record<string, unknown>;
                       const hasDockInfo =
-                        !!(invoiceData as any)?.deliveryTime &&
-                        !!(invoiceData as any)?.unloadingLoc;
+                        typeof invoiceMeta?.deliveryTime === "string" &&
+                        invoiceMeta.deliveryTime.trim() !== "" &&
+                        typeof invoiceMeta?.unloadingLoc === "string" &&
+                        invoiceMeta.unloadingLoc.trim() !== "";
                       
                       if (!isComplete || hasDockInfo) return null;
                       
@@ -2803,7 +2867,6 @@ const DocAudit = () => {
             </div>
           </DialogContent>
         </Dialog>
-      </main>
 
       {/* Invoice QR Scanner Dialog */}
       <Dialog open={showInvoiceQRScanner} onOpenChange={setShowInvoiceQRScanner}>
@@ -2841,10 +2904,8 @@ const DocAudit = () => {
 
             {/* Real-time Scanned Invoices List */}
             {selectedInvoices.length > 0 && (
-              <div className="p-3 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg max-h-48 overflow-y-auto">
-                <p className="text-xs font-semibold text-blue-700 dark:text-blue-300 mb-2">
-                  Scanned Invoices:
-                </p>
+              <StatusBanner variant="info" className="max-h-48 overflow-y-auto">
+                <p className="text-xs font-semibold mb-2">Scanned invoices</p>
                 <div className="space-y-1">
                   {selectedInvoices.map((invId, index) => {
                     const invoice = invoices.find(inv => inv.id === invId);
@@ -2873,7 +2934,7 @@ const DocAudit = () => {
                     );
                   })}
                 </div>
-              </div>
+              </StatusBanner>
             )}
             
             {/* Scanner Button */}
@@ -2933,7 +2994,7 @@ const DocAudit = () => {
         logs={getAuditLogs()}
         type="audit"
       />
-    </div>
+    </PageShell>
   );
 };
 
