@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { InvoiceReportInvoiceDialog } from "@/components/InvoiceReports/InvoiceReportInvoiceDialog";
-import { Calendar as CalendarIcon, RefreshCcw, Search, Truck, CheckCircle2, Clock } from "lucide-react";
+import { AlertTriangle, Calendar as CalendarIcon, RefreshCcw, Search, Truck, CheckCircle2, Clock } from "lucide-react";
 
 type InvoiceReportRow = {
   id: string;
@@ -27,9 +27,14 @@ type InvoiceReportRow = {
   auditedBy?: string | null;
   dispatchedAt?: string | null;
   dispatchedBy?: string | null;
+  uploadedAt?: string | null;
   vehicleNumber?: string | null;
   gatepassNumber?: string | null;
   blocked: boolean;
+  // Present only for status=mismatched results
+  mismatchTotalCount?: number | null;
+  mismatchPendingCount?: number | null;
+  latestMismatchAt?: string | null;
 };
 
 const formatDateOnly = (d: Date) => {
@@ -53,15 +58,11 @@ const formatDateTime = (value: string | Date | null | undefined) => {
 };
 
 export function InvoiceReportList() {
-  const { sharedInvoices, scheduleData } = useSession();
+  const { sharedInvoices } = useSession();
 
-  const [status, setStatus] = useState<"dispatched" | "audited" | "pending">("dispatched");
-  const [dispatchFrom, setDispatchFrom] = useState<Date | undefined>(undefined);
-  const [dispatchTo, setDispatchTo] = useState<Date | undefined>(undefined);
-  const [deliveryFrom, setDeliveryFrom] = useState<Date | undefined>(undefined);
-  const [deliveryTo, setDeliveryTo] = useState<Date | undefined>(undefined);
-  const [deliveryTime, setDeliveryTime] = useState<string>("");
-  const [unloadingLoc, setUnloadingLoc] = useState<string>("");
+  const [status, setStatus] = useState<"dispatched" | "audited" | "pending" | "mismatched" | "">(""); // Start with empty/no selection
+  const [dateFrom, setDateFrom] = useState<Date | undefined>(undefined);
+  const [dateTo, setDateTo] = useState<Date | undefined>(undefined);
   const [customer, setCustomer] = useState<string>("");
   const [invoiceSearch, setInvoiceSearch] = useState<string>("");
 
@@ -88,60 +89,21 @@ export function InvoiceReportList() {
     return Array.from(s).sort((a, b) => a.localeCompare(b));
   }, [sharedInvoices]);
 
-  const unloadingOptions = useMemo(() => {
-    const s = new Set<string>();
-    const scheduleItems = scheduleData?.items ?? [];
-
-    // Prefer schedule as source of truth for dropdown options.
-    if (scheduleItems.length > 0) {
-      for (const it of scheduleItems) {
-        const u = String(it?.unloadingLoc || "").trim();
-        if (u) s.add(u);
-      }
-      return Array.from(s).sort((a, b) => a.localeCompare(b));
-    }
-
-    // Fallback: derive from invoices so UI still works without schedule.
-    for (const inv of sharedInvoices) {
-      const u = String(inv?.unloadingLoc || "").trim();
-      if (u) s.add(u);
-    }
-    return Array.from(s).sort((a, b) => a.localeCompare(b));
-  }, [scheduleData, sharedInvoices]);
-
-  const deliveryTimeOptions = useMemo(() => {
-    const s = new Set<string>();
-    const scheduleItems = scheduleData?.items ?? [];
-
-    // Prefer schedule as source of truth for dropdown options.
-    if (scheduleItems.length > 0) {
-      for (const it of scheduleItems) {
-        const t = String(it?.deliveryTime || "").trim();
-        if (t) s.add(t);
-      }
-      return Array.from(s).sort((a, b) => a.localeCompare(b));
-    }
-
-    // Fallback: derive from invoices so UI still works without schedule.
-    for (const inv of sharedInvoices) {
-      const t = String(inv?.deliveryTime || "").trim();
-      if (t) s.add(t);
-    }
-    return Array.from(s).sort((a, b) => a.localeCompare(b));
-  }, [scheduleData, sharedInvoices]);
+  // Reset date filters when status changes (date meaning is status-dependent)
+  useEffect(() => {
+    setDateFrom(undefined);
+    setDateTo(undefined);
+    setOffset(0);
+  }, [status]);
 
   const fetchRowsAtOffset = async (nextOffset: number) => {
     setIsLoading(true);
     setError(null);
     try {
       const res = await adminApi.getInvoiceReports({
-        status,
-        dispatchFrom: dispatchFrom ? formatDateOnly(dispatchFrom) : undefined,
-        dispatchTo: dispatchTo ? formatDateOnly(dispatchTo) : undefined,
-        deliveryFrom: deliveryFrom ? formatDateOnly(deliveryFrom) : undefined,
-        deliveryTo: deliveryTo ? formatDateOnly(deliveryTo) : undefined,
-        deliveryTime: deliveryTime || undefined,
-        unloadingLoc: unloadingLoc || undefined,
+        status: status || undefined,
+        dateFrom: dateFrom ? formatDateOnly(dateFrom) : undefined,
+        dateTo: dateTo ? formatDateOnly(dateTo) : undefined,
         customer: customer || undefined,
         limit,
         offset: Math.max(0, nextOffset),
@@ -160,11 +122,13 @@ export function InvoiceReportList() {
     }
   };
 
-  // Refresh when filters change.
+  // Refresh when filters change (only if status is selected)
   useEffect(() => {
-    fetchRowsAtOffset(0);
+    if (status) {
+      fetchRowsAtOffset(0);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, dispatchFrom, dispatchTo, deliveryFrom, deliveryTo, deliveryTime, unloadingLoc, customer, limit]);
+  }, [status, dateFrom, dateTo, customer, limit]);
 
   const filteredRows = useMemo(() => {
     const q = invoiceSearch.trim().toLowerCase();
@@ -177,7 +141,46 @@ export function InvoiceReportList() {
   const canPrev = offset > 0;
   const canNext = offset + limit < total;
 
+  const dateLabelPrefix =
+    status === "dispatched"
+      ? "Dispatch"
+      : status === "audited"
+        ? "Audited"
+        : status === "pending"
+          ? "Uploaded"
+          : status === "mismatched"
+            ? "Mismatch"
+            : "Date";
+
+  const rowDateValue = (r: InvoiceReportRow) => {
+    if (status === "mismatched") return r.latestMismatchAt || null;
+    if (status === "pending") return r.uploadedAt || null;
+    if (status === "audited") return r.auditedAt || null;
+    if (status === "dispatched") return r.dispatchedAt || null;
+    return null;
+  };
+
   const statusBadge = (r: InvoiceReportRow) => {
+    if (status === "mismatched") {
+      const pending = Number(r.mismatchPendingCount ?? 0) || 0;
+      const totalCount = Number(r.mismatchTotalCount ?? 0) || 0;
+      const isAllCorrected = pending === 0 && totalCount > 0;
+      return (
+        <div className="flex items-center gap-2 whitespace-nowrap">
+          <Badge variant="destructive">MISMATCHED</Badge>
+          {totalCount === 0 ? null : isAllCorrected ? (
+            <Badge className="bg-green-600 text-white">All Corrected</Badge>
+          ) : (
+            <Badge variant="destructive">{pending} Pending</Badge>
+          )}
+          {totalCount > 0 ? (
+            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+              Total {totalCount}
+            </Badge>
+          ) : null}
+        </div>
+      );
+    }
     if (r.dispatchedAt || r.dispatchedBy) return <Badge className="bg-purple-600">DISPATCHED</Badge>;
     if (r.auditComplete) return <Badge className="bg-green-600">AUDITED</Badge>;
     return <Badge variant="secondary">PENDING</Badge>;
@@ -191,7 +194,7 @@ export function InvoiceReportList() {
             <div className="min-w-[190px]">
               <Select value={status} onValueChange={(v) => setStatus(v as any)}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Status" />
+                  <SelectValue placeholder="Select status" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="dispatched">
@@ -207,6 +210,11 @@ export function InvoiceReportList() {
                   <SelectItem value="pending">
                     <span className="inline-flex items-center gap-2">
                       <Clock className="h-4 w-4" /> Pending
+                    </span>
+                  </SelectItem>
+                  <SelectItem value="mismatched">
+                    <span className="inline-flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4" /> Mismatched
                     </span>
                   </SelectItem>
                 </SelectContent>
@@ -229,54 +237,6 @@ export function InvoiceReportList() {
               </Select>
             </div>
 
-            <div className="min-w-[220px]">
-              <Select
-                value={unloadingLoc || "__all__"}
-                onValueChange={(v) => setUnloadingLoc(v === "__all__" ? "" : v)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Unloading loc" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__">All unloading loc</SelectItem>
-                  {unloadingOptions.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">
-                      No unloading locations found in schedule.
-                    </div>
-                  ) : null}
-                  {unloadingOptions.map((u) => (
-                    <SelectItem key={u} value={u}>
-                      {u}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="min-w-[180px]">
-              <Select
-                value={deliveryTime || "__all__"}
-                onValueChange={(v) => setDeliveryTime(v === "__all__" ? "" : v)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Delivery time" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__all__">All times</SelectItem>
-                  {deliveryTimeOptions.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">
-                      No delivery times found in schedule.
-                    </div>
-                  ) : null}
-                  {deliveryTimeOptions.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
             <Button
               variant="outline"
               onClick={() => fetchRowsAtOffset(0)}
@@ -288,63 +248,33 @@ export function InvoiceReportList() {
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">Dispatch from</div>
+              <div className="text-xs text-muted-foreground">{dateLabelPrefix} from</div>
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-full justify-start">
+                  <Button variant="outline" className="w-full justify-start" disabled={!status}>
                     <CalendarIcon className="h-4 w-4 mr-2" />
-                    {dispatchFrom ? formatDateOnly(dispatchFrom) : "Select date"}
+                    {dateFrom ? formatDateOnly(dateFrom) : "Select date"}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0" align="start">
-                  <Calendar mode="single" selected={dispatchFrom} onSelect={setDispatchFrom} initialFocus />
+                  <Calendar mode="single" selected={dateFrom} onSelect={setDateFrom} initialFocus />
                 </PopoverContent>
               </Popover>
             </div>
 
             <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">Dispatch to</div>
+              <div className="text-xs text-muted-foreground">{dateLabelPrefix} to</div>
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-full justify-start">
+                  <Button variant="outline" className="w-full justify-start" disabled={!status}>
                     <CalendarIcon className="h-4 w-4 mr-2" />
-                    {dispatchTo ? formatDateOnly(dispatchTo) : "Select date"}
+                    {dateTo ? formatDateOnly(dateTo) : "Select date"}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="p-0" align="start">
-                  <Calendar mode="single" selected={dispatchTo} onSelect={setDispatchTo} initialFocus />
-                </PopoverContent>
-              </Popover>
-            </div>
-
-            <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">Delivery from</div>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-full justify-start">
-                    <CalendarIcon className="h-4 w-4 mr-2" />
-                    {deliveryFrom ? formatDateOnly(deliveryFrom) : "Select date"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="p-0" align="start">
-                  <Calendar mode="single" selected={deliveryFrom} onSelect={setDeliveryFrom} initialFocus />
-                </PopoverContent>
-              </Popover>
-            </div>
-
-            <div className="space-y-1">
-              <div className="text-xs text-muted-foreground">Delivery to</div>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-full justify-start">
-                    <CalendarIcon className="h-4 w-4 mr-2" />
-                    {deliveryTo ? formatDateOnly(deliveryTo) : "Select date"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="p-0" align="start">
-                  <Calendar mode="single" selected={deliveryTo} onSelect={setDeliveryTo} initialFocus />
+                  <Calendar mode="single" selected={dateTo} onSelect={setDateTo} initialFocus />
                 </PopoverContent>
               </Popover>
             </div>
@@ -398,7 +328,11 @@ export function InvoiceReportList() {
 
       <Card>
         <CardContent className="p-0">
-          {isLoading ? (
+          {!status ? (
+            <div className="py-10 text-center text-muted-foreground">
+              <p className="text-sm">Please select a status to view invoices</p>
+            </div>
+          ) : isLoading ? (
             <div className="py-10 text-center text-muted-foreground">Loading invoices…</div>
           ) : error ? (
             <div className="py-10 text-center text-red-600">{error}</div>
@@ -406,16 +340,14 @@ export function InvoiceReportList() {
             <div className="py-10 text-center text-muted-foreground">No invoices match the selected filters.</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-xs min-w-[980px]">
+              <table className="w-full text-xs min-w-[920px] table-fixed">
                 <thead className="bg-muted/40">
                   <tr>
-                    <th className="text-left p-3 font-semibold">Invoice</th>
-                    <th className="text-left p-3 font-semibold">Customer</th>
-                    <th className="text-left p-3 font-semibold">Dispatch date/time</th>
-                    <th className="text-left p-3 font-semibold">Delivery date</th>
-                    <th className="text-left p-3 font-semibold">Delivery time</th>
-                    <th className="text-left p-3 font-semibold">Unloading loc</th>
-                    <th className="text-left p-3 font-semibold">Status</th>
+                    <th className="text-left p-3 font-semibold w-[120px]">Invoice</th>
+                    <th className="text-left p-3 font-semibold w-[220px]">Customer</th>
+                    <th className="text-left p-3 font-semibold w-[170px]">Date</th>
+                    <th className="text-left p-3 font-semibold w-[140px]">Vehicle Number</th>
+                    <th className="text-left p-3 font-semibold w-[120px]">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -430,13 +362,13 @@ export function InvoiceReportList() {
                       role="button"
                       tabIndex={0}
                     >
-                      <td className="p-3 font-mono font-semibold">{r.id}</td>
-                      <td className="p-3">{r.customer || "—"}</td>
-                      <td className="p-3 text-muted-foreground">{formatDateTime(r.dispatchedAt || null)}</td>
-                      <td className="p-3 text-muted-foreground">{formatDateTime(r.deliveryDate || null)}</td>
-                      <td className="p-3">{r.deliveryTime || "—"}</td>
-                      <td className="p-3">{r.unloadingLoc || "—"}</td>
-                      <td className="p-3">{statusBadge(r)}</td>
+                      <td className="p-3 font-mono font-semibold truncate">{r.id}</td>
+                      <td className="p-3 truncate" title={r.customer || "—"}>{r.customer || "—"}</td>
+                      <td className="p-3 text-muted-foreground truncate" title={formatDateTime(rowDateValue(r))}>
+                        {formatDateTime(rowDateValue(r))}
+                      </td>
+                      <td className="p-3 font-mono truncate" title={r.vehicleNumber || "—"}>{r.vehicleNumber || "—"}</td>
+                      <td className="p-3 whitespace-nowrap">{statusBadge(r)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -453,6 +385,7 @@ export function InvoiceReportList() {
           if (!o) setSelectedInvoiceId(null);
         }}
         invoiceId={selectedInvoiceId}
+        mode={status === "mismatched" ? "mismatched" : "normal"}
         header={
           selectedRow
             ? {
@@ -461,6 +394,7 @@ export function InvoiceReportList() {
                 deliveryDate: selectedRow.deliveryDate || null,
                 deliveryTime: selectedRow.deliveryTime || null,
                 unloadingLoc: selectedRow.unloadingLoc || null,
+                vehicleNumber: selectedRow.vehicleNumber || null,
               }
             : undefined
         }

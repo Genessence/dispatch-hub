@@ -20,9 +20,10 @@ const POOL_ERROR_LOG_THROTTLE_MS = 15_000;
 
 const pool = new Pool({
   connectionString,
-  max: 20, // Maximum number of clients in the pool
-  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 30000, // Increased timeout for RDS connections (30 seconds)
+  max: 50, // Increased for 20-50 concurrent users (was 20)
+  min: 10, // Maintain minimum connections for faster response
+  idleTimeoutMillis: 60000, // 1 minute (cloud DB friendly, was 30s)
+  connectionTimeoutMillis: 10000, // 10 seconds timeout
   // Reduce idle socket timeouts / RDS network churn
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,

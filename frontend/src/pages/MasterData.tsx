@@ -42,28 +42,30 @@ interface CustomerMaster {
 
 const MasterData = () => {
   const navigate = useNavigate();
-  const { currentUser } = useSession();
+  const { currentUser, currentUserRole } = useSession();
   const [activeView, setActiveView] = useState<ViewType>('upload');
   const [selectedMasterType, setSelectedMasterType] = useState<EditMasterType>(null);
 
   // Permission check
-  if (currentUser !== "Admin") {
+  if (currentUserRole !== "admin") {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <div className="text-center max-w-md mx-auto">
-          <div className="mb-6">
-            <div className="w-24 h-24 mx-auto bg-red-100 rounded-full flex items-center justify-center mb-4">
-              <span className="text-4xl">🔒</span>
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <Card className="w-full max-w-md bg-card/70 backdrop-blur border-border/60 shadow-md">
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-3 h-14 w-14 rounded-2xl bg-destructive/10 flex items-center justify-center">
+              <span className="text-2xl">🔒</span>
             </div>
-            <h1 className="text-3xl font-bold text-red-600 mb-2">Permission Denied</h1>
-            <p className="text-muted-foreground mb-6">
+            <CardTitle className="text-2xl text-destructive">Permission Denied</CardTitle>
+            <CardDescription>
               Only Admin users can access the Master Data module.
-            </p>
-          </div>
-          <Button onClick={() => navigate("/home")} className="w-full">
-            Return to Home
-          </Button>
-        </div>
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => navigate("/home")} className="w-full">
+              Return to Home
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -176,7 +178,7 @@ const MasterData = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-transparent">
       {/* Header */}
       <header className="bg-card border-b border-border sticky top-0 z-50 shadow-sm">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
@@ -232,19 +234,6 @@ const MasterData = () => {
       </div>
 
       <main className="container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8">
-        {/* Back to Dashboard */}
-        <div className="flex items-center justify-between mb-6">
-          <Button
-            variant="outline"
-            onClick={() => window.location.href = '/dashboard'}
-            className="flex items-center gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span className="hidden sm:inline">Back to Dashboard</span>
-            <span className="sm:hidden">Back</span>
-          </Button>
-        </div>
-
         {/* Upload Master Data View */}
         {activeView === 'upload' && (
           <>

@@ -134,6 +134,14 @@ const DocAudit = () => {
   // Pending customer-stage scans (server-side source of truth for resume behavior)
   const [pendingDocAuditCustomerScansByInvoice, setPendingDocAuditCustomerScansByInvoice] = useState<Record<string, number>>({});
 
+  // Global "active" customer item for UI focus: the most recently scanned item across ALL selected invoices.
+  // We update it immediately on accepted stage scans (customer/INBD) and also compute a fallback from matched scans.
+  const [activeFocusKey, setActiveFocusKey] = useState<string | null>(null);
+  const [activeFocusAtMs, setActiveFocusAtMs] = useState<number>(0);
+
+  const makeFocusKey = (invoiceId: string, customerItem: string, itemNumber: string) =>
+    `${invoiceId}||${(customerItem || 'N/A').trim()}||${(itemNumber || 'N/A').trim()}`;
+
   // Helper function to format date as YYYY-MM-DD in local timezone
   const formatDateAsLocalString = (date: Date): string => {
     const year = date.getFullYear();
@@ -443,12 +451,50 @@ const DocAudit = () => {
     return sum + ((inv.expectedBins && inv.expectedBins > 0) ? inv.expectedBins : fallback);
   }, 0);
 
+  // Fallback focus (server truth) derived from matched scans list:
+  // pick the newest scannedAt across ALL invoices/items currently loaded in validatedBins.
+  const fallbackFocus = useMemo(() => {
+    let bestKey: string | null = null;
+    let bestMs = 0;
+
+    for (const [invoiceId, rows] of Object.entries(validatedBins)) {
+      for (const r of rows) {
+        const customerItem = (r.customerItem || 'N/A').trim();
+        const itemNumber = (r.itemNumber || 'N/A').trim();
+        const k = makeFocusKey(invoiceId, customerItem, itemNumber);
+
+        const ms = r.scannedAt ? new Date(r.scannedAt).getTime() : 0;
+        const scannedAtMs = Number.isFinite(ms) ? ms : 0;
+
+        if (
+          scannedAtMs > bestMs ||
+          (scannedAtMs === bestMs && scannedAtMs > 0 && bestKey !== null && k > bestKey)
+        ) {
+          bestMs = scannedAtMs;
+          bestKey = k;
+        } else if (bestKey === null && scannedAtMs > 0) {
+          bestMs = scannedAtMs;
+          bestKey = k;
+        }
+      }
+    }
+
+    return { key: bestKey, atMs: bestMs };
+  }, [validatedBins]);
+
+  const effectiveFocusKey = useMemo(() => {
+    if (activeFocusKey && activeFocusAtMs >= (fallbackFocus.atMs || 0)) return activeFocusKey;
+    return fallbackFocus.key;
+  }, [activeFocusKey, activeFocusAtMs, fallbackFocus.atMs, fallbackFocus.key]);
+
   // Clear validated bins when invoice selection changes
   useEffect(() => {
     setValidatedBins({});
     setPendingDocAuditCustomerScansByInvoice({});
     setCustomerScan(null);
     setAutolivScan(null);
+    setActiveFocusKey(null);
+    setActiveFocusAtMs(0);
   }, [selectedInvoices]);
 
   const refreshInvoiceScans = async (invoiceIds: string[]) => {
@@ -857,6 +903,14 @@ const DocAudit = () => {
       });
       await refreshData();
       await refreshInvoiceScans([invoiceId]);
+
+      // Move yellow focus immediately to the last scanned customer item.
+      setActiveFocusKey(makeFocusKey(
+        invoiceId,
+        String(item.customerItem || customerPartCode || 'N/A'),
+        String(item.part || 'N/A')
+      ));
+      setActiveFocusAtMs(Date.now());
     } catch (error: unknown) {
       console.error('Customer stage scan error:', error);
       const message = error instanceof Error ? error.message : "Scan failed.";
@@ -1058,6 +1112,14 @@ const DocAudit = () => {
         });
         await refreshData();
         await refreshInvoiceScans([invoiceId]);
+
+        // Move yellow focus to the most recently scanned item (resume flow).
+        setActiveFocusKey(makeFocusKey(
+          invoiceId,
+          String(item.customerItem || 'N/A'),
+          String(item.part || 'N/A')
+        ));
+        setActiveFocusAtMs(Date.now());
         toast.success("✅ INBD scan recorded!", {
           description: `Autoliv label matched and paired with existing customer scan.`,
           duration: 3000,
@@ -1254,6 +1316,14 @@ const DocAudit = () => {
       });
       await refreshData();
       await refreshInvoiceScans([invoiceId]);
+
+      // Move yellow focus to the most recently scanned item (normal flow).
+      setActiveFocusKey(makeFocusKey(
+        invoiceId,
+        String(matchedCustomerItem.item.customerItem || 'N/A'),
+        String(matchedCustomerItem.item.part || 'N/A')
+      ));
+      setActiveFocusAtMs(Date.now());
     } catch (error: unknown) {
       console.error('INBD stage scan error:', error);
       const message = error instanceof Error ? error.message : 'Invoice may be blocked; check Exception Alerts.';
@@ -1307,20 +1377,8 @@ const DocAudit = () => {
           )}
         </Button>
       }
-      decorations={
-        <>
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-blue-50 via-background to-background dark:from-blue-950/25" />
-          <div
-            className="pointer-events-none absolute inset-0 opacity-50 dark:opacity-30"
-            style={{
-              backgroundImage: `radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
-                               radial-gradient(circle at 85% 30%, rgba(14, 165, 233, 0.10) 0%, transparent 50%),
-                               radial-gradient(circle at 60% 90%, rgba(99, 102, 241, 0.10) 0%, transparent 45%)`,
-            }}
-          />
-        </>
-      }
       mainClassName="relative"
+      maxWidthClassName="max-w-7xl"
     >
       <ScanIssueDialog
         open={scanIssueOpen}
@@ -2001,7 +2059,13 @@ const DocAudit = () => {
                                 const inbdBins = Number((invoiceItem?.inbd_scanned_bins_count as unknown) ?? 0);
                                 const inbdQty = Number((invoiceItem?.inbd_scanned_quantity as unknown) ?? 0);
                                 const isLineComplete = totalQty > 0 && custQty === totalQty && inbdQty === totalQty;
-                                const isLineInProgress = !isLineComplete && (custQty > 0 || inbdQty > 0);
+                                const rowKey = makeFocusKey(
+                                  invoice.id,
+                                  String(item.customerItem || 'N/A'),
+                                  String(item.itemNumber || 'N/A')
+                                );
+                                const isFocused = effectiveFocusKey !== null && effectiveFocusKey === rowKey;
+                                const showFocusedInProgress = !isLineComplete && isFocused;
                                 
                                 return (
                                   <tr
@@ -2009,7 +2073,7 @@ const DocAudit = () => {
                                     className={`border-t ${
                                       isLineComplete
                                         ? 'bg-green-100 dark:bg-green-950/40'
-                                        : isLineInProgress
+                                        : showFocusedInProgress
                                           ? 'bg-yellow-100 dark:bg-yellow-950/40'
                                           : ''
                                     }`}
@@ -2033,7 +2097,7 @@ const DocAudit = () => {
                                     <td className="p-2">
                                       {isLineComplete ? (
                                         <Badge variant="default" className="text-xs">✓ Complete</Badge>
-                                      ) : (custQty > 0 || inbdQty > 0) ? (
+                                      ) : showFocusedInProgress ? (
                                         <Badge variant="secondary" className="text-xs">In Progress</Badge>
                                       ) : (
                                         <Badge variant="outline" className="text-xs">Pending</Badge>
@@ -2487,7 +2551,7 @@ const DocAudit = () => {
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
                                 <Badge variant="secondary" className="text-xs">
-                                  {bins.length} scans
+                                  {bins.length} {bins.length === 1 ? "Bin" : "Bins"}
                                 </Badge>
                                 <Badge variant="outline" className="text-xs">
                                   {itemGroups.length} items

@@ -6,6 +6,7 @@ export type InvoiceReportHeader = {
   deliveryDate?: string | null;
   deliveryTime?: string | null;
   unloadingLoc?: string | null;
+  vehicleNumber?: string | null;
 };
 
 export type InvoiceReportBinRow = {
@@ -137,6 +138,7 @@ export function downloadInvoiceReportPdf(args: {
   drawSectionTitle(ctx, "Header");
   drawKeyValueRow(ctx, "Customer", safeText(header?.customer));
   drawKeyValueRow(ctx, "Dispatch date/time", formatDateTime(header?.dispatchedAt || null));
+  drawKeyValueRow(ctx, "Vehicle Number", safeText(header?.vehicleNumber));
   drawKeyValueRow(ctx, "Delivery date", formatDateTime(header?.deliveryDate || null));
   drawKeyValueRow(ctx, "Delivery time", safeText(header?.deliveryTime));
   drawKeyValueRow(ctx, "Unloading loc", safeText(header?.unloadingLoc));

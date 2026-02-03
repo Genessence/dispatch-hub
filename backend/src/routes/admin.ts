@@ -97,6 +97,8 @@ router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
   try {
     const {
       status,
+      dateFrom,
+      dateTo,
       dispatchFrom,
       dispatchTo,
       deliveryFrom,
@@ -109,6 +111,197 @@ router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
       offset,
     } = req.query as Record<string, unknown>;
 
+    const statusRaw = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    if (statusRaw) {
+      if (!['dispatched', 'audited', 'pending', 'mismatched'].includes(statusRaw)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid status',
+          message: 'status must be one of: dispatched, audited, pending, mismatched',
+        });
+      }
+    }
+
+    // -----------------------------
+    // Shared filters (customer, billTo)
+    // -----------------------------
+    const billToValue = typeof billTo === 'string' ? billTo.trim() : '';
+    const customerValue = typeof customer === 'string' ? customer.trim() : '';
+
+    // New unified date range (preferred)
+    const dateFromParsed = parseDateOrDateTime(dateFrom);
+    const dateToParsed = parseDateOrDateTime(dateTo);
+
+    // Backwards-compat date range (kept for older clients)
+    const dispatchFromParsed = parseDateOrDateTime(dispatchFrom);
+    const dispatchToParsed = parseDateOrDateTime(dispatchTo);
+    const deliveryFromParsed = parseDateOrDateTime(deliveryFrom);
+    const deliveryToParsed = parseDateOrDateTime(deliveryTo);
+
+    // Note: unloadingLoc/deliveryTime and delivery date filters are deprecated in the new reports UI.
+    // Kept for backward compatibility with older clients for now.
+    const unloadingLocValue = typeof unloadingLoc === 'string' ? unloadingLoc.trim() : '';
+    const deliveryTimeValue = typeof deliveryTime === 'string' ? deliveryTime.trim() : '';
+
+    const limitValue = clampInt(limit, { min: 1, max: 500, fallback: 200 });
+    const offsetValue = clampInt(offset, { min: 0, max: 1_000_000, fallback: 0 });
+
+    // -------------------------------------------------------
+    // STATUS = mismatched (invoices with mismatch_alerts)
+    // -------------------------------------------------------
+    if (statusRaw === 'mismatched') {
+      const where: string[] = ['1=1'];
+      const params: any[] = [];
+      const addParam = (v: any) => {
+        params.push(v);
+        return `$${params.length}`;
+      };
+
+      if (billToValue) where.push(`i.bill_to = ${addParam(billToValue)}`);
+      if (customerValue) where.push(`LOWER(i.customer) LIKE '%' || LOWER(${addParam(customerValue)}) || '%'`);
+
+      // Optional legacy filters (still supported)
+      if (unloadingLocValue) where.push(`LOWER(i.unloading_loc) = LOWER(${addParam(unloadingLocValue)})`);
+      if (deliveryTimeValue) where.push(`LOWER(i.delivery_time) = LOWER(${addParam(deliveryTimeValue)})`);
+
+      // Date range for mismatched is based on mismatch_alerts.created_at (confirmed requirement)
+      const from = dateFromParsed ?? dispatchFromParsed ?? deliveryFromParsed ?? null;
+      const to = dateToParsed ?? dispatchToParsed ?? deliveryToParsed ?? null;
+
+      if (from) {
+        if (from.kind === 'date') {
+          where.push(`ma.created_at >= ${addParam(from.value)}::date`);
+        } else {
+          where.push(`ma.created_at >= ${addParam(from.value)}::timestamptz`);
+        }
+      }
+      if (to) {
+        if (to.kind === 'date') {
+          where.push(`ma.created_at < (${addParam(to.value)}::date + INTERVAL '1 day')`);
+        } else {
+          where.push(`ma.created_at <= ${addParam(to.value)}::timestamptz`);
+        }
+      }
+
+      const whereSql = `WHERE ${where.join(' AND ')}`;
+
+      const totalResult = await query(
+        `SELECT COUNT(*)::int AS total
+         FROM (
+           SELECT i.id
+           FROM invoices i
+           JOIN mismatch_alerts ma ON ma.invoice_id = i.id
+           ${whereSql}
+           GROUP BY i.id
+         ) x`,
+        params
+      );
+      const total = Number(totalResult.rows?.[0]?.total ?? 0) || 0;
+
+      const listParams = [...params, limitValue, offsetValue];
+      const limitParam = `$${listParams.length - 1}`;
+      const offsetParam = `$${listParams.length}`;
+
+      const rowsResult = await query(
+        `SELECT
+           i.id,
+           i.customer,
+           i.bill_to,
+           i.invoice_date,
+           i.delivery_date,
+           i.delivery_time,
+           i.unloading_loc,
+           i.total_qty,
+           i.expected_bins,
+           i.scanned_bins,
+           i.audit_complete,
+           i.audited_at,
+           i.audited_by,
+           i.dispatched_at,
+           i.dispatched_by,
+           i.vehicle_number,
+           i.gatepass_number,
+           i.blocked,
+           i.blocked_at,
+           i.uploaded_at,
+           i.uploaded_by,
+           i.created_at,
+           i.updated_at,
+           COUNT(ma.*)::int AS mismatch_total_count,
+           COUNT(*) FILTER (WHERE ma.status = 'pending')::int AS mismatch_pending_count,
+           MAX(ma.created_at) AS latest_mismatch_at
+         FROM invoices i
+         JOIN mismatch_alerts ma ON ma.invoice_id = i.id
+         ${whereSql}
+         GROUP BY
+           i.id,
+           i.customer,
+           i.bill_to,
+           i.invoice_date,
+           i.delivery_date,
+           i.delivery_time,
+           i.unloading_loc,
+           i.total_qty,
+           i.expected_bins,
+           i.scanned_bins,
+           i.audit_complete,
+           i.audited_at,
+           i.audited_by,
+           i.dispatched_at,
+           i.dispatched_by,
+           i.vehicle_number,
+           i.gatepass_number,
+           i.blocked,
+           i.blocked_at,
+           i.uploaded_at,
+           i.uploaded_by,
+           i.created_at,
+           i.updated_at
+         ORDER BY latest_mismatch_at DESC NULLS LAST, i.created_at DESC
+         LIMIT ${limitParam}
+         OFFSET ${offsetParam}`,
+        listParams
+      );
+
+      return res.json({
+        success: true,
+        total,
+        limit: limitValue,
+        offset: offsetValue,
+        invoices: rowsResult.rows.map((inv: any) => ({
+          id: inv.id,
+          customer: inv.customer,
+          billTo: inv.bill_to,
+          invoiceDate: inv.invoice_date,
+          deliveryDate: inv.delivery_date,
+          deliveryTime: inv.delivery_time,
+          unloadingLoc: inv.unloading_loc ?? null,
+          totalQty: inv.total_qty ?? null,
+          expectedBins: inv.expected_bins ?? null,
+          scannedBins: inv.scanned_bins ?? null,
+          auditComplete: !!inv.audit_complete,
+          auditedAt: inv.audited_at ?? null,
+          auditedBy: inv.audited_by ?? null,
+          dispatchedAt: inv.dispatched_at ?? null,
+          dispatchedBy: inv.dispatched_by ?? null,
+          vehicleNumber: inv.vehicle_number ?? null,
+          gatepassNumber: inv.gatepass_number ?? null,
+          blocked: !!inv.blocked,
+          blockedAt: inv.blocked_at ?? null,
+          uploadedAt: inv.uploaded_at ?? null,
+          uploadedBy: inv.uploaded_by ?? null,
+          createdAt: inv.created_at ?? null,
+          updatedAt: inv.updated_at ?? null,
+          mismatchTotalCount: Number(inv.mismatch_total_count ?? 0) || 0,
+          mismatchPendingCount: Number(inv.mismatch_pending_count ?? 0) || 0,
+          latestMismatchAt: inv.latest_mismatch_at ?? null,
+        })),
+      });
+    }
+
+    // -------------------------------------------------------
+    // All other statuses (dispatched/audited/pending + legacy)
+    // -------------------------------------------------------
     const where: string[] = ['1=1'];
     const params: any[] = [];
     const addParam = (v: any) => {
@@ -116,85 +309,54 @@ router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
       return `$${params.length}`;
     };
 
-    const statusRaw = typeof status === 'string' ? status.trim().toLowerCase() : '';
-    if (statusRaw) {
-      if (!['dispatched', 'audited', 'pending'].includes(statusRaw)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid status',
-          message: 'status must be one of: dispatched, audited, pending',
-        });
-      }
-      if (statusRaw === 'dispatched') {
-        where.push('dispatched_by IS NOT NULL');
-      } else if (statusRaw === 'audited') {
-        where.push('audit_complete = true');
-        where.push('dispatched_by IS NULL');
-      } else if (statusRaw === 'pending') {
-        where.push('COALESCE(audit_complete, false) = false');
-        where.push('dispatched_by IS NULL');
-      }
+    if (statusRaw === 'dispatched') {
+      where.push('dispatched_by IS NOT NULL');
+    } else if (statusRaw === 'audited') {
+      where.push('audit_complete = true');
+      where.push('dispatched_by IS NULL');
+    } else if (statusRaw === 'pending') {
+      where.push('COALESCE(audit_complete, false) = false');
+      where.push('dispatched_by IS NULL');
     }
 
-    const billToValue = typeof billTo === 'string' ? billTo.trim() : '';
-    if (billToValue) {
-      where.push(`bill_to = ${addParam(billToValue)}`);
+    if (billToValue) where.push(`bill_to = ${addParam(billToValue)}`);
+    if (customerValue) where.push(`LOWER(customer) LIKE '%' || LOWER(${addParam(customerValue)}) || '%'`);
+
+    // Optional legacy filters (still supported)
+    if (unloadingLocValue) where.push(`LOWER(unloading_loc) = LOWER(${addParam(unloadingLocValue)})`);
+    if (deliveryTimeValue) where.push(`LOWER(delivery_time) = LOWER(${addParam(deliveryTimeValue)})`);
+
+    // Unified date range: choose column based on status
+    const dateCol =
+      statusRaw === 'dispatched'
+        ? 'dispatched_at'
+        : statusRaw === 'audited'
+          ? 'audited_at'
+          : statusRaw === 'pending'
+            ? 'uploaded_at'
+            : null;
+
+    const from = dateFromParsed ?? (statusRaw === 'dispatched' ? dispatchFromParsed : statusRaw === 'pending' ? deliveryFromParsed : null);
+    const to = dateToParsed ?? (statusRaw === 'dispatched' ? dispatchToParsed : statusRaw === 'pending' ? deliveryToParsed : null);
+
+    if (dateCol && from) {
+      if (from.kind === 'date') where.push(`${dateCol} >= ${addParam(from.value)}::date`);
+      else where.push(`${dateCol} >= ${addParam(from.value)}::timestamptz`);
+    }
+    if (dateCol && to) {
+      if (to.kind === 'date') where.push(`${dateCol} < (${addParam(to.value)}::date + INTERVAL '1 day')`);
+      else where.push(`${dateCol} <= ${addParam(to.value)}::timestamptz`);
     }
 
-    const customerValue = typeof customer === 'string' ? customer.trim() : '';
-    if (customerValue) {
-      where.push(`LOWER(customer) LIKE '%' || LOWER(${addParam(customerValue)}) || '%'`);
-    }
-
-    const unloadingLocValue = typeof unloadingLoc === 'string' ? unloadingLoc.trim() : '';
-    if (unloadingLocValue) {
-      where.push(`LOWER(unloading_loc) = LOWER(${addParam(unloadingLocValue)})`);
-    }
-
-    const deliveryTimeValue = typeof deliveryTime === 'string' ? deliveryTime.trim() : '';
-    if (deliveryTimeValue) {
-      where.push(`LOWER(delivery_time) = LOWER(${addParam(deliveryTimeValue)})`);
-    }
-
-    const dispatchFromParsed = parseDateOrDateTime(dispatchFrom);
-    if (dispatchFromParsed) {
-      if (dispatchFromParsed.kind === 'date') {
-        where.push(`dispatched_at >= ${addParam(dispatchFromParsed.value)}::date`);
-      } else {
-        where.push(`dispatched_at >= ${addParam(dispatchFromParsed.value)}::timestamptz`);
-      }
-    }
-
-    const dispatchToParsed = parseDateOrDateTime(dispatchTo);
-    if (dispatchToParsed) {
-      if (dispatchToParsed.kind === 'date') {
-        // inclusive day: < next day
-        where.push(`dispatched_at < (${addParam(dispatchToParsed.value)}::date + INTERVAL '1 day')`);
-      } else {
-        where.push(`dispatched_at <= ${addParam(dispatchToParsed.value)}::timestamptz`);
-      }
-    }
-
-    const deliveryFromParsed = parseDateOrDateTime(deliveryFrom);
+    // Legacy delivery_date filtering (kept)
     if (deliveryFromParsed) {
-      if (deliveryFromParsed.kind === 'date') {
-        where.push(`delivery_date >= ${addParam(deliveryFromParsed.value)}::date`);
-      } else {
-        where.push(`delivery_date >= ${addParam(deliveryFromParsed.value)}::timestamptz`);
-      }
+      if (deliveryFromParsed.kind === 'date') where.push(`delivery_date >= ${addParam(deliveryFromParsed.value)}::date`);
+      else where.push(`delivery_date >= ${addParam(deliveryFromParsed.value)}::timestamptz`);
     }
-
-    const deliveryToParsed = parseDateOrDateTime(deliveryTo);
     if (deliveryToParsed) {
-      if (deliveryToParsed.kind === 'date') {
-        where.push(`delivery_date < (${addParam(deliveryToParsed.value)}::date + INTERVAL '1 day')`);
-      } else {
-        where.push(`delivery_date <= ${addParam(deliveryToParsed.value)}::timestamptz`);
-      }
+      if (deliveryToParsed.kind === 'date') where.push(`delivery_date < (${addParam(deliveryToParsed.value)}::date + INTERVAL '1 day')`);
+      else where.push(`delivery_date <= ${addParam(deliveryToParsed.value)}::timestamptz`);
     }
-
-    const limitValue = clampInt(limit, { min: 1, max: 500, fallback: 200 });
-    const offsetValue = clampInt(offset, { min: 0, max: 1_000_000, fallback: 0 });
 
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
@@ -211,7 +373,9 @@ router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
         ? 'dispatched_at DESC NULLS LAST, created_at DESC'
         : statusRaw === 'audited'
           ? 'audited_at DESC NULLS LAST, created_at DESC'
-          : 'created_at DESC';
+          : statusRaw === 'pending'
+            ? 'uploaded_at DESC NULLS LAST, created_at DESC'
+            : 'created_at DESC';
 
     const listParams = [...params, limitValue, offsetValue];
     const limitParam = `$${listParams.length - 1}`;
@@ -279,6 +443,9 @@ router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
         uploadedBy: inv.uploaded_by ?? null,
         createdAt: inv.created_at ?? null,
         updatedAt: inv.updated_at ?? null,
+        mismatchTotalCount: null,
+        mismatchPendingCount: null,
+        latestMismatchAt: null,
       })),
     });
   } catch (error: any) {
@@ -297,17 +464,27 @@ router.get('/reports/invoices', async (req: AuthRequest, res: Response) => {
  */
 router.get('/exceptions', async (req: AuthRequest, res: Response) => {
   try {
-    const { status } = req.query;
+    const { status, invoiceId } = req.query;
     
-    let queryText = 'SELECT * FROM mismatch_alerts';
+    const where: string[] = [];
     const params: any[] = [];
+    const addParam = (v: any) => {
+      params.push(v);
+      return `$${params.length}`;
+    };
 
-    if (status) {
-      queryText += ' WHERE status = $1';
-      params.push(status);
+    const invoiceIdValue = typeof invoiceId === 'string' ? invoiceId.trim() : '';
+    if (invoiceIdValue) {
+      where.push(`invoice_id = ${addParam(invoiceIdValue)}`);
     }
 
-    queryText += ' ORDER BY created_at DESC';
+    const statusValue = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    if (statusValue) {
+      where.push(`status = ${addParam(statusValue)}`);
+    }
+
+    const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+    const queryText = `SELECT * FROM mismatch_alerts${whereSql} ORDER BY created_at DESC`;
 
     const result = await query(queryText, params);
 

@@ -80,32 +80,48 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
     const result = await query(queryText, params);
 
-    // Get items for each invoice
-    const invoices = await Promise.all(result.rows.map(async (invoice: any) => {
-      const itemsResult = await query(
-        'SELECT * FROM invoice_items WHERE invoice_id = $1',
-        [invoice.id]
+    // Batch fetch all items for all invoices (optimized: single query instead of N queries)
+    const invoiceIds = result.rows.map((inv: any) => inv.id);
+    let allItemsResult;
+    
+    if (invoiceIds.length > 0) {
+      allItemsResult = await query(
+        'SELECT * FROM invoice_items WHERE invoice_id = ANY($1) ORDER BY invoice_id',
+        [invoiceIds]
       );
-      return {
-        ...invoice,
-        items: itemsResult.rows.map((item: any) => ({
-          invoice: item.invoice_id,
-          customer: invoice.customer,
-          part: item.part,
-          qty: item.qty,
-          status: item.status,
-          errorMessage: item.error_message,
-          customerItem: item.customer_item,
-          partDescription: item.part_description,
-          number_of_bins: item.number_of_bins || 0,
-          scanned_quantity: item.scanned_quantity || 0,
-          scanned_bins_count: item.scanned_bins_count || 0,
-          cust_scanned_quantity: item.cust_scanned_quantity || 0,
-          cust_scanned_bins_count: item.cust_scanned_bins_count || 0,
-          inbd_scanned_quantity: item.inbd_scanned_quantity || 0,
-          inbd_scanned_bins_count: item.inbd_scanned_bins_count || 0,
-        }))
-      };
+    } else {
+      allItemsResult = { rows: [] };
+    }
+
+    // Group items by invoice_id for quick lookup
+    const itemsByInvoiceId = new Map<string, any[]>();
+    for (const item of allItemsResult.rows) {
+      if (!itemsByInvoiceId.has(item.invoice_id)) {
+        itemsByInvoiceId.set(item.invoice_id, []);
+      }
+      itemsByInvoiceId.get(item.invoice_id)!.push({
+        invoice: item.invoice_id,
+        customer: item.customer,
+        part: item.part,
+        qty: item.qty,
+        status: item.status,
+        errorMessage: item.error_message,
+        customerItem: item.customer_item,
+        partDescription: item.part_description,
+        number_of_bins: item.number_of_bins || 0,
+        scanned_quantity: item.scanned_quantity || 0,
+        scanned_bins_count: item.scanned_bins_count || 0,
+        cust_scanned_quantity: item.cust_scanned_quantity || 0,
+        cust_scanned_bins_count: item.cust_scanned_bins_count || 0,
+        inbd_scanned_quantity: item.inbd_scanned_quantity || 0,
+        inbd_scanned_bins_count: item.inbd_scanned_bins_count || 0,
+      });
+    }
+
+    // Map invoices to their items (no async needed, just in-memory lookup)
+    const invoices = result.rows.map((invoice: any) => ({
+      ...invoice,
+      items: itemsByInvoiceId.get(invoice.id) || []
     }));
 
     res.json({
@@ -480,91 +496,103 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     console.log(`📊 Unique customer items: ${uniqueCustomerItems.size}`);
     console.log('================================\n');
 
-    // Insert into database using transaction (UPSERT-like behavior for unlocked invoices)
+    // Insert into database using transaction with bulk operations (optimized)
     await transaction(async (client) => {
+      const invoiceIds = Array.from(invoiceMap.keys());
+      
+      // Batch check existing invoices and their status (single query instead of N queries)
+      const existingResult = await client.query(
+        'SELECT id, audit_complete, dispatched_by FROM invoices WHERE id = ANY($1)',
+        [invoiceIds]
+      );
+
+      // Build a map of existing invoices for quick lookup
+      const existingInvoices = new Map(
+        existingResult.rows.map(row => [row.id, { isAudited: !!row.audit_complete, isDispatched: !!row.dispatched_by }])
+      );
+
+      // Check if any invoice is locked (audited or dispatched)
+      for (const invoiceId of invoiceIds) {
+        const existing = existingInvoices.get(invoiceId);
+        if (existing && (existing.isAudited || existing.isDispatched)) {
+          throw new Error(
+            `Invoice ${invoiceId} cannot be re-uploaded because it is already ${existing.isDispatched ? 'dispatched' : 'audited'}.`
+          );
+        }
+      }
+
+      // Bulk UPSERT invoices using INSERT ... ON CONFLICT (single query instead of N queries)
+      const invoiceValues: any[] = [];
+      let invoiceParamIndex = 1;
+      const invoiceParams: any[] = [];
+      
       for (const [invoiceId, invoice] of invoiceMap) {
-        // Check if invoice already exists
-        const existingResult = await client.query(
-          'SELECT id, audit_complete, dispatched_by FROM invoices WHERE id = $1',
-          [invoiceId]
+        invoiceValues.push(
+          `($${invoiceParamIndex}, $${invoiceParamIndex+1}, $${invoiceParamIndex+2}, $${invoiceParamIndex+3}, $${invoiceParamIndex+4}, $${invoiceParamIndex+5}, $${invoiceParamIndex+6}, $${invoiceParamIndex+7}, $${invoiceParamIndex+8}, $${invoiceParamIndex+9}, $${invoiceParamIndex+10}, $${invoiceParamIndex+11}, CURRENT_TIMESTAMP)`
         );
+        invoiceParams.push(
+          invoiceId,
+          invoice.customer,
+          invoice.billTo,
+          invoice.invoiceDate,
+          invoice.invoiceDate, // Invoice Date is the Delivery Date
+          invoice.deliveryTime,
+          invoice.unloadingLoc,
+          invoice.totalQty,
+          invoice.binCapacity,
+          invoice.expectedBins,
+          invoice.plant,
+          req.user?.username
+        );
+        invoiceParamIndex += 12;
+      }
 
-        const exists = existingResult.rows.length > 0;
+      await client.query(
+        `INSERT INTO invoices (id, customer, bill_to, invoice_date, delivery_date, delivery_time, unloading_loc, total_qty, bin_capacity, expected_bins, plant, uploaded_by, uploaded_at)
+         VALUES ${invoiceValues.join(', ')}
+         ON CONFLICT (id) DO UPDATE SET
+           customer = EXCLUDED.customer,
+           bill_to = EXCLUDED.bill_to,
+           invoice_date = EXCLUDED.invoice_date,
+           delivery_date = EXCLUDED.delivery_date,
+           delivery_time = EXCLUDED.delivery_time,
+           unloading_loc = EXCLUDED.unloading_loc,
+           total_qty = EXCLUDED.total_qty,
+           expected_bins = EXCLUDED.expected_bins,
+           plant = EXCLUDED.plant,
+           uploaded_by = EXCLUDED.uploaded_by,
+           uploaded_at = CURRENT_TIMESTAMP`,
+        invoiceParams
+      );
 
-        // If invoice exists and has progressed, do not allow overwrites.
-        if (exists) {
-          const row = existingResult.rows[0];
-          const isAudited = !!row.audit_complete;
-          const isDispatched = !!row.dispatched_by;
-          if (isAudited || isDispatched) {
-            throw new Error(
-              `Invoice ${invoiceId} cannot be re-uploaded because it is already ${isDispatched ? 'dispatched' : 'audited'}.`
-            );
-          }
+      // Delete all items for these invoices (single query instead of N queries)
+      await client.query('DELETE FROM invoice_items WHERE invoice_id = ANY($1)', [invoiceIds]);
+
+      // Bulk insert all items using UNNEST (single query instead of N*M queries)
+      if (allItems.length > 0) {
+        const itemInvoiceIds: string[] = [];
+        const itemParts: string[] = [];
+        const itemCustomerItems: string[] = [];
+        const itemDescriptions: string[] = [];
+        const itemQtys: number[] = [];
+        const itemStatuses: string[] = [];
+        const itemErrorMessages: (string | null)[] = [];
+
+        for (const item of allItems) {
+          itemInvoiceIds.push(item.invoiceId);
+          itemParts.push(item.part);
+          itemCustomerItems.push(item.customerItem);
+          itemDescriptions.push(item.partDescription);
+          itemQtys.push(item.qty);
+          itemStatuses.push(item.status);
+          itemErrorMessages.push(item.errorMessage || null);
         }
 
-        if (!exists) {
-          await client.query(
-            `INSERT INTO invoices (id, customer, bill_to, invoice_date, delivery_date, delivery_time, unloading_loc, total_qty, bin_capacity, expected_bins, plant, uploaded_by, uploaded_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)`,
-            [
-              invoiceId,
-              invoice.customer,
-              invoice.billTo,
-              invoice.invoiceDate,
-              // Invoice Date is the Delivery Date (per new requirements)
-              invoice.invoiceDate,
-              invoice.deliveryTime,
-              invoice.unloadingLoc,
-              invoice.totalQty,
-              invoice.binCapacity,
-              invoice.expectedBins,
-              invoice.plant,
-              req.user?.username
-            ]
-          );
-        } else {
-          // Update existing invoice header fields. Keep it deterministic and refresh uploaded_at.
-          await client.query(
-            `UPDATE invoices
-             SET customer = $2,
-                 bill_to = $3,
-                 invoice_date = $4,
-                 delivery_date = $5,
-                 delivery_time = $6,
-                 unloading_loc = $7,
-                 total_qty = $8,
-                 expected_bins = $9,
-                 plant = $10,
-                 uploaded_by = $11,
-                 uploaded_at = CURRENT_TIMESTAMP
-             WHERE id = $1`,
-            [
-              invoiceId,
-              invoice.customer,
-              invoice.billTo,
-              invoice.invoiceDate,
-              invoice.invoiceDate,
-              invoice.deliveryTime,
-              invoice.unloadingLoc,
-              invoice.totalQty,
-              invoice.expectedBins,
-              invoice.plant,
-              req.user?.username,
-            ]
-          );
-        }
-
-        // Always replace items on upload for unlocked invoices.
-        await client.query('DELETE FROM invoice_items WHERE invoice_id = $1', [invoiceId]);
-        const invoiceItems = allItems.filter(item => item.invoiceId === invoiceId);
-        for (const item of invoiceItems) {
-          await client.query(
-            `INSERT INTO invoice_items (invoice_id, part, customer_item, part_description, qty, status, error_message)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [invoiceId, item.part, item.customerItem, item.partDescription, item.qty, item.status, item.errorMessage]
-          );
-        }
+        await client.query(
+          `INSERT INTO invoice_items (invoice_id, part, customer_item, part_description, qty, status, error_message)
+           SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::integer[], $6::text[], $7::text[])`,
+          [itemInvoiceIds, itemParts, itemCustomerItems, itemDescriptions, itemQtys, itemStatuses, itemErrorMessages]
+        );
       }
 
       // Log the upload

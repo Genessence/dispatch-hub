@@ -58,7 +58,8 @@ async function runMigrations() {
       '008_add_validation_step_to_mismatch_alerts.sql',
       '009_add_scanner_preferences.sql',
       '010_doc_audit_dual_counters.sql',
-      '011_validated_barcodes_bin_numbers.sql'
+      '011_validated_barcodes_bin_numbers.sql',
+      '012_performance_indexes.sql'
     ];
 
     for (const migrationFile of migrationFiles) {

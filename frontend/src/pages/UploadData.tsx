@@ -1075,16 +1075,7 @@ const UploadData = () => {
   };
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-gradient-to-b from-blue-50 via-background to-background dark:from-blue-950/25">
-      {/* Subtle background pattern */}
-      <div
-        className="pointer-events-none absolute inset-0 opacity-50 dark:opacity-30"
-        style={{
-          backgroundImage: `radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
-                           radial-gradient(circle at 85% 30%, rgba(14, 165, 233, 0.10) 0%, transparent 50%),
-                           radial-gradient(circle at 60% 90%, rgba(99, 102, 241, 0.10) 0%, transparent 45%)`,
-        }}
-      />
+    <div className="min-h-screen relative overflow-hidden">
       {/* Header */}
       <header className="relative bg-card/80 backdrop-blur border-b border-border sticky top-0 z-50 shadow-sm">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">
@@ -1120,7 +1111,7 @@ const UploadData = () => {
         </div>
       </header>
 
-      <main className="relative container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8 max-w-5xl">
+      <main className="relative container mx-auto px-4 sm:px-6 py-4 sm:py-8 pb-24 sm:pb-8 max-w-7xl">
         {/* Progress Steps */}
         <div className="flex items-center justify-center mb-8">
           <div className="flex items-center gap-4">

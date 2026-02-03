@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Download, Package, ScanBarcode } from "lucide-react";
-import { auditApi, invoicesApi } from "@/lib/api";
+import { adminApi, auditApi, invoicesApi } from "@/lib/api";
 import { toast } from "sonner";
 import { downloadInvoiceReportPdf, type InvoiceReportItemGroup } from "@/lib/pdf/invoiceReportPdf";
 
@@ -33,6 +33,21 @@ type InvoiceItemRow = {
   partDescription?: string | null;
 };
 
+type MismatchRow = {
+  id: string;
+  user: string;
+  customer: string;
+  invoiceId: string;
+  step: "doc-audit" | "loading-dispatch";
+  validationStep?: string;
+  customerScan: { partCode: string; quantity: string; binNumber: string; rawValue: string };
+  autolivScan: { partCode: string; quantity: string; binNumber: string; rawValue: string };
+  status: "pending" | "approved" | "rejected";
+  reviewedBy?: string;
+  reviewedAt?: string | null;
+  timestamp: string;
+};
+
 const formatDateTime = (value: string | Date | null | undefined) => {
   if (!value) return "—";
   const d = value instanceof Date ? value : new Date(value);
@@ -50,21 +65,24 @@ export function InvoiceReportInvoiceDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   invoiceId: string | null;
+  mode?: "normal" | "mismatched";
   header?: {
     customer?: string | null;
     dispatchedAt?: string | null;
     deliveryDate?: string | null;
     deliveryTime?: string | null;
     unloadingLoc?: string | null;
+    vehicleNumber?: string | null;
   };
 }) {
-  const { open, onOpenChange, invoiceId, header } = props;
+  const { open, onOpenChange, invoiceId, header, mode = "normal" } = props;
 
   const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scans, setScans] = useState<ScanRow[]>([]);
   const [invoiceItems, setInvoiceItems] = useState<InvoiceItemRow[]>([]);
+  const [mismatches, setMismatches] = useState<MismatchRow[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,13 +92,19 @@ export function InvoiceReportInvoiceDialog(props: {
     setError(null);
     setScans([]);
     setInvoiceItems([]);
+    setMismatches([]);
 
     (async () => {
       try {
-        const [scansRes, invoiceRes] = await Promise.all([
-          auditApi.getScans(invoiceId, "doc-audit"),
-          invoicesApi.getById(invoiceId),
-        ]);
+        if (mode === "mismatched") {
+          const res = await adminApi.getExceptions({ invoiceId });
+          if (cancelled) return;
+          const items: MismatchRow[] = Array.isArray(res?.alerts) ? res.alerts : [];
+          setMismatches(items);
+          return;
+        }
+
+        const [scansRes, invoiceRes] = await Promise.all([auditApi.getScans(invoiceId, "doc-audit"), invoicesApi.getById(invoiceId)]);
 
         if (cancelled) return;
 
@@ -103,7 +127,7 @@ export function InvoiceReportInvoiceDialog(props: {
     return () => {
       cancelled = true;
     };
-  }, [open, invoiceId]);
+  }, [open, invoiceId, mode]);
 
   const invoiceQtyByItemKey = useMemo(() => {
     const m = new Map<string, number>();
@@ -166,7 +190,7 @@ export function InvoiceReportInvoiceDialog(props: {
   const totalBins = scans.length;
   const totalScannedQty = groups.reduce((sum, g) => sum + (Number(g.totalScannedQty) || 0), 0);
 
-  const canDownload = !!invoiceId && !isLoading && !error && groups.length > 0 && !isDownloading;
+  const canDownload = mode === "normal" && !!invoiceId && !isLoading && !error && groups.length > 0 && !isDownloading;
 
   const handleDownloadPdf = async () => {
     if (!invoiceId) return;
@@ -195,7 +219,14 @@ export function InvoiceReportInvoiceDialog(props: {
 
       const filename = downloadInvoiceReportPdf({
         invoiceId,
-        header,
+        header: {
+          customer: header?.customer,
+          dispatchedAt: header?.dispatchedAt,
+          deliveryDate: header?.deliveryDate,
+          deliveryTime: header?.deliveryTime,
+          unloadingLoc: header?.unloadingLoc,
+          vehicleNumber: header?.vehicleNumber,
+        },
         totalBins,
         totalItems: exportGroups.length,
         totalScannedQty,
@@ -218,26 +249,35 @@ export function InvoiceReportInvoiceDialog(props: {
           <div className="flex items-start justify-between gap-3">
             <DialogTitle className="flex items-center gap-2">
               <Package className="h-5 w-5" />
-              Invoice Details{invoiceId ? `: ${invoiceId}` : ""}
+              {mode === "mismatched" ? "Invoice Mismatches" : "Invoice Details"}
+              {invoiceId ? `: ${invoiceId}` : ""}
             </DialogTitle>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!canDownload}
-              onClick={() => void handleDownloadPdf()}
-              className="shrink-0"
-            >
-              <Download className="h-4 w-4 mr-2" />
-              {isDownloading ? "Preparing…" : "Download PDF"}
-            </Button>
+            {mode === "normal" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canDownload}
+                onClick={() => void handleDownloadPdf()}
+                className="shrink-0"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                {isDownloading ? "Preparing…" : "Download PDF"}
+              </Button>
+            ) : null}
           </div>
         </DialogHeader>
 
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <Badge variant="outline">{header?.customer || "Unknown customer"}</Badge>
-          <Badge variant="secondary">{totalBins} bins</Badge>
-          <Badge variant="secondary">{groups.length} items</Badge>
-          <Badge variant="outline">Scanned Qty {totalScannedQty}</Badge>
+          {mode === "normal" ? (
+            <>
+              <Badge variant="secondary">{totalBins} bins</Badge>
+              <Badge variant="secondary">{groups.length} items</Badge>
+              <Badge variant="outline">Scanned Qty {totalScannedQty}</Badge>
+            </>
+          ) : (
+            <Badge variant="destructive">{mismatches.length} mismatches</Badge>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -246,6 +286,10 @@ export function InvoiceReportInvoiceDialog(props: {
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">Dispatch date/time</span>
                 <span className="font-medium">{formatDateTime(header?.dispatchedAt || null)}</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Vehicle Number</span>
+                <span className="font-medium font-mono">{header?.vehicleNumber || "—"}</span>
               </div>
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">Delivery date</span>
@@ -287,6 +331,66 @@ export function InvoiceReportInvoiceDialog(props: {
               </div>
               <div className="text-sm text-muted-foreground mt-1">{error}</div>
             </div>
+          ) : mode === "mismatched" ? (
+            mismatches.length === 0 ? (
+              <div className="py-10 text-center text-muted-foreground">
+                <AlertTriangle className="h-10 w-10 mx-auto mb-2 opacity-50" />
+                No mismatches found for this invoice.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {mismatches.map((m) => {
+                  const uiStatus =
+                    m.status === "pending" ? "NEEDS_CORRECTION" : m.status === "approved" ? "CORRECTED" : "REJECTED";
+                  const statusVariant = m.status === "approved" ? "default" : m.status === "pending" ? "destructive" : "secondary";
+                  return (
+                    <Card key={m.id} className="border">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant={statusVariant as any}>{uiStatus}</Badge>
+                              <Badge variant="outline" className="text-xs">
+                                {m.step === "doc-audit" ? "Doc Audit" : "Loading & Dispatch"}
+                              </Badge>
+                              {m.validationStep ? <Badge variant="secondary" className="text-xs">{m.validationStep}</Badge> : null}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Occurred: <span className="font-medium">{formatDateTime(m.timestamp)}</span>
+                            </div>
+                            {m.reviewedBy ? (
+                              <div className="text-xs text-muted-foreground">
+                                Reviewed by <span className="font-medium">{m.reviewedBy}</span>
+                                {m.reviewedAt ? <> at <span className="font-medium">{formatDateTime(m.reviewedAt)}</span></> : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                          <div className="p-3 rounded border bg-blue-50 dark:bg-blue-950">
+                            <div className="font-semibold mb-2">Customer Label</div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Part</span><span className="font-mono font-semibold">{m.customerScan.partCode}</span></div>
+                              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Qty</span><span className="font-mono font-semibold">{m.customerScan.quantity}</span></div>
+                              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Bin</span><span className="font-mono font-semibold">{m.customerScan.binNumber}</span></div>
+                            </div>
+                          </div>
+                          <div className="p-3 rounded border bg-accent/10">
+                            <div className="font-semibold mb-2">Autoliv Label</div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Part</span><span className="font-mono font-semibold">{m.autolivScan.partCode}</span></div>
+                              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Qty</span><span className="font-mono font-semibold">{m.autolivScan.quantity}</span></div>
+                              <div className="flex justify-between gap-2"><span className="text-muted-foreground">Bin</span><span className="font-mono font-semibold">{m.autolivScan.binNumber}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )
           ) : groups.length === 0 ? (
             <div className="py-10 text-center text-muted-foreground">
               <ScanBarcode className="h-10 w-10 mx-auto mb-2 opacity-50" />

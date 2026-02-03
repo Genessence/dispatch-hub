@@ -16,6 +16,7 @@ import MasterData from "./pages/MasterData";
 import ExceptionAlerts from "./pages/ExceptionAlerts";
 import NotFound from "./pages/NotFound";
 import { SessionProvider, useSession } from "./contexts/SessionContext";
+import { AppBackground } from "./components/layout/AppBackground";
 
 const queryClient = new QueryClient();
 
@@ -119,7 +120,12 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
-          <AppRoutes />
+          <div className="min-h-screen relative overflow-hidden">
+            <AppBackground />
+            <div className="relative z-10">
+              <AppRoutes />
+            </div>
+          </div>
         </BrowserRouter>
       </TooltipProvider>
     </SessionProvider>

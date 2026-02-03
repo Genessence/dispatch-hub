@@ -30,6 +30,7 @@ import { ScanIssueDialog, type ScanIssue } from "@/components/ScanIssueDialog";
 import { QRCodeSVG } from "qrcode.react";
 import { auditApi, dispatchApi } from "@/lib/api";
 import { buildGatepassSummary } from "@/lib/gatepassSummary";
+import { encodeGatepassQrPayload } from "@/lib/qrPayload";
 import { PageShell } from "@/components/layout/PageShell";
 import { StatusBanner } from "@/components/layout/StatusBanner";
 
@@ -59,6 +60,25 @@ interface ValidatedBarcodePair {
   actualQuantity?: number;
   scannedAt?: string;
 }
+
+type GatepassLoadedScanDetail = {
+  id: string;
+  invoiceId: string;
+  customerBarcode: string | null;
+  autolivBarcode: string | null;
+  customerItem: string | null;
+  itemNumber: string | null;
+  partDescription: string | null;
+  quantity: number;
+  binQuantity: number | null;
+  customerBinNumber: string | null;
+  autolivBinNumber: string | null;
+  status: string | null;
+  scannedBy: string | null;
+  scannedAt: string | null;
+  customerName: string | null;
+  customerCode: string | null;
+};
 
 const Dispatch = () => {
   const navigate = useNavigate();
@@ -117,6 +137,8 @@ const Dispatch = () => {
       unloadingLoc?: string | null;
       status: string;
     }>;
+    /** Server-truth loading-dispatch scans (enriched with doc-audit autoliv fields where possible). */
+    loadedScansDetailed?: GatepassLoadedScanDetail[];
   } | null>(null);
   const [customerCodeError, setCustomerCodeError] = useState<string | null>(null);
   const [showDispatchLogs, setShowDispatchLogs] = useState(false);
@@ -289,6 +311,37 @@ const Dispatch = () => {
   const makeItemKey = (invoiceId: string, customerItem: string, itemNumber: string) =>
     `${invoiceId}||${(customerItem || 'N/A').trim()}||${(itemNumber || 'N/A').trim()}`;
 
+  // Global "active" customer item for UI focus: the most recently scanned item across ALL selected invoices.
+  // This ensures only one row shows yellow (and avoids multiple "in progress" highlights).
+  const activeFocusItemKey = useMemo(() => {
+    let bestKey: string | null = null;
+    let bestMs = 0;
+
+    for (const scan of loadedBarcodes) {
+      if (!scan?.invoiceId) continue;
+      const customerItem = (scan.customerItem || scan.partCode || 'N/A').trim();
+      const itemNumber = (scan.itemNumber || 'N/A').trim();
+      const k = makeItemKey(scan.invoiceId, customerItem, itemNumber);
+
+      const ms = scan.scannedAt ? new Date(scan.scannedAt).getTime() : 0;
+      const scannedAtMs = Number.isFinite(ms) ? ms : 0;
+
+      if (
+        scannedAtMs > bestMs ||
+        (scannedAtMs === bestMs && scannedAtMs > 0 && bestKey !== null && k > bestKey)
+      ) {
+        bestMs = scannedAtMs;
+        bestKey = k;
+      } else if (bestKey === null && scannedAtMs > 0) {
+        // First valid timestamp wins when no key exists yet.
+        bestMs = scannedAtMs;
+        bestKey = k;
+      }
+    }
+
+    return bestKey;
+  }, [loadedBarcodes]);
+
   const scannedByItemKey = useMemo(() => {
     const m = new Map<string, { scannedBins: number; scannedQty: number }>();
     for (const scan of loadedBarcodes) {
@@ -370,6 +423,17 @@ const Dispatch = () => {
   }, [gatepassDetails, sharedInvoices, gatepassInvoiceIds]);
 
   const gatepassSummary = useMemo(() => {
+    const loadedScansForSummary =
+      gatepassDetails?.loadedScansDetailed && gatepassDetails.loadedScansDetailed.length > 0
+        ? gatepassDetails.loadedScansDetailed.map((s) => ({
+            invoiceId: s.invoiceId,
+            customerItem: s.customerItem,
+            itemNumber: s.itemNumber,
+            // For totals we treat each row as one loaded bin, and qty is binQuantity when available.
+            quantity: s.binQuantity ?? s.quantity ?? 0,
+          }))
+        : loadedBarcodes;
+
     return buildGatepassSummary({
       gatepassNumber: gatepassNumber || `GP-${Date.now().toString().slice(-8)}`,
       vehicleNumber,
@@ -378,7 +442,7 @@ const Dispatch = () => {
       dispatchDateIso: gatepassDetails?.dispatchDate || null,
       invoiceIds: gatepassInvoiceIds,
       invoiceDetails: gatepassDetails?.invoices || null,
-      loadedScans: loadedBarcodes,
+      loadedScans: loadedScansForSummary,
     });
   }, [
     gatepassNumber,
@@ -943,7 +1007,8 @@ const Dispatch = () => {
           totalNumberOfBins: result.totalNumberOfBins || 0,
           supplyDates: result.supplyDates || [],
           invoiceIds: invoiceIdsSnapshot,
-          invoices: result.invoices || []
+          invoices: result.invoices || [],
+          loadedScansDetailed: Array.isArray(result.loadedScansDetailed) ? result.loadedScansDetailed : []
         };
 
         // Extra robustness: if backend provides loaded totals, cross-check and warn if mismatch.
@@ -1074,60 +1139,69 @@ const Dispatch = () => {
     const supplyDate =
       gatepassSummary.invoices.find((i) => i.deliveryDate)?.deliveryDate ?? null;
 
-    // Compact invoice list for QR (no bin numbers)
-    const inv = gatepassSummary.invoices.map((i) => ({
+    // Build expected per-invoice-item quantities/bins from invoice items (source of truth for "quantity of that customer item" and expected bin count).
+    const expectedByKey = new Map<string, { expectedQty: number; expectedBins: number }>();
+    for (const inv of sharedInvoices.filter((x) => gatepassSummary.invoiceIds.includes(x.id))) {
+      const invItems: any[] = Array.isArray((inv as any).items) ? ((inv as any).items as any[]) : [];
+      for (const it of invItems) {
+        const rec = (it && typeof it === "object") ? (it as Record<string, unknown>) : {};
+        const customerItem = String((rec.customerItem as unknown) ?? (rec.part as unknown) ?? "").trim();
+        const itemNumber = String((rec.part as unknown) ?? "").trim();
+        if (!customerItem || !itemNumber) continue;
+        const expectedQty = Number((rec.qty as unknown) ?? 0) || 0;
+        const expectedBins =
+          Number((rec.cust_scanned_bins_count as unknown) ?? (rec.number_of_bins as unknown) ?? 0) || 0;
+        expectedByKey.set(`${inv.id}||${customerItem}||${itemNumber}`, { expectedQty, expectedBins });
+      }
+    }
+
+    // QR requirement: include invoice number + customer item + item number + quantity + number of bins (per item).
+    // We include both expected (from invoice items) and loaded (from dispatch scans) so verification is clear.
+    const items = gatepassSummary.invoices.flatMap((inv) =>
+      inv.items.map((it) => {
+        const key = `${inv.id}||${it.customerItem}||${it.itemNumber}`;
+        const exp = expectedByKey.get(key);
+        return {
+          invoiceId: inv.id,
+          customerItem: it.customerItem,
+          itemNumber: it.itemNumber,
+          expectedQty: exp?.expectedQty ?? null,
+          expectedBins: exp?.expectedBins ?? null,
+          loadedQty: it.qtyLoaded,
+          loadedBins: it.binsLoaded,
+        };
+      })
+    );
+
+    const invoices = gatepassSummary.invoices.map((i) => ({
       id: i.id,
-      loc: i.unloadingLoc || null,
-      dDate: i.deliveryDate || null,
-      dTime: i.deliveryTime || null,
-      st: i.status || 'unknown',
-      b: i.totals.binsLoaded, // bins loaded
-      q: i.totals.qtyLoaded, // qty loaded
-      it: i.items.map((it) => ({
-        ci: it.customerItem,
-        in: it.itemNumber,
-        b: it.binsLoaded,
-        q: it.qtyLoaded,
-      })),
+      unloadingLoc: i.unloadingLoc || null,
+      deliveryDate: i.deliveryDate || null,
+      deliveryTime: i.deliveryTime || null,
+      status: i.status || "unknown",
     }));
 
-    const full = {
-      gp: gatepassSummary.gatepassNumber,
-      v: gatepassSummary.vehicleNumber,
-      cc: gatepassSummary.customerCode,
-      dt: dispatchCompact,
-      sd: supplyDate,
-      by: gatepassSummary.authorizedBy,
-      inv,
-      invIds: gatepassSummary.invoiceIds,
-      invCount: gatepassSummary.grandTotals.invoiceCount,
-      binCount: gatepassSummary.grandTotals.binsLoaded,
-      sum: {
-        items: gatepassSummary.grandTotals.itemLinesCount,
-        inv: gatepassSummary.grandTotals.invoiceCount,
-        qty: gatepassSummary.grandTotals.qtyLoaded,
+    const payload = {
+      // Keep readable keys so generic QR scanner output makes sense.
+      gatepassNumber: gatepassSummary.gatepassNumber,
+      vehicleNumber: gatepassSummary.vehicleNumber,
+      customerCode: gatepassSummary.customerCode,
+      dispatchTime: dispatchCompact,
+      supplyDate,
+      authorizedBy: gatepassSummary.authorizedBy,
+      invoiceIds: gatepassSummary.invoiceIds,
+      invoices,
+      items,
+      totals: {
+        invoiceCount: gatepassSummary.grandTotals.invoiceCount,
+        itemLinesCount: gatepassSummary.grandTotals.itemLinesCount,
+        loadedBins: gatepassSummary.grandTotals.binsLoaded,
+        loadedQty: gatepassSummary.grandTotals.qtyLoaded,
       },
-      err: customerCodeError ? customerCodeError : null,
+      error: customerCodeError ? customerCodeError : null,
     };
 
-    const fullStr = JSON.stringify(full);
-    if (fullStr.length <= 3000) return fullStr;
-
-    // Tier 2: drop item list (it)
-    const mid = {
-      ...full,
-      inv: inv.map(({ it, ...rest }) => rest),
-    };
-    const midStr = JSON.stringify(mid);
-    if (midStr.length <= 3000) return midStr;
-
-    // Tier 3: minimal
-    const minimal = {
-      gp: gatepassSummary.gatepassNumber,
-      v: gatepassSummary.vehicleNumber,
-      inv: gatepassSummary.invoiceIds,
-    };
-    return JSON.stringify(minimal);
+    return encodeGatepassQrPayload(payload);
   };
 
   const handlePrintGatepass = () => {
@@ -1182,6 +1256,38 @@ const Dispatch = () => {
           `
         )
       )
+      .join('');
+
+    const loadedScansDetailed: GatepassLoadedScanDetail[] =
+      (gatepassDetails?.loadedScansDetailed && gatepassDetails.loadedScansDetailed.length > 0)
+        ? gatepassDetails.loadedScansDetailed
+        : [];
+
+    const formatScanTime = (iso: string | null) => {
+      if (!iso) return 'N/A';
+      const d = new Date(iso);
+      return Number.isNaN(d.getTime()) ? 'N/A' : d.toLocaleString();
+    };
+
+    const binDetailsRows = loadedScansDetailed
+      .slice()
+      .sort((a, b) => {
+        const ta = a.scannedAt ? new Date(a.scannedAt).getTime() : 0;
+        const tb = b.scannedAt ? new Date(b.scannedAt).getTime() : 0;
+        if (a.invoiceId !== b.invoiceId) return a.invoiceId.localeCompare(b.invoiceId);
+        return tb - ta;
+      })
+      .map((s) => `
+        <tr>
+          <td>${s.invoiceId}</td>
+          <td>${s.customerItem || 'N/A'}</td>
+          <td>${s.itemNumber || 'N/A'}</td>
+          <td>${s.customerBinNumber || 'N/A'}</td>
+          <td>${s.autolivBinNumber || 'N/A'}</td>
+          <td style="text-align:right;">${s.binQuantity ?? 0}</td>
+          <td>${formatScanTime(s.scannedAt)}</td>
+        </tr>
+      `)
       .join('');
     
     const qrData = generateGatepassQRData();
@@ -1339,6 +1445,26 @@ const Dispatch = () => {
               </thead>
               <tbody>
                 ${itemTotalsRows || `<tr><td colspan="5">No loaded scans found</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="invoices-section">
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Bin Details (Loaded Scans):</h3>
+            <table class="items-table">
+              <thead>
+                <tr>
+                  <th>Invoice</th>
+                  <th>Customer Item</th>
+                  <th>Item Number</th>
+                  <th>Cust Bin</th>
+                  <th>Autoliv Bin</th>
+                  <th>Bin Qty</th>
+                  <th>Scanned At</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${binDetailsRows || `<tr><td colspan="7">No loaded bin scan details available</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -1610,6 +1736,72 @@ const Dispatch = () => {
         });
       }
 
+      // Bin Details (Loaded Scans)
+      const loadedScansDetailed: GatepassLoadedScanDetail[] =
+        (gatepassDetails?.loadedScansDetailed && gatepassDetails.loadedScansDetailed.length > 0)
+          ? gatepassDetails.loadedScansDetailed
+          : [];
+
+      yPos += 6;
+      if (yPos > pageHeight - 70) {
+        pdf.addPage();
+        yPos = margin;
+      }
+
+      pdf.setFont(undefined, 'bold');
+      pdf.setFontSize(10);
+      pdf.text('Bin Details (Loaded Scans):', margin, yPos);
+      yPos += 7;
+
+      pdf.setFontSize(7);
+      pdf.setFont(undefined, 'bold');
+      pdf.text('Inv', margin, yPos);
+      pdf.text('CustItem', margin + 16, yPos);
+      pdf.text('ItemNo', margin + 54, yPos);
+      pdf.text('CustBin', margin + 82, yPos);
+      pdf.text('AutBin', margin + 102, yPos);
+      pdf.text('Qty', margin + 122, yPos);
+      pdf.text('Time', margin + 132, yPos);
+      yPos += 5;
+
+      pdf.setDrawColor(200, 200, 200);
+      pdf.line(margin, yPos, pageWidth - margin, yPos);
+      yPos += 3;
+
+      pdf.setFont(undefined, 'normal');
+      const fmtTime = (iso: string | null) => {
+        if (!iso) return 'N/A';
+        const d = new Date(iso);
+        return Number.isNaN(d.getTime()) ? 'N/A' : d.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      };
+
+      if (loadedScansDetailed.length === 0) {
+        pdf.text('No loaded bin scan details available', margin, yPos);
+        yPos += 6;
+      } else {
+        const sorted = loadedScansDetailed.slice().sort((a, b) => {
+          if (a.invoiceId !== b.invoiceId) return a.invoiceId.localeCompare(b.invoiceId);
+          const ta = a.scannedAt ? new Date(a.scannedAt).getTime() : 0;
+          const tb = b.scannedAt ? new Date(b.scannedAt).getTime() : 0;
+          return tb - ta;
+        });
+
+        for (const s of sorted) {
+          if (yPos > pageHeight - 15) {
+            pdf.addPage();
+            yPos = margin;
+          }
+          pdf.text(String(s.invoiceId).substring(0, 10), margin, yPos);
+          pdf.text(String(s.customerItem || 'N/A').substring(0, 16), margin + 16, yPos);
+          pdf.text(String(s.itemNumber || 'N/A').substring(0, 12), margin + 54, yPos);
+          pdf.text(String(s.customerBinNumber || 'N/A').substring(0, 10), margin + 82, yPos);
+          pdf.text(String(s.autolivBinNumber || 'N/A').substring(0, 10), margin + 102, yPos);
+          pdf.text(String(s.binQuantity ?? 0), margin + 122, yPos);
+          pdf.text(String(fmtTime(s.scannedAt)).substring(0, 18), margin + 132, yPos);
+          yPos += 5;
+        }
+      }
+
       yPos = pageHeight - 20;
       pdf.setFontSize(8);
       pdf.setFont(undefined, 'italic');
@@ -1676,6 +1868,8 @@ const Dispatch = () => {
                   (expectedBins === 0 && totalQty > 0 && scannedQty >= totalQty);
 
                 const isInProgress = !isComplete && (scannedBins > 0 || scannedQty > 0);
+                const isFocused = activeFocusItemKey !== null && activeFocusItemKey === k;
+                const showFocusedInProgress = isInProgress && isFocused;
 
                 return (
                   <tr
@@ -1683,7 +1877,7 @@ const Dispatch = () => {
                     className={`border-t ${
                       isComplete
                         ? 'bg-green-100 dark:bg-green-950/40'
-                        : isInProgress
+                        : showFocusedInProgress
                           ? 'bg-yellow-100 dark:bg-yellow-950/40'
                           : ''
                     }`}
@@ -1742,21 +1936,8 @@ const Dispatch = () => {
           )}
         </Button>
       }
-      decorations={
-        <>
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-blue-50 via-background to-background dark:from-blue-950/25" />
-          <div
-            className="pointer-events-none absolute inset-0 opacity-50 dark:opacity-30"
-            style={{
-              backgroundImage: `radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.12) 0%, transparent 45%),
-                               radial-gradient(circle at 85% 30%, rgba(14, 165, 233, 0.10) 0%, transparent 50%),
-                               radial-gradient(circle at 60% 90%, rgba(99, 102, 241, 0.10) 0%, transparent 45%)`,
-            }}
-          />
-        </>
-      }
       mainClassName="relative"
-      maxWidthClassName="max-w-5xl"
+      maxWidthClassName="max-w-7xl"
     >
       <ScanIssueDialog
         open={scanIssueOpen}
@@ -2533,10 +2714,8 @@ const Dispatch = () => {
                           // Generate QR data - this function will use gatepassDetails if available
                           const qrValue = generateGatepassQRData();
                           
-                          // Log the actual QR value being encoded
-                          const qrData = JSON.parse(qrValue);
-                          console.log('🔐 Final QR Code Data being encoded:', qrData);
-                          console.log('🔐 Invoice details in QR code:', qrData.inv);
+                          // NOTE: QR may be compressed (DH1.*), so don't JSON.parse here.
+                          console.log('🔐 Final QR value length:', qrValue.length);
                           
                           // Limit size to prevent errors - if too long, show minimal version
                           if (qrValue.length > 4000) {

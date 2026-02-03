@@ -35,7 +35,7 @@ export function PageShell({
   mainClassName,
 }: PageShellProps) {
   return (
-    <div className={cn("min-h-screen relative overflow-hidden bg-background", rootClassName)}>
+    <div className={cn("min-h-screen relative overflow-hidden bg-transparent", rootClassName)}>
       {decorations}
       <header className="sticky top-0 z-50 border-b border-border/60 bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60">
         <div className="container mx-auto px-4 sm:px-6 py-3 sm:py-4">

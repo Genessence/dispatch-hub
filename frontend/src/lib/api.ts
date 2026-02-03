@@ -419,11 +419,14 @@ export const adminApi = {
   },
 
   getInvoiceReports: async (filters?: {
-    status?: 'dispatched' | 'audited' | 'pending';
-    dispatchFrom?: string; // YYYY-MM-DD or ISO datetime
-    dispatchTo?: string;   // YYYY-MM-DD or ISO datetime
-    deliveryFrom?: string; // YYYY-MM-DD or ISO datetime
-    deliveryTo?: string;   // YYYY-MM-DD or ISO datetime
+    status?: 'dispatched' | 'audited' | 'pending' | 'mismatched';
+    dateFrom?: string; // YYYY-MM-DD or ISO datetime (meaning depends on status)
+    dateTo?: string;   // YYYY-MM-DD or ISO datetime (meaning depends on status)
+    // Legacy (backward compatibility)
+    dispatchFrom?: string;
+    dispatchTo?: string;
+    deliveryFrom?: string;
+    deliveryTo?: string;
     deliveryTime?: string;
     unloadingLoc?: string;
     customer?: string;
@@ -435,6 +438,8 @@ export const adminApi = {
     if (filters) {
       const params = new URLSearchParams();
       if (filters.status) params.append('status', filters.status);
+      if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+      if (filters.dateTo) params.append('dateTo', filters.dateTo);
       if (filters.dispatchFrom) params.append('dispatchFrom', filters.dispatchFrom);
       if (filters.dispatchTo) params.append('dispatchTo', filters.dispatchTo);
       if (filters.deliveryFrom) params.append('deliveryFrom', filters.deliveryFrom);
@@ -450,9 +455,14 @@ export const adminApi = {
     return fetchWithAuth(`/api/admin/reports/invoices${query}`);
   },
 
-  getExceptions: async (status?: 'pending' | 'approved' | 'rejected') => {
+  getExceptions: async (filters?: { status?: 'pending' | 'approved' | 'rejected'; invoiceId?: string }) => {
     let query = '';
-    if (status) query = `?status=${status}`;
+    if (filters) {
+      const params = new URLSearchParams();
+      if (filters.status) params.append('status', filters.status);
+      if (filters.invoiceId) params.append('invoiceId', filters.invoiceId);
+      if (params.toString()) query = `?${params.toString()}`;
+    }
     return fetchWithAuth(`/api/admin/exceptions${query}`);
   },
 

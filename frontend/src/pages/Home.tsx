@@ -165,7 +165,7 @@ const Home = () => {
   ];
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className="min-h-screen flex bg-transparent">
       {/* Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-50 bg-gradient-to-b from-blue-50 to-white dark:from-blue-950/20 dark:to-background border-r border-blue-200 dark:border-blue-800 transition-all duration-300 ease-in-out md:translate-x-0 ${

@@ -5,6 +5,7 @@ import { query, transaction } from '../config/database';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { Server as SocketIOServer } from 'socket.io';
 import { parseExcelDateValue, toIsoDateOnly } from '../utils/dateParsing';
+import { invalidateScheduleCache } from '../utils/cache';
 
 const router = Router();
 
@@ -534,47 +535,55 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     // Schedule items are matched globally by PART NUMBER only
     // No need to validate customer codes since they don't exist in schedule files
 
-    // Insert into database using transaction
+    // Insert into database using transaction with bulk operations (optimized)
     await transaction(async (client) => {
       // Clear existing schedule
       await client.query('DELETE FROM schedule_items');
 
-      // Insert new items
+      // Bulk insert all items using UNNEST (single query instead of N queries)
       console.log(`Inserting ${allScheduleItems.length} schedule items into database...`);
-      for (let i = 0; i < allScheduleItems.length; i++) {
-        const item = allScheduleItems[i];
-        try {
+      
+      if (allScheduleItems.length > 0) {
+        const customerCodes: (string | null)[] = [];
+        const customerParts: string[] = [];
+        const partNumbers: (string | null)[] = [];
+        const qadParts: string[] = [];
+        const descriptions: string[] = [];
+        const snps: number[] = [];
+        const bins: number[] = [];
+        const sheetNames: string[] = [];
+        const deliveryDates: (string | null)[] = [];
+        const deliveryTimes: (string | null)[] = [];
+        const plants: (string | null)[] = [];
+        const unloadingLocs: (string | null)[] = [];
+        const uploadedBys: string[] = [];
+        const quantities: (number | null)[] = [];
+
+        for (const item of allScheduleItems) {
+          customerCodes.push(item.customerCode || null);
+          customerParts.push(item.customerPart || '');
+          partNumbers.push(item.partNumber || null);
+          qadParts.push(item.qadPart || '');
+          descriptions.push(item.description || '');
+          snps.push(item.snp || 0);
+          bins.push(item.bin || 0);
+          sheetNames.push(item.sheetName || '');
+          deliveryDates.push(item.deliveryDate ? toIsoDateOnly(item.deliveryDate) : null);
+          deliveryTimes.push(item.deliveryTime || null);
+          plants.push(item.plant || null);
+          unloadingLocs.push(item.unloadingLoc || null);
+          uploadedBys.push(req.user?.username || 'unknown');
+          quantities.push(item.quantity || null);
+        }
+
         await client.query(
           `INSERT INTO schedule_items 
            (customer_code, customer_part, part_number, qad_part, description, snp, bin, sheet_name, delivery_date, delivery_time, plant, unloading_loc, uploaded_by, quantity)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-          [
-              item.customerCode || null, // Nullable - migration 007 applied
-              item.customerPart || '',
-              item.partNumber || null,
-              item.qadPart || '',
-              item.description || '',
-              item.snp || 0,
-              item.bin || 0,
-              item.sheetName || '',
-              item.deliveryDate ? toIsoDateOnly(item.deliveryDate) : null,
-              item.deliveryTime || null,
-              item.plant || null,
-              item.unloadingLoc || null,
-              req.user?.username || 'unknown',
-              item.quantity || null
-          ]
+           SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::integer[], $7::integer[], $8::text[], $9::date[], $10::text[], $11::text[], $12::text[], $13::text[], $14::integer[])`,
+          [customerCodes, customerParts, partNumbers, qadParts, descriptions, snps, bins, sheetNames, deliveryDates, deliveryTimes, plants, unloadingLocs, uploadedBys, quantities]
         );
-        } catch (insertError: any) {
-          console.error(`Error inserting item ${i + 1}:`, insertError);
-          console.error('Item data:', {
-            customerCode: item.customerCode,
-            partNumber: item.partNumber,
-            customerPart: item.customerPart
-          });
-          throw insertError;
-        }
       }
+      
       console.log(`✅ Successfully inserted ${allScheduleItems.length} schedule items`);
 
       // Log the upload with filtering statistics
@@ -596,6 +605,9 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         ]
       );
     });
+
+    // Invalidate schedule cache after successful upload
+    await invalidateScheduleCache();
 
     // Broadcast update via WebSocket
     const io: SocketIOServer = req.app.get('io');

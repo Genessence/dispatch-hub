@@ -26,21 +26,23 @@ const ExceptionAlerts = () => {
   // Permission check
   if (currentUserRole !== "admin") {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <div className="text-center max-w-md mx-auto">
-          <div className="mb-6">
-            <div className="w-24 h-24 mx-auto bg-red-100 rounded-full flex items-center justify-center mb-4">
-              <span className="text-4xl">🔒</span>
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <Card className="w-full max-w-md bg-card/70 backdrop-blur border-border/60 shadow-md">
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-3 h-14 w-14 rounded-2xl bg-destructive/10 flex items-center justify-center">
+              <span className="text-2xl">🔒</span>
             </div>
-            <h1 className="text-3xl font-bold text-red-600 mb-2">Permission Denied</h1>
-            <p className="text-muted-foreground mb-6">
+            <CardTitle className="text-2xl text-destructive">Permission Denied</CardTitle>
+            <CardDescription>
               Only Admin users can access the Exception Alerts module.
-            </p>
-          </div>
-          <Button onClick={() => navigate("/home")} className="w-full">
-            Return to Home
-          </Button>
-        </div>
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => navigate("/home")} className="w-full">
+              Return to Home
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -84,7 +86,7 @@ const ExceptionAlerts = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background p-4 sm:p-6 lg:p-8">
+    <div className="min-h-screen bg-transparent p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
