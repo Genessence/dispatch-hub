@@ -11,7 +11,7 @@ export interface BarcodeData {
   binQuantity?: string; // Bin quantity extracted from QR (for validation)
   qrType?: 'autoliv' | 'customer'; // Type of QR code scanned
   // Additional fields for customer QR codes
-  invoiceNumber?: string; // Invoice number (10 digits after date)
+  invoiceNumber?: string; // Invoice number (10 digits, typically starts with 26)
   totalQty?: string; // Total quantity (numbers after invoice number, before first 'A')
   totalBinNo?: string; // Total bin number (number before "AUTOLIV INDIA PRIVATE LIMITED")
 }
@@ -19,6 +19,24 @@ export interface BarcodeData {
 export type ParseBarcodeResult = { data: BarcodeData | null; error?: string };
 
 const normalizeField = (s: string) => String(s ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * Customer label invoice number nomenclature:
+ * - After the quantity segment, invoice appears as:
+ *   1. " 26XXXXXXXX" (space + 26 + 8 digits)
+ *   2. "-26XXXXXXXX" (dash + 26 + 8 digits)
+ *   3. "2626XXXXXXXX" (26 + 26 + 8 digits, exclude first 26, extract second 26 + 8 digits)
+ * - Invoice number is exactly 10 digits total, including the leading 26: 26 + 8 digits.
+ */
+const extractCustomerInvoiceNumber = (rawValue: string, searchStartIndex: number): string | undefined => {
+  const start = Math.max(0, Number.isFinite(searchStartIndex) ? searchStartIndex : 0);
+  if (!rawValue || rawValue.length <= start) return undefined;
+
+  const segment = rawValue.slice(start);
+  // Match: (space/dash + 26 + 8 digits) OR (26 + 26 + 8 digits, capturing second 26 + 8)
+  const match = segment.match(/(?:\s|-)(26\d{8})|26(26\d{8})/);
+  return match?.[1] || match?.[2];
+};
 
 /**
  * Customer label (fixed-position, 1-indexed spec):
@@ -46,6 +64,10 @@ const parseCustomerLabelFixed = (rawValue: string): ParseBarcodeResult => {
     const partCode = normalizeField(rawValue.slice(35, 50));
     const quantityChar = normalizeField(rawValue.slice(50, 51));
 
+    // Optional: extract invoice number using delimiter-based nomenclature,
+    // starting right after the fixed-position quantity char (index 50).
+    const invoiceNumber = extractCustomerInvoiceNumber(rawValue, 51);
+
     if (!binNumber) {
       return { data: null, error: 'Customer QR Format Error: Bin number empty in characters 1..35.' };
     }
@@ -69,6 +91,7 @@ const parseCustomerLabelFixed = (rawValue: string): ParseBarcodeResult => {
         binNumber,
         binQuantity: quantityChar,
         qrType: 'customer',
+        invoiceNumber,
       },
     };
   } catch (error) {
@@ -267,10 +290,9 @@ const parseCustomerQRLegacy = (rawValue: string): ParseBarcodeResult => {
       };
     }
 
-    // Extract Invoice Number: 10 digits after date pattern DD/MM/YY
-    // Pattern: date pattern followed by optional spaces, then exactly 10 digits
-    const invoiceNumberMatch = rawValue.match(/(\d{2}\/\d{2}\/\d{2})\s*(\d{10})/);
-    const invoiceNumber = invoiceNumberMatch ? invoiceNumberMatch[2] : null;
+    // Extract Invoice Number (new nomenclature):
+    // Look for " 26XXXXXXXX" or "-26XXXXXXXX" (10 digits total including 26).
+    const invoiceNumber = extractCustomerInvoiceNumber(rawValue, 0) || null;
 
     // Extract Total Quantity: Numbers after invoice number, before first 'A'
     // Pattern: After the 10-digit invoice number, capture all consecutive digits before first 'A'

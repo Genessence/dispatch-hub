@@ -143,6 +143,7 @@ const Dispatch = () => {
   const [customerCodeError, setCustomerCodeError] = useState<string | null>(null);
   const [showDispatchLogs, setShowDispatchLogs] = useState(false);
   const [showInvoiceQRScanner, setShowInvoiceQRScanner] = useState(false);
+  const [isRestoringFromGatepass, setIsRestoringFromGatepass] = useState(false);
 
   // Keep active invoice in sync with selected invoices.
   useEffect(() => {
@@ -164,6 +165,9 @@ const Dispatch = () => {
     // After gatepass generation we intentionally keep the snapshot visible (preview/print/pdf/qr).
     // User explicitly resets via "New Dispatch".
     if (gatepassGenerated) return;
+    
+    // Skip clearing if we're restoring invoices from a gatepass (to allow regeneration)
+    if (isRestoringFromGatepass) return;
 
     if (selectedInvoices.length > 0) {
       const stillAvailable = selectedInvoices.filter(id => {
@@ -179,7 +183,18 @@ const Dispatch = () => {
         }
       }
     }
-  }, [sharedInvoices, selectedInvoices, gatepassGenerated]);
+  }, [sharedInvoices, selectedInvoices, gatepassGenerated, isRestoringFromGatepass]);
+  
+  // Clear the restoring flag after invoices are restored
+  useEffect(() => {
+    if (isRestoringFromGatepass && selectedInvoices.length > 0) {
+      // Clear the flag after a short delay to allow the restoration to complete
+      const timer = setTimeout(() => {
+        setIsRestoringFromGatepass(false);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isRestoringFromGatepass, selectedInvoices]);
 
   // Reset select value when switching to dispatch
   useEffect(() => {
@@ -2583,8 +2598,17 @@ const Dispatch = () => {
             <Button
               variant="ghost"
               onClick={() => {
+                // Restore the invoice IDs from gatepass details before clearing
+                const invoiceIdsToRestore = gatepassDetails?.invoiceIds || selectedInvoices;
+                if (invoiceIdsToRestore.length > 0) {
+                  setIsRestoringFromGatepass(true);
+                  setSelectedInvoices(invoiceIdsToRestore);
+                  // Set the first invoice as active
+                  setActiveInvoiceId(invoiceIdsToRestore[0]);
+                }
                 setGatepassGenerated(false);
                 setGatepassNumber("");
+                setGatepassDetails(null);
               }}
               className="flex items-center gap-2 mb-4 text-sm sm:text-base"
             >

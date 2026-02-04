@@ -168,12 +168,14 @@ const DocAudit = () => {
     });
   }, [selectedInvoices, sharedInvoices]);
 
+  const pendingCustomerStageInvoiceIds = useMemo(() => {
+    if (selectedInvoices.length === 0) return [];
+    return selectedInvoices.filter((invId) => (pendingDocAuditCustomerScansByInvoice[invId] || 0) > 0);
+  }, [selectedInvoices, pendingDocAuditCustomerScansByInvoice]);
+
   // Server-truth resume signal: if any selected invoice has pending doc-audit customer-stage scans,
   // we should continue from Autoliv (INBD) step.
-  const hasPendingCustomerStage = useMemo(() => {
-    if (selectedInvoices.length === 0) return false;
-    return selectedInvoices.some((invId) => (pendingDocAuditCustomerScansByInvoice[invId] || 0) > 0);
-  }, [selectedInvoices, pendingDocAuditCustomerScansByInvoice]);
+  const hasPendingCustomerStage = pendingCustomerStageInvoiceIds.length > 0;
 
   // Background scanning (hardware/keyboard scanner): enabled after invoice selection.
   // IMPORTANT: Disable while invoice-selection scanner dialog is open to avoid keydown-listener conflicts.
@@ -227,7 +229,7 @@ const DocAudit = () => {
 
       // Allow resume mode: if local customerScan is empty but backend has a pending customer-stage scan,
       // accept Autoliv scan so we can pair via scan-stage endpoint.
-      if (!customerScan && !hasPendingCustomerStage) {
+      if (!customerScan && pendingCustomerStageInvoiceIds.length === 0) {
         setScanPhase('customer');
         const msg = "Scan Customer label first.";
         setScanOrderAlert(msg);
@@ -237,6 +239,22 @@ const DocAudit = () => {
           severity: "warning",
         });
         return { accepted: false, rejectReason: "missing_customer" };
+      }
+
+      // Failsafe: resume mode is only safe when exactly one invoice has a pending customer-stage scan.
+      // Otherwise we cannot reliably pair the Autoliv label to the intended invoice.
+      if (!customerScan && pendingCustomerStageInvoiceIds.length > 1) {
+        const msg =
+          "Multiple selected invoices have pending Customer scans.\n" +
+          "Narrow selection to one invoice or scan the Customer label again.";
+        setScanOrderAlert(msg);
+        openScanIssue({
+          title: "Ambiguous resume",
+          description: msg,
+          severity: "warning",
+          context: [{ label: "Invoices with pending scans", value: pendingCustomerStageInvoiceIds.join(", ") }],
+        });
+        return { accepted: false, rejectReason: "ambiguous_resume" };
       }
 
       setScanOrderAlert(null);
@@ -776,122 +794,148 @@ const DocAudit = () => {
       return;
     }
 
-    // Search through all selected invoices to find matching customer_item
-    const matchedItems: Array<{ invoiceId: string; item: UploadedRow; invoice: InvoiceData }> = [];
-    
-    for (const invoiceId of selectedInvoices) {
-      const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
-      const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
-      
-      if (!invoice || !invoice.items) continue;
-      
-      // Find invoice_item where customer_item matches customer QR part code
-      const matchedItem = invoice.items.find((item: UploadedRow) => {
-        const itemCustomerItem = item.customerItem?.toString().trim() || '';
-        return itemCustomerItem === customerPartCode;
-      });
-      
-      if (matchedItem) {
-        matchedItems.push({ invoiceId, item: matchedItem, invoice });
-      }
-    }
-
-    if (matchedItems.length === 0) {
-      // STEP 1 MISMATCH: Customer QR part code not found
+    // Doc-audit requirement: invoice number is embedded in the customer label.
+    // We MUST scope the scan to that invoice to avoid cross-invoice ambiguity.
+    const invoiceIdFromQr = (customerScan.invoiceNumber || '').trim();
+    if (!/^\d{10}$/.test(invoiceIdFromQr)) {
       openScanIssue({
-        title: "Customer QR mismatch (Step 1)",
+        title: "Invoice number missing in Customer QR",
         description:
-          `Part code "${customerPartCode}" not found in any selected invoice.\nInvoice(s) blocked.\n\nAn exception alert has been sent to admin.`,
+          "Could not extract the 10-digit invoice number from the customer label.\n" +
+          "Please verify the QR format and re-scan.\n\n" +
+          "Expected: 10 digits starting at position 140 in the QR payload.",
         severity: "error",
         context: [
           { label: "Customer part code", value: customerPartCode },
+          { label: "Extracted invoice", value: invoiceIdFromQr || "N/A" },
+        ],
+      });
+      setCustomerScan(null);
+      return;
+    }
+
+    if (!selectedInvoices.includes(invoiceIdFromQr)) {
+      openScanIssue({
+        title: "Invoice not selected",
+        description:
+          `Customer QR belongs to invoice ${invoiceIdFromQr}, but it is not in the selected invoices.\n\n` +
+          `Select invoice ${invoiceIdFromQr} and re-scan the customer label.`,
+        severity: "warning",
+        context: [
+          { label: "Invoice from QR", value: invoiceIdFromQr },
           { label: "Selected invoices", value: selectedInvoices.length },
         ],
       });
-
-      // Block all selected invoices
-      selectedInvoices.forEach(invoiceId => {
-        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-        if (invoice) {
-          updateInvoiceAudit(invoice.id, {
-            blocked: true,
-            blockedAt: new Date()
-          }, currentUser);
-
-          addMismatchAlert({
-            user: currentUser,
-            customer: invoice.customer,
-            invoiceId: invoice.id,
-            step: 'doc-audit',
-            validationStep: 'customer_qr_no_match',
-            customerScan: {
-              partCode: customerScan.partCode || 'N/A',
-              quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
-              binNumber: customerScan.binNumber || 'N/A',
-              rawValue: customerScan.rawValue || 'N/A'
-            },
-            autolivScan: {
-              partCode: 'N/A',
-              quantity: 'N/A',
-              binNumber: 'N/A',
-              rawValue: 'N/A'
-            }
-          });
-        }
-      });
-
       setCustomerScan(null);
       return;
     }
 
-    // If multiple matches (edge case), block all matching invoices
-    if (matchedItems.length > 1) {
+    const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceIdFromQr);
+    const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceIdFromQr);
+    if (!invoice || !invoice.items) {
       openScanIssue({
-        title: "Ambiguous match",
-        description: `Part code "${customerPartCode}" was found in ${matchedItems.length} invoices.\nAll matching invoices will be blocked for admin review.`,
-        severity: "warning",
+        title: "Invoice data not loaded",
+        description:
+          `Invoice ${invoiceIdFromQr} is selected but its items are not available in the screen.\n` +
+          "Please refresh and try again.",
+        severity: "error",
+        context: [
+          { label: "Invoice from QR", value: invoiceIdFromQr },
+          { label: "Customer part code", value: customerPartCode },
+        ],
+      });
+      setCustomerScan(null);
+      return;
+    }
+
+    const matchesInInvoice = invoice.items.filter((it: UploadedRow) => {
+      const itemCustomerItem = it.customerItem?.toString().trim() || '';
+      return itemCustomerItem === customerPartCode;
+    });
+
+    if (matchesInInvoice.length === 0) {
+      // STEP 1 MISMATCH: Customer QR part code not found in the invoice specified by QR.
+      openScanIssue({
+        title: "Customer QR mismatch (Step 1)",
+        description:
+          `Part code "${customerPartCode}" not found in invoice ${invoiceIdFromQr}.\nInvoice blocked.\n\n` +
+          "An exception alert has been sent to admin.",
+        severity: "error",
         context: [
           { label: "Customer part code", value: customerPartCode },
-          { label: "Matches", value: matchedItems.length },
+          { label: "Invoice from QR", value: invoiceIdFromQr },
         ],
       });
 
-      matchedItems.forEach(({ invoiceId }) => {
-        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-        if (invoice) {
-          updateInvoiceAudit(invoice.id, {
-            blocked: true,
-            blockedAt: new Date()
-          }, currentUser);
-
-          addMismatchAlert({
-            user: currentUser,
-            customer: invoice.customer,
-            invoiceId: invoice.id,
-            step: 'doc-audit',
-            validationStep: 'customer_qr_no_match',
-            customerScan: {
-              partCode: customerScan.partCode || 'N/A',
-              quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
-              binNumber: customerScan.binNumber || 'N/A',
-              rawValue: customerScan.rawValue || 'N/A'
-            },
-            autolivScan: {
-              partCode: 'N/A',
-              quantity: 'N/A',
-              binNumber: 'N/A',
-              rawValue: 'N/A'
-            }
-          });
-        }
+      updateInvoiceAudit(invoiceIdFromQr, { blocked: true, blockedAt: new Date() }, currentUser);
+      addMismatchAlert({
+        user: currentUser,
+        customer: (invoiceInShared?.customer ?? (invoice as any)?.customer ?? 'N/A'),
+        invoiceId: invoiceIdFromQr,
+        step: 'doc-audit',
+        validationStep: 'customer_qr_no_match',
+        customerScan: {
+          partCode: customerScan.partCode || 'N/A',
+          quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
+          binNumber: customerScan.binNumber || 'N/A',
+          rawValue: customerScan.rawValue || 'N/A',
+        },
+        autolivScan: {
+          partCode: 'N/A',
+          quantity: 'N/A',
+          binNumber: 'N/A',
+          rawValue: 'N/A',
+        },
       });
 
       setCustomerScan(null);
       return;
     }
 
-    // STEP 1 SUCCESS: Customer QR matched
-    const { invoiceId, item } = matchedItems[0];
+    if (matchesInInvoice.length > 1) {
+      // Extremely rare but dangerous: multiple rows share same customer_item inside a single invoice.
+      openScanIssue({
+        title: "Ambiguous match in invoice",
+        description:
+          `Part code "${customerPartCode}" appears multiple times in invoice ${invoiceIdFromQr}.\n` +
+          "Invoice blocked to prevent wrong pairing.\n\n" +
+          "An exception alert has been sent to admin.",
+        severity: "warning",
+        context: [
+          { label: "Customer part code", value: customerPartCode },
+          { label: "Invoice from QR", value: invoiceIdFromQr },
+          { label: "Matches", value: matchesInInvoice.length },
+        ],
+      });
+
+      updateInvoiceAudit(invoiceIdFromQr, { blocked: true, blockedAt: new Date() }, currentUser);
+      addMismatchAlert({
+        user: currentUser,
+        customer: (invoiceInShared?.customer ?? (invoice as any)?.customer ?? 'N/A'),
+        invoiceId: invoiceIdFromQr,
+        step: 'doc-audit',
+        validationStep: 'customer_qr_no_match',
+        customerScan: {
+          partCode: customerScan.partCode || 'N/A',
+          quantity: customerScan.binQuantity || customerScan.quantity || 'N/A',
+          binNumber: customerScan.binNumber || 'N/A',
+          rawValue: customerScan.rawValue || 'N/A',
+        },
+        autolivScan: {
+          partCode: 'N/A',
+          quantity: 'N/A',
+          binNumber: 'N/A',
+          rawValue: 'N/A',
+        },
+      });
+
+      setCustomerScan(null);
+      return;
+    }
+
+    // STEP 1 SUCCESS: Customer QR matched (scoped to invoice in QR)
+    const item = matchesInInvoice[0];
+    const invoiceId = invoiceIdFromQr;
     setMatchedCustomerItem({ invoiceId, item });
 
     // Update counters immediately on customer scan (server source of truth)
@@ -983,127 +1027,167 @@ const DocAudit = () => {
       return;
     }
 
-    // Search through all selected invoices to find matching part (item_number)
-    const matchedItems: Array<{ invoiceId: string; item: UploadedRow; invoice: InvoiceData }> = [];
-    
-    for (const invoiceId of selectedInvoices) {
-      const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
-      const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
-      
-      if (!invoice || !invoice.items) continue;
-      
-      // Find invoice_item where part matches Autoliv QR part number
-      const matchedItem = invoice.items.find((item: UploadedRow) => {
-        const itemPart = item.part?.toString().trim() || '';
-        return itemPart === autolivPartNumber;
-      });
-      
-      if (matchedItem) {
-        matchedItems.push({ invoiceId, item: matchedItem, invoice });
+    const isResumeMode = !customerScan?.rawValue;
+
+    // Resolve which invoice we are validating against:
+    // - Normal flow: the invoice from the last validated customer scan
+    // - Resume flow: exactly one selected invoice must have a pending customer-stage scan
+    let invoiceId: string;
+    if (isResumeMode) {
+      if (pendingCustomerStageInvoiceIds.length !== 1) {
+        openScanIssue({
+          title: "Ambiguous resume",
+          description:
+            "Cannot resume from Autoliv scan because there isn't exactly one invoice with a pending Customer scan.\n\n" +
+            "Narrow selection to one invoice or scan the Customer label again.",
+          severity: "error",
+          context: [{ label: "Invoices with pending scans", value: pendingCustomerStageInvoiceIds.join(", ") || "N/A" }],
+        });
+        setAutolivScan(null);
+        setMatchedCustomerItem(null);
+        return;
       }
+      invoiceId = pendingCustomerStageInvoiceIds[0];
+    } else {
+      const candidate = (matchedCustomerItem?.invoiceId || (customerScan?.invoiceNumber || '').trim() || '').trim();
+      if (!candidate || !/^\d{10}$/.test(candidate)) {
+        openScanIssue({
+          title: "Missing invoice context",
+          description: "Please scan the Customer label first (invoice number is required).",
+          severity: "warning",
+        });
+        setAutolivScan(null);
+        return;
+      }
+      invoiceId = candidate;
     }
 
-    if (matchedItems.length === 0) {
-      // STEP 2 MISMATCH: Autoliv QR part number not found
+    if (!selectedInvoices.includes(invoiceId)) {
       openScanIssue({
-        title: "Autoliv QR mismatch (Step 2)",
+        title: "Invoice not selected",
         description:
-          `Part number "${autolivPartNumber}" not found in any selected invoice.\nInvoice(s) blocked.\n\nAn exception alert has been sent to admin.`,
-        severity: "error",
+          `This Autoliv scan must be recorded against invoice ${invoiceId}, but it is not selected.\n\n` +
+          `Select invoice ${invoiceId} and re-scan.`,
+        severity: "warning",
         context: [
-          { label: "Autoliv part number", value: autolivPartNumber },
+          { label: "Invoice", value: invoiceId },
           { label: "Selected invoices", value: selectedInvoices.length },
         ],
       });
-
-      // Block all selected invoices
-      selectedInvoices.forEach(invoiceId => {
-        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-        if (invoice) {
-          updateInvoiceAudit(invoice.id, {
-            blocked: true,
-            blockedAt: new Date()
-          }, currentUser);
-
-          addMismatchAlert({
-            user: currentUser,
-            customer: invoice.customer,
-            invoiceId: invoice.id,
-            step: 'doc-audit',
-            validationStep: 'autoliv_qr_no_match',
-            customerScan: {
-              partCode: customerScan?.partCode || 'N/A',
-              quantity: customerScan?.binQuantity || customerScan?.quantity || 'N/A',
-              binNumber: customerScan?.binNumber || 'N/A',
-              rawValue: customerScan?.rawValue || 'N/A'
-            },
-            autolivScan: {
-              partCode: autolivScan.partCode || 'N/A',
-              quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
-              binNumber: autolivScan.binNumber || 'N/A',
-              rawValue: autolivScan.rawValue || 'N/A'
-            }
-          });
-        }
-      });
-
       setAutolivScan(null);
-      setMatchedCustomerItem(null); // Reset customer match
       return;
     }
 
-    // If multiple matches (edge case), block all matching invoices
-    if (matchedItems.length > 1) {
+    const invoiceInShared = sharedInvoices.find(inv => inv.id === invoiceId);
+    const invoice = invoiceInShared || selectedInvoiceObjects.find(inv => inv.id === invoiceId);
+    if (!invoice || !invoice.items) {
       openScanIssue({
-        title: "Ambiguous match",
-        description: `Part number "${autolivPartNumber}" was found in ${matchedItems.length} invoices.\nAll matching invoices will be blocked for admin review.`,
-        severity: "warning",
+        title: "Invoice data not loaded",
+        description:
+          `Invoice ${invoiceId} is selected but its items are not available in the screen.\n` +
+          "Please refresh and try again.",
+        severity: "error",
         context: [
+          { label: "Invoice", value: invoiceId },
           { label: "Autoliv part number", value: autolivPartNumber },
-          { label: "Matches", value: matchedItems.length },
+        ],
+      });
+      setAutolivScan(null);
+      return;
+    }
+
+    const matchesInInvoice = invoice.items.filter((it: UploadedRow) => {
+      const itemPart = it.part?.toString().trim() || '';
+      return itemPart === autolivPartNumber;
+    });
+
+    if (matchesInInvoice.length === 0) {
+      // STEP 2 MISMATCH: Autoliv QR part number not found in the invoice we're scoped to
+      openScanIssue({
+        title: "Autoliv QR mismatch (Step 2)",
+        description:
+          `Part number "${autolivPartNumber}" not found in invoice ${invoiceId}.\nInvoice blocked.\n\n` +
+          "An exception alert has been sent to admin.",
+        severity: "error",
+        context: [
+          { label: "Invoice", value: invoiceId },
+          { label: "Autoliv part number", value: autolivPartNumber },
         ],
       });
 
-      matchedItems.forEach(({ invoiceId }) => {
-        const invoice = sharedInvoices.find(inv => inv.id === invoiceId);
-        if (invoice) {
-          updateInvoiceAudit(invoice.id, {
-            blocked: true,
-            blockedAt: new Date()
-          }, currentUser);
-
-          addMismatchAlert({
-            user: currentUser,
-            customer: invoice.customer,
-            invoiceId: invoice.id,
-            step: 'doc-audit',
-            validationStep: 'autoliv_qr_no_match',
-            customerScan: {
-              partCode: customerScan?.partCode || 'N/A',
-              quantity: customerScan?.binQuantity || customerScan?.quantity || 'N/A',
-              binNumber: customerScan?.binNumber || 'N/A',
-              rawValue: customerScan?.rawValue || 'N/A'
-            },
-            autolivScan: {
-              partCode: autolivScan.partCode || 'N/A',
-              quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
-              binNumber: autolivScan.binNumber || 'N/A',
-              rawValue: autolivScan.rawValue || 'N/A'
-            }
-          });
-        }
+      updateInvoiceAudit(invoiceId, { blocked: true, blockedAt: new Date() }, currentUser);
+      addMismatchAlert({
+        user: currentUser,
+        customer: (invoiceInShared?.customer ?? (invoice as any)?.customer ?? 'N/A'),
+        invoiceId,
+        step: 'doc-audit',
+        validationStep: 'autoliv_qr_no_match',
+        customerScan: {
+          partCode: customerScan?.partCode || 'N/A',
+          quantity: customerScan?.binQuantity || customerScan?.quantity || 'N/A',
+          binNumber: customerScan?.binNumber || 'N/A',
+          rawValue: customerScan?.rawValue || 'N/A',
+        },
+        autolivScan: {
+          partCode: autolivScan.partCode || 'N/A',
+          quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
+          binNumber: autolivScan.binNumber || 'N/A',
+          rawValue: autolivScan.rawValue || 'N/A',
+        },
       });
 
       setAutolivScan(null);
-      setMatchedCustomerItem(null); // Reset customer match
+      setMatchedCustomerItem(null);
       return;
     }
 
-    // STEP 2 SUCCESS: Autoliv QR matched
-    const { invoiceId, item } = matchedItems[0];
+    if (matchesInInvoice.length > 1) {
+      openScanIssue({
+        title: "Ambiguous match in invoice",
+        description:
+          `Part number "${autolivPartNumber}" appears multiple times in invoice ${invoiceId}.\n` +
+          "Invoice blocked to prevent wrong pairing.\n\n" +
+          "An exception alert has been sent to admin.",
+        severity: "warning",
+        context: [
+          { label: "Invoice", value: invoiceId },
+          { label: "Autoliv part number", value: autolivPartNumber },
+          { label: "Matches", value: matchesInInvoice.length },
+        ],
+      });
+
+      updateInvoiceAudit(invoiceId, { blocked: true, blockedAt: new Date() }, currentUser);
+      addMismatchAlert({
+        user: currentUser,
+        customer: (invoiceInShared?.customer ?? (invoice as any)?.customer ?? 'N/A'),
+        invoiceId,
+        step: 'doc-audit',
+        validationStep: 'autoliv_qr_no_match',
+        customerScan: {
+          partCode: customerScan?.partCode || 'N/A',
+          quantity: customerScan?.binQuantity || customerScan?.quantity || 'N/A',
+          binNumber: customerScan?.binNumber || 'N/A',
+          rawValue: customerScan?.rawValue || 'N/A',
+        },
+        autolivScan: {
+          partCode: autolivScan.partCode || 'N/A',
+          quantity: autolivScan.binQuantity || autolivScan.quantity || 'N/A',
+          binNumber: autolivScan.binNumber || 'N/A',
+          rawValue: autolivScan.rawValue || 'N/A',
+        },
+      });
+
+      setAutolivScan(null);
+      setMatchedCustomerItem(null);
+      return;
+    }
+
+    // STEP 2 SUCCESS: Autoliv QR matched (scoped to the resolved invoice)
+    const item = matchesInInvoice[0];
+
     // RESUME MODE: If the customer label was scanned earlier (already stored in DB) but the user is resuming
     // from the Autoliv step, customerScan state will be empty. In this case, call INBD stage with autolivBarcode only.
-    if (!customerScan?.rawValue) {
+    if (isResumeMode) {
       try {
         await auditApi.recordStageScan(invoiceId, {
           stage: 'inbd',
@@ -2202,7 +2286,7 @@ const DocAudit = () => {
                       {customerScan && (
                         <div className="p-3 bg-muted rounded-lg">
                           <p className="text-xs font-semibold text-muted-foreground mb-2">Scanned Data:</p>
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-4 gap-2">
                             <div>
                               <p className="text-[10px] text-muted-foreground">Part Code</p>
                               <p className="text-xs font-mono font-bold">{customerScan.partCode}</p>
@@ -2214,6 +2298,10 @@ const DocAudit = () => {
                             <div>
                               <p className="text-[10px] text-muted-foreground">Bin Number</p>
                               <p className="text-xs font-mono font-bold">{customerScan.binNumber}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-muted-foreground">Invoice</p>
+                              <p className="text-xs font-mono font-bold">{customerScan.invoiceNumber || '—'}</p>
                             </div>
                           </div>
                         </div>
@@ -2358,6 +2446,15 @@ const DocAudit = () => {
                         <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 text-xs font-bold">1</span>
                         Test Customer Label
                       </Label>
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-muted-foreground font-semibold">Invoice Number (extracted)</p>
+                        <Input
+                          value={testCustomerScan?.invoiceNumber || ''}
+                          readOnly
+                          placeholder="Scan customer QR to populate"
+                          className="h-9 font-mono text-xs"
+                        />
+                      </div>
                       {testCustomerScan && (
                         <div className="p-2 bg-muted rounded-lg text-xs space-y-1">
                           <p className="text-[10px] text-muted-foreground mb-1 font-semibold">Scanned Data:</p>
@@ -2369,7 +2466,13 @@ const DocAudit = () => {
                                 {testCustomerScan.binNumber && <p className="text-[10px]"><span className="font-semibold">Bin Number:</span> {testCustomerScan.binNumber}</p>}
                                 {testCustomerScan.partCode && <p className="text-[10px]"><span className="font-semibold">Part Code:</span> {testCustomerScan.partCode}</p>}
                                 {testCustomerScan.binQuantity && <p className="text-[10px]"><span className="font-semibold">Bin Qty:</span> {testCustomerScan.binQuantity}</p>}
-                                {testCustomerScan.invoiceNumber && <p className="text-[10px]"><span className="font-semibold">Invoice:</span> {testCustomerScan.invoiceNumber}</p>}
+                                <p className="text-[10px]">
+                                  <span className="font-semibold">Invoice:</span> {testCustomerScan.invoiceNumber || '—'}
+                                </p>
+                                <p className="text-[10px] text-muted-foreground">
+                                  <span className="font-semibold">Debug:</span> len={testCustomerScan.rawValue?.length || 0},{" "}
+                                  afterQty="{testCustomerScan.rawValue?.slice(51, 91) || ''}"
+                                </p>
                                 {testCustomerScan.totalQty && <p className="text-[10px]"><span className="font-semibold">Total Qty:</span> {testCustomerScan.totalQty}</p>}
                                 {testCustomerScan.totalBinNo && <p className="text-[10px]"><span className="font-semibold">Total Bins:</span> {testCustomerScan.totalBinNo}</p>}
                               </div>
