@@ -24,37 +24,37 @@ import { setupSocketHandlers } from './websocket/socketHandler';
 const app = express();
 const httpServer = createServer(app);
 
-// Socket.IO setup with CORS - allow both localhost and network IP
-const getCorsOrigins = () => {
-  const origins: (string | RegExp)[] = [];
-  // Add localhost
-  origins.push(process.env.FRONTEND_URL || 'http://localhost:8080');
-  // Add network IP
-  const localIP = process.env.LOCAL_IP || '192.168.1.8';
-  origins.push(`http://${localIP}:8080`);
-  // In development, allow any origin from the local network (192.168.x.x)
-  if (process.env.NODE_ENV === 'development') {
-    origins.push(/^http:\/\/192\.168\.\d+\.\d+:8080$/);
+// CORS origins configuration
+const getCorsOrigins = (): string[] => {
+  const origins: string[] = [];
+  
+  // Production origin from environment variable
+  if (process.env.FRONTEND_URL) {
+    origins.push(process.env.FRONTEND_URL);
   }
+  
+  // Development origins (localhost only)
+  if (process.env.NODE_ENV === 'development') {
+    origins.push('http://localhost:5173');
+    origins.push('http://localhost:8080');
+  }
+  
   return origins;
 };
 
-// CORS origin checker function for more flexible matching
+// CORS origin checker function
 const corsOriginChecker = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+  // Allow requests with no origin (curl, Postman, etc.)
   if (!origin) {
-    // Allow requests with no origin (like mobile apps or Postman)
     return callback(null, true);
   }
   
   const allowedOrigins = getCorsOrigins();
-  const isAllowed = allowedOrigins.some(allowed => {
-    if (typeof allowed === 'string') {
-      return origin === allowed;
-    } else if (allowed instanceof RegExp) {
-      return allowed.test(origin);
-    }
-    return false;
-  });
+  const isAllowed = allowedOrigins.includes(origin);
+  
+  if (!isAllowed) {
+    console.warn(`⚠️ CORS: Blocked request from origin: ${origin}`);
+  }
   
   callback(null, isAllowed);
 };
@@ -72,13 +72,17 @@ app.set('io', io);
 
 const PORT: number = Number(process.env.PORT) || 3001;
 
-// Middleware - CORS configuration for mobile access
+// Middleware - CORS configuration
 app.use(cors({
   origin: (origin, callback) => corsOriginChecker(origin, callback),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204
 }));
+
+// Explicitly handle OPTIONS preflight requests
+app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
